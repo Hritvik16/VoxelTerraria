@@ -130,6 +130,8 @@ GameObject:
   - component: {fileID: 753621641}
   - component: {fileID: 753621640}
   - component: {fileID: 753621639}
+  - component: {fileID: 753621643}
+  - component: {fileID: 753621642}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -211,6 +213,71 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &753621642
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 753621638}
+  m_Enabled: 0
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2607204ab8ea94c1bbe6b5ffa9360946, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::TestSdfContext
+  world: {fileID: 11400000, guid: effd945f9edc7465fbe004df79c2b70c, type: 2}
+  mountains:
+  - {fileID: 11400000, guid: 8fcf0da6b5b8142ba92c702e56b7a3e4, type: 2}
+  lakes:
+  - {fileID: 11400000, guid: e45f5c870f8f44a359149839ce833e0c, type: 2}
+  forests:
+  - {fileID: 11400000, guid: 01f4a0cc793de454fb95a650b4aadd54, type: 2}
+  cities:
+  - {fileID: 11400000, guid: f25ed92241c1641b982ba431cd0b32ab, type: 2}
+--- !u!114 &753621643
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 753621638}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a79441f348de89743a2939f4d699eac1, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.UniversalAdditionalCameraData
+  m_RenderShadows: 1
+  m_RequiresDepthTextureOption: 2
+  m_RequiresOpaqueTextureOption: 2
+  m_CameraType: 0
+  m_Cameras: []
+  m_RendererIndex: -1
+  m_VolumeLayerMask:
+    serializedVersion: 2
+    m_Bits: 1
+  m_VolumeTrigger: {fileID: 0}
+  m_VolumeFrameworkUpdateModeOption: 2
+  m_RenderPostProcessing: 0
+  m_Antialiasing: 0
+  m_AntialiasingQuality: 2
+  m_StopNaN: 0
+  m_Dithering: 0
+  m_ClearDepth: 1
+  m_AllowXRRendering: 1
+  m_AllowHDROutput: 1
+  m_UseScreenCoordOverride: 0
+  m_ScreenSizeOverride: {x: 0, y: 0, z: 0, w: 0}
+  m_ScreenCoordScaleBias: {x: 0, y: 0, z: 0, w: 0}
+  m_RequiresDepthTexture: 0
+  m_RequiresColorTexture: 0
+  m_TaaSettings:
+    m_Quality: 3
+    m_FrameInfluence: 0.1
+    m_JitterScale: 1
+    m_MipBias: 0
+    m_VarianceClampScale: 0.9
+    m_ContrastAdaptiveSharpening: 0
+  m_Version: 2
 --- !u!1 &1538903054
 GameObject:
   m_ObjectHideFlags: 0
@@ -387,6 +454,59 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1950718932
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1950718934}
+  - component: {fileID: 1950718933}
+  m_Layer: 0
+  m_Name: SDFBootstrap
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1950718933
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1950718932}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 064a3a9f0f6d048cf8ff999cc01d9e3b, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SdfBootstrap
+  worldSettings: {fileID: 11400000, guid: effd945f9edc7465fbe004df79c2b70c, type: 2}
+  mountainFeatures:
+  - {fileID: 11400000, guid: 8fcf0da6b5b8142ba92c702e56b7a3e4, type: 2}
+  lakeFeatures:
+  - {fileID: 11400000, guid: e45f5c870f8f44a359149839ce833e0c, type: 2}
+  forestFeatures:
+  - {fileID: 11400000, guid: 01f4a0cc793de454fb95a650b4aadd54, type: 2}
+  cityFeatures:
+  - {fileID: 11400000, guid: f25ed92241c1641b982ba431cd0b32ab, type: 2}
+--- !u!4 &1950718934
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1950718932}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 77.04036, y: 0, z: 215.43675}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
@@ -394,3 +514,4 @@ SceneRoots:
   - {fileID: 753621641}
   - {fileID: 1538903056}
   - {fileID: 1763393998}
+  - {fileID: 1950718934}

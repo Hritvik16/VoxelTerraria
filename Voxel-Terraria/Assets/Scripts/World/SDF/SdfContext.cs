@@ -81,87 +81,87 @@ public struct SdfContext
 // ------------------------------------------------------------
 // Helper for building SdfContext from ScriptableObjects
 // ------------------------------------------------------------
-public static class SdfBootstrap
-{
-    public static SdfContext Build(WorldSettings world, 
-                                   MountainFeature[] mountainSOs,
-                                   LakeFeature[] lakeSOs,
-                                   ForestFeature[] forestSOs,
-                                   CityPlateauFeature[] citySOs,
-                                   Allocator allocator = Allocator.Persistent)
-    {
-        SdfContext ctx = new SdfContext
-        {
-            worldWidth = world.worldWidth,
-            worldDepth = world.worldDepth,
-            worldHeight = world.worldHeight,
+// public static class SdfBootstrap
+// {
+//     public static SdfContext Build(WorldSettings world, 
+//                                    MountainFeature[] mountainSOs,
+//                                    LakeFeature[] lakeSOs,
+//                                    ForestFeature[] forestSOs,
+//                                    CityPlateauFeature[] citySOs,
+//                                    Allocator allocator = Allocator.Persistent)
+//     {
+//         SdfContext ctx = new SdfContext
+//         {
+//             worldWidth = world.worldWidth,
+//             worldDepth = world.worldDepth,
+//             worldHeight = world.worldHeight,
 
-            voxelSize = world.voxelSize,
-            chunkSize = world.chunkSize,
-            seaLevel = world.seaLevel,
+//             voxelSize = world.voxelSize,
+//             chunkSize = world.chunkSize,
+//             seaLevel = world.seaLevel,
 
-            mountains = new NativeArray<MountainFeatureData>(mountainSOs.Length, allocator),
-            lakes     = new NativeArray<LakeFeatureData>(lakeSOs.Length, allocator),
-            forests   = new NativeArray<ForestFeatureData>(forestSOs.Length, allocator),
-            cities    = new NativeArray<CityPlateauFeatureData>(citySOs.Length, allocator)
-        };
+//             mountains = new NativeArray<MountainFeatureData>(mountainSOs.Length, allocator),
+//             lakes     = new NativeArray<LakeFeatureData>(lakeSOs.Length, allocator),
+//             forests   = new NativeArray<ForestFeatureData>(forestSOs.Length, allocator),
+//             cities    = new NativeArray<CityPlateauFeatureData>(citySOs.Length, allocator)
+//         };
 
-        // --------------------------------------
-        // Convert Mountain features
-        // --------------------------------------
-        for (int i = 0; i < mountainSOs.Length; i++)
-        {
-            ctx.mountains[i] = new MountainFeatureData
-            {
-                centerXZ = new float2(mountainSOs[i].CenterXZ.x, mountainSOs[i].CenterXZ.y),
-                radius = mountainSOs[i].Radius,
-                height = mountainSOs[i].Height,
-                ridgeFrequency = mountainSOs[i].RidgeFrequency,
-                ridgeAmplitude = mountainSOs[i].RidgeAmplitude,
-                warpStrength   = mountainSOs[i].WarpStrength
-            };
-        }
+//         // --------------------------------------
+//         // Convert Mountain features
+//         // --------------------------------------
+//         for (int i = 0; i < mountainSOs.Length; i++)
+//         {
+//             ctx.mountains[i] = new MountainFeatureData
+//             {
+//                 centerXZ = new float2(mountainSOs[i].CenterXZ.x, mountainSOs[i].CenterXZ.y),
+//                 radius = mountainSOs[i].Radius,
+//                 height = mountainSOs[i].Height,
+//                 ridgeFrequency = mountainSOs[i].RidgeFrequency,
+//                 ridgeAmplitude = mountainSOs[i].RidgeAmplitude,
+//                 warpStrength   = mountainSOs[i].WarpStrength
+//             };
+//         }
 
-        // --------------------------------------
-        // Convert Lake features
-        // --------------------------------------
-        for (int i = 0; i < lakeSOs.Length; i++)
-        {
-            ctx.lakes[i] = new LakeFeatureData
-            {
-                centerXZ = new float2(lakeSOs[i].CenterXZ.x, lakeSOs[i].CenterXZ.y),
-                radius = lakeSOs[i].Radius,
-                bottomHeight = lakeSOs[i].BottomHeight,
-                shoreHeight  = lakeSOs[i].ShoreHeight
-            };
-        }
+//         // --------------------------------------
+//         // Convert Lake features
+//         // --------------------------------------
+//         for (int i = 0; i < lakeSOs.Length; i++)
+//         {
+//             ctx.lakes[i] = new LakeFeatureData
+//             {
+//                 centerXZ = new float2(lakeSOs[i].CenterXZ.x, lakeSOs[i].CenterXZ.y),
+//                 radius = lakeSOs[i].Radius,
+//                 bottomHeight = lakeSOs[i].BottomHeight,
+//                 shoreHeight  = lakeSOs[i].ShoreHeight
+//             };
+//         }
 
-        // --------------------------------------
-        // Convert Forest features
-        // --------------------------------------
-        for (int i = 0; i < forestSOs.Length; i++)
-        {
-            ctx.forests[i] = new ForestFeatureData
-            {
-                centerXZ = new float2(forestSOs[i].CenterXZ.x, forestSOs[i].CenterXZ.y),
-                radius = forestSOs[i].Radius,
-                treeDensity = forestSOs[i].TreeDensity
-            };
-        }
+//         // --------------------------------------
+//         // Convert Forest features
+//         // --------------------------------------
+//         for (int i = 0; i < forestSOs.Length; i++)
+//         {
+//             ctx.forests[i] = new ForestFeatureData
+//             {
+//                 centerXZ = new float2(forestSOs[i].CenterXZ.x, forestSOs[i].CenterXZ.y),
+//                 radius = forestSOs[i].Radius,
+//                 treeDensity = forestSOs[i].TreeDensity
+//             };
+//         }
 
-        // --------------------------------------
-        // Convert City Plateau features
-        // --------------------------------------
-        for (int i = 0; i < citySOs.Length; i++)
-        {
-            ctx.cities[i] = new CityPlateauFeatureData
-            {
-                centerXZ = new float2(citySOs[i].CenterXZ.x, citySOs[i].CenterXZ.y),
-                radius = citySOs[i].Radius,
-                plateauHeight = citySOs[i].PlateauHeight
-            };
-        }
+//         // --------------------------------------
+//         // Convert City Plateau features
+//         // --------------------------------------
+//         for (int i = 0; i < citySOs.Length; i++)
+//         {
+//             ctx.cities[i] = new CityPlateauFeatureData
+//             {
+//                 centerXZ = new float2(citySOs[i].CenterXZ.x, citySOs[i].CenterXZ.y),
+//                 radius = citySOs[i].Radius,
+//                 plateauHeight = citySOs[i].PlateauHeight
+//             };
+//         }
 
-        return ctx;
-    }
-}
+//         return ctx;
+//     }
+// }

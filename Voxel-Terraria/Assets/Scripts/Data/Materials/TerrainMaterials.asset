@@ -17,15 +17,27 @@ MonoBehaviour:
     unityMaterial: {fileID: 2100000, guid: 019279508005b479aaf8b14ffb55e99c, type: 2}
     hardness: 0.5
     density: 0.9
-  - id: 0
+  - id: 1
     unityMaterial: {fileID: 2100000, guid: 52dfa2c0bfde145a2b69ed073d0ed9b4, type: 2}
     hardness: 0.8
     density: 1
-  - id: 0
+  - id: 2
     unityMaterial: {fileID: 2100000, guid: 5bf4fb749a33948db92c526fa4472ee6, type: 2}
     hardness: 2.5
     density: 2.7
+  - id: 3
+    unityMaterial: {fileID: 2100000, guid: 280b03c899aae4c0ebe90bc320645d51, type: 2}
+    hardness: 0.3
+    density: 0.7
+  - id: 5
+    unityMaterial: {fileID: 2100000, guid: 300fc043db51642d8a4d94bc8555f746, type: 2}
+    hardness: 0.4
+    density: 0.8
   - id: 0
-    unityMaterial: {fileID: 2100000, guid: 5bf4fb749a33948db92c526fa4472ee6, type: 2}
-    hardness: 2.5
-    density: 2.7
+    unityMaterial: {fileID: 2100000, guid: 280b03c899aae4c0ebe90bc320645d51, type: 2}
+    hardness: 0.3
+    density: 0.7
+  - id: 0
+    unityMaterial: {fileID: 2100000, guid: 280b03c899aae4c0ebe90bc320645d51, type: 2}
+    hardness: 0.3
+    density: 0.7
