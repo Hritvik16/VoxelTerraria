@@ -1,0 +1,33 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 39b6ab2c329354f0893e3d3ffeb5d9f0, type: 3}
+  m_Name: WorldSettings_Main
+  m_EditorClassIdentifier: Assembly-CSharp::WorldSettings
+  worldWidth: 1024
+  worldDepth: 1024
+  worldHeight: 256
+  voxelSize: 0.1
+  chunkSize: 32
+  islandRadius: 400
+  maxBaseHeight: 60
+  mountainRadius: 200
+  mountainHeight: 160
+  lakeRadius: 150
+  lakeBottomHeight: 20
+  lakeShoreHeight: 40
+  cityRadius: 100
+  cityHeight: 10
+  seaLevel: 0
+  maxChunksToRebuildPerFrame: 4
+  useMarchingCubes: 1
+  useJobs: 1
+  useBurst: 1
