@@ -12,7 +12,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c0940d2c0542e4675a6e041823bf43cb, type: 3}
   m_Name: LakeFeatures_Main
   m_EditorClassIdentifier: Assembly-CSharp::LakeFeature
-  centerXZ: {x: -20, y: 0}
+  drawGizmos: 1
+  centerXZ: {x: -202.04611, y: -0.56611633}
   radius: 120
   bottomHeight: -30
   shoreHeight: 5

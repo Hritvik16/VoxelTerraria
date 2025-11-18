@@ -12,6 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 52c1be18d2a20477993b41972a2085df, type: 3}
   m_Name: ForestFeature_Main
   m_EditorClassIdentifier: Assembly-CSharp::ForestFeature
+  drawGizmos: 1
   centerXZ: {x: 200, y: 0}
   radius: 200
-  treeDensity: 0.5
+  treeDensity: 5.36
