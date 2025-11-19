@@ -1,14 +1,13 @@
 // Put this file in: Assets/Scripts/Editor/Debug/ChunkTestWindow.cs
 
-using System.Collections.Generic;
 using System.Reflection;
 using Unity.Collections;
 using Unity.Mathematics;
 using UnityEditor;
 using UnityEngine;
-using UnityEngine.Rendering;
 
-using VoxelTerraria.World; // for ChunkCoord, VoxelCoord, ChunkData, Voxel, WorldCoordUtils
+using VoxelTerraria.World;
+using VoxelTerraria.World.Meshing; // MeshData, BlockMesher
 
 namespace VoxelTerraria.EditorTools
 {
@@ -66,16 +65,6 @@ namespace VoxelTerraria.EditorTools
         // ------------------------------------------------------
         private void OnGUI()
         {
-            // EditorGUILayout.LabelField("Editor Chunk Test", EditorStyles.boldLabel);
-            // EditorGUILayout.Space();
-
-            // // Chunk coordinates
-            // EditorGUILayout.BeginHorizontal();
-            // chunkX = EditorGUILayout.IntField("Chunk X", chunkX);
-            // chunkZ = EditorGUILayout.IntField("Chunk Z", chunkZ);
-            // EditorGUILayout.EndHorizontal();
-
-            // EditorGUILayout.Space();
             EditorGUILayout.LabelField("Chunk Coordinates", EditorStyles.boldLabel);
 
             chunkX = EditorGUILayout.IntField("Chunk X", chunkX);
@@ -98,7 +87,7 @@ namespace VoxelTerraria.EditorTools
                 "This tool:\n" +
                 "• Uses SdfRuntime.Context from SdfBootstrap (ExecuteAlways)\n" +
                 "• Calls VoxelWorld.GenerateChunkVoxels via reflection\n" +
-                "• Builds a simple block mesh and parents it under '" + RootName + "'.",
+                "• Uses BlockMesher to build a blocky mesh and parents it under '" + RootName + "'.",
                 MessageType.Info
             );
         }
@@ -184,17 +173,16 @@ namespace VoxelTerraria.EditorTools
             try
             {
                 // 2) Call VoxelWorld.GenerateChunkVoxels(ref ChunkData, in SdfContext) via reflection
-                object boxedChunk = chunkData;
-                object boxedCtx = ctx;
+                object[] parameters = new object[] { chunkData, ctx }; // ref param will be updated in this array
 
-                object[] parameters = new object[] { boxedChunk, boxedCtx };
                 generateChunkVoxelsMethod.Invoke(cachedVoxelWorld, parameters);
 
                 // Retrieve back the (possibly) modified struct
                 chunkData = (ChunkData)parameters[0];
 
-                // 3) Build mesh from chunk voxels
-                Mesh mesh = DebugBlockMesher.BuildMesh(ref chunkData, settings);
+                // 3) Build mesh from chunk voxels using BlockMesher + MeshData
+                MeshData meshData = BlockMesher.BuildMesh(in chunkData, settings);
+                Mesh mesh = meshData.ToMesh(false);
 
                 // 4) Create / replace GameObject in scene
                 CreateOrReplaceChunkGO(coord, settings, mesh);
@@ -262,164 +250,6 @@ namespace VoxelTerraria.EditorTools
             else
             {
                 Debug.LogWarning("ChunkTestWindow: Could not find a suitable shader. Assign a material manually.");
-            }
-        }
-
-        // ------------------------------------------------------
-        // Simple debug block mesher (Minecraft-style cubes)
-        // ------------------------------------------------------
-        private static class DebugBlockMesher
-        {
-            public static Mesh BuildMesh(ref ChunkData chunkData, WorldSettings settings)
-            {
-                int size = chunkData.chunkSize;
-                float voxelSize = settings.voxelSize;
-
-                var verts = new List<Vector3>();
-                var tris = new List<int>();
-
-                NativeArray<Voxel> voxels = chunkData.voxels;
-
-                // Local helper to compute linear index
-                int Index3D(int x, int y, int z)
-                {
-                    return x + y * size + z * size * size;
-                }
-
-                // Directions: (offset, 4 vertices in local voxel space)
-                // We'll generate quads for faces where neighbor is empty or out-of-bounds.
-                for (int z = 0; z < size; z++)
-                {
-                    for (int y = 0; y < size; y++)
-                    {
-                        for (int x = 0; x < size; x++)
-                        {
-                            int idx = Index3D(x, y, z);
-                            if (voxels[idx].density <= 0)
-                                continue; // treat as empty
-
-                            // Base position of this voxel corner
-                            float vx = x * voxelSize;
-                            float vy = y * voxelSize;
-                            float vz = z * voxelSize;
-
-                            // Add faces in 6 directions if neighbor is empty or out of bounds.
-                            // Each face adds 4 verts and 2 triangles.
-
-                            // +X
-                            if (IsAir(x + 1, y, z))
-                            {
-                                AddFace(
-                                    verts, tris,
-                                    new Vector3(vx + voxelSize, vy, vz),
-                                    new Vector3(vx + voxelSize, vy + voxelSize, vz),
-                                    new Vector3(vx + voxelSize, vy + voxelSize, vz + voxelSize),
-                                    new Vector3(vx + voxelSize, vy, vz + voxelSize)
-                                );
-                            }
-
-                            // -X
-                            if (IsAir(x - 1, y, z))
-                            {
-                                AddFace(
-                                    verts, tris,
-                                    new Vector3(vx, vy, vz + voxelSize),
-                                    new Vector3(vx, vy + voxelSize, vz + voxelSize),
-                                    new Vector3(vx, vy + voxelSize, vz),
-                                    new Vector3(vx, vy, vz)
-                                );
-                            }
-
-                            // +Y (top)
-                            if (IsAir(x, y + 1, z))
-                            {
-                                AddFace(
-                                    verts, tris,
-                                    new Vector3(vx, vy + voxelSize, vz),
-                                    new Vector3(vx, vy + voxelSize, vz + voxelSize),
-                                    new Vector3(vx + voxelSize, vy + voxelSize, vz + voxelSize),
-                                    new Vector3(vx + voxelSize, vy + voxelSize, vz)
-                                );
-                            }
-
-                            // -Y (bottom)
-                            if (IsAir(x, y - 1, z))
-                            {
-                                AddFace(
-                                    verts, tris,
-                                    new Vector3(vx, vy, vz + voxelSize),
-                                    new Vector3(vx, vy, vz),
-                                    new Vector3(vx + voxelSize, vy, vz),
-                                    new Vector3(vx + voxelSize, vy, vz + voxelSize)
-                                );
-                            }
-
-                            // +Z
-                            if (IsAir(x, y, z + 1))
-                            {
-                                AddFace(
-                                    verts, tris,
-                                    new Vector3(vx + voxelSize, vy, vz + voxelSize),
-                                    new Vector3(vx + voxelSize, vy + voxelSize, vz + voxelSize),
-                                    new Vector3(vx, vy + voxelSize, vz + voxelSize),
-                                    new Vector3(vx, vy, vz + voxelSize)
-                                );
-                            }
-
-                            // -Z
-                            if (IsAir(x, y, z - 1))
-                            {
-                                AddFace(
-                                    verts, tris,
-                                    new Vector3(vx, vy, vz),
-                                    new Vector3(vx, vy + voxelSize, vz),
-                                    new Vector3(vx + voxelSize, vy + voxelSize, vz),
-                                    new Vector3(vx + voxelSize, vy, vz)
-                                );
-                            }
-
-                            bool IsAir(int nx, int ny, int nz)
-                            {
-                                if (nx < 0 || ny < 0 || nz < 0 ||
-                                    nx >= size || ny >= size || nz >= size)
-                                    return true;
-
-                                int nIdx = Index3D(nx, ny, nz);
-                                return voxels[nIdx].density <= 0;
-                            }
-                        }
-                    }
-                }
-
-                Mesh mesh = new Mesh();
-                if (verts.Count > 65535)
-                    mesh.indexFormat = IndexFormat.UInt32;
-
-                mesh.SetVertices(verts);
-                mesh.SetTriangles(tris, 0);
-                mesh.RecalculateNormals();
-                mesh.RecalculateBounds();
-
-                return mesh;
-            }
-
-            private static void AddFace(List<Vector3> verts, List<int> tris,
-                                        Vector3 v0, Vector3 v1, Vector3 v2, Vector3 v3)
-            {
-                int start = verts.Count;
-                verts.Add(v0);
-                verts.Add(v1);
-                verts.Add(v2);
-                verts.Add(v3);
-
-                // Two triangles (0,1,2) and (0,2,3) with CCW winding
-                tris.Add(start + 0);
-                tris.Add(start + 1);
-                tris.Add(start + 2);
-
-                tris.Add(start + 0);
-                tris.Add(start + 2);
-                tris.Add(start + 3);
             }
         }
     }
