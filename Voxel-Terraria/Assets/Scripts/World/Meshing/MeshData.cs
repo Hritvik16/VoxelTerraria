@@ -97,5 +97,22 @@ namespace VoxelTerraria.World.Meshing
             mesh.RecalculateBounds();
             return mesh;
         }
+        public void AddTriangle(float3 v0, float3 v1, float3 v2)
+        {
+            // Compute flat triangle normal
+            float3 normal = math.normalize(math.cross(v1 - v0, v2 - v0));
+
+            // Basic UVs for now (good enough for terrain)
+            float2 uv0 = new float2(0, 0);
+            float2 uv1 = new float2(1, 0);
+            float2 uv2 = new float2(0, 1);
+
+            AddTriangle(
+                v0, v1, v2,
+                normal, normal, normal,
+                uv0, uv1, uv2
+            );
+        }
+
     }
 }

@@ -55,8 +55,6 @@ namespace VoxelTerraria.World
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static int FloorDiv(int value, int divisor)
         {
-            // Classic floor division rule:
-            // floor(a / b) = (a - ((a < 0) ? (b-1) : 0)) / b;
             if (value >= 0) return value / divisor;
             return (value - divisor + 1) / divisor;
         }
@@ -73,7 +71,7 @@ namespace VoxelTerraria.World
 
 
         // ---------------------------------------------------------------
-        // 1) World → Chunk
+        // 1) World → Chunk (by cells)
         // ---------------------------------------------------------------
         public static ChunkCoord WorldToChunk(float3 worldPos, WorldSettings settings)
         {
@@ -111,7 +109,7 @@ namespace VoxelTerraria.World
 
 
         // ---------------------------------------------------------------
-        // 3) World → Voxel
+        // 3) World → Voxel index (global grid)
         // ---------------------------------------------------------------
         public static VoxelCoord WorldToVoxel(float3 worldPos, WorldSettings settings)
         {
@@ -125,15 +123,14 @@ namespace VoxelTerraria.World
         }
 
 
-
-
         // ---------------------------------------------------------------
-        // 4) Chunk + InnerVoxel → World center position
+        // 4a) Chunk + InnerVoxel (cell center) → World center position
+        // (old behavior – still useful for some tools)
         // ---------------------------------------------------------------
         public static float3 VoxelCenterWorld(ChunkCoord chunk, VoxelCoord inner, WorldSettings settings)
         {
             float voxelSize = settings.voxelSize;
-            int chunkSize = settings.chunkSize;
+            int chunkSize   = settings.chunkSize;
 
             float baseX = chunk.x * chunkSize * voxelSize;
             float baseZ = chunk.z * chunkSize * voxelSize;
@@ -142,6 +139,25 @@ namespace VoxelTerraria.World
                 baseX + (inner.x + 0.5f) * voxelSize,
                 (inner.y + 0.5f) * voxelSize,
                 baseZ + (inner.z + 0.5f) * voxelSize
+            );
+        }
+
+        // ---------------------------------------------------------------
+        // 4b) Chunk + Voxel index (node) → World sample position
+        // NEW: used for padded SDF sampling (Fix A)
+        // ---------------------------------------------------------------
+        public static float3 VoxelSampleWorld(ChunkCoord chunk, VoxelCoord index, WorldSettings settings)
+        {
+            float voxelSize = settings.voxelSize;
+            int chunkSize   = settings.chunkSize;
+
+            float baseX = chunk.x * chunkSize * voxelSize;
+            float baseZ = chunk.z * chunkSize * voxelSize;
+
+            return new float3(
+                baseX + index.x * voxelSize,
+                index.y * voxelSize,
+                baseZ + index.z * voxelSize
             );
         }
     }

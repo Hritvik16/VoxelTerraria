@@ -177,12 +177,25 @@ namespace VoxelTerraria.EditorTools
 
                 generateChunkVoxelsMethod.Invoke(cachedVoxelWorld, parameters);
 
+                
+
                 // Retrieve back the (possibly) modified struct
                 chunkData = (ChunkData)parameters[0];
 
+                int solidCount = 0;
+                for (int i = 0; i < chunkData.voxels.Length; i++)
+                {
+                    if (chunkData.voxels[i].density > 0)
+                        solidCount++;
+                }
+                Debug.Log($"[DEBUG] Solid voxels = {solidCount}");
+
                 // 3) Build mesh from chunk voxels using BlockMesher + MeshData
-                MeshData meshData = BlockMesher.BuildMesh(in chunkData, settings);
-                Mesh mesh = meshData.ToMesh(false);
+                // MeshData meshData = BlockMesher.BuildMesh(in chunkData, settings);
+                // Mesh mesh = meshData.ToMesh(false);
+                MeshData meshData = MarchingCubesMesher.BuildMesh(in chunkData, settings);
+                Mesh mesh = meshData.ToMesh();
+
 
                 // 4) Create / replace GameObject in scene
                 CreateOrReplaceChunkGO(coord, settings, mesh);

@@ -15,7 +15,11 @@ namespace VoxelTerraria.World
         public bool isGenerated;
         public bool isDirty;
 
+        // Number of cells per axis (matches WorldSettings.chunkSize)
         public int chunkSize;
+
+        // Number of voxel samples per axis = chunkSize + 1
+        public int voxelResolution;
 
         // --------------------------------------------------------------
         // Constructor
@@ -25,7 +29,10 @@ namespace VoxelTerraria.World
             this.coord = coord;
             this.chunkSize = chunkSize;
 
-            int count = chunkSize * chunkSize * chunkSize;
+            // padded grid: size+1 samples per axis
+            this.voxelResolution = chunkSize + 1;
+
+            int count = voxelResolution * voxelResolution * voxelResolution;
 
             voxels = new NativeArray<Voxel>(count, allocator, NativeArrayOptions.ClearMemory);
 
@@ -44,12 +51,13 @@ namespace VoxelTerraria.World
 
         // --------------------------------------------------------------
         // Index Conversion
-        // Linear index: x + y*chunkSize + z*chunkSize*chunkSize
+        // Linear index: x + y*voxelResolution + z*voxelResolution*voxelResolution
         // --------------------------------------------------------------
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private int Index3D(int x, int y, int z)
         {
-            return x + y * chunkSize + z * chunkSize * chunkSize;
+            int r = voxelResolution;
+            return x + y * r + z * r * r;
         }
 
         // --------------------------------------------------------------

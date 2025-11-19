@@ -163,36 +163,44 @@ namespace VoxelTerraria.World
 
         // ------------------------------------------------------------------
         // Generate voxel densities + material IDs for a single chunk (sync)
+        // NOW: padded grid (chunkSize+1 samples per axis).
         // ------------------------------------------------------------------
         private void GenerateChunkVoxels(ref ChunkData chunkData, in SdfContext ctx)
         {
-            int size = chunkData.chunkSize;
+            int cells   = chunkData.chunkSize;
+            int voxRes  = chunkData.voxelResolution; // cells + 1
             ChunkCoord coord = chunkData.coord;
 
-            for (int z = 0; z < size; z++)
+            for (int z = 0; z < voxRes; z++)
             {
-                for (int y = 0; y < size; y++)
+                for (int y = 0; y < voxRes; y++)
                 {
-                    for (int x = 0; x < size; x++)
+                    for (int x = 0; x < voxRes; x++)
                     {
-                        VoxelCoord inner = new VoxelCoord(x, y, z);
-                        float3 worldPos = WorldCoordUtils.VoxelCenterWorld(coord, inner, worldSettings);
+                        VoxelCoord index = new VoxelCoord(x, y, z);
 
-                        const float DensityScale = 64f;  // you can tweak this later
+                        // Node sample position (aligned grid, shared across chunks)
+                        float3 worldPos = WorldCoordUtils.VoxelSampleWorld(coord, index, worldSettings);
+
+                        const float DensityScale = 64f;  // tweak later if needed
 
                         float sdf = CombinedTerrainSdf.Evaluate(worldPos, ctx);
+
+                        // Convention: density > 0 => solid
                         short densityShort = (short)math.clamp(-sdf * DensityScale, short.MinValue, short.MaxValue);
 
-                        // Optional SDF debug sample on a specific chunk + voxel
+                        // Optional debug sample at first node
                         if (debugSdf &&
                             coord.x == debugChunkX &&
                             coord.z == debugChunkZ &&
                             x == 0 && y == 0 && z == 0)
                         {
-                            DebugSdfSample(worldPos, sdf, ctx);
+                            Debug.Log(
+                                $"[DEBUG] Chunk ({coord.x},{coord.z}) SDF at (0,0,0): sdf={sdf}, worldPos={worldPos}"
+                            );
                         }
 
-                        // 2) Evaluate biome + pick material ID
+                        // 2) Evaluate biome + pick material ID (still uses worldPos)
                         ushort materialId = SelectMaterialId(worldPos, sdf, ctx);
 
                         Voxel voxel = new Voxel(densityShort, materialId);
@@ -207,8 +215,6 @@ namespace VoxelTerraria.World
 
         // ------------------------------------------------------------------
         // Simple Biome → material ID mapping using BiomeEvaluator + weights.
-        // This is a "pre-2.7.1" temporary selector; later you can replace with
-        // dedicated MaterialSelector system.
         // ------------------------------------------------------------------
         private ushort SelectMaterialId(float3 worldPos, float sdf, in SdfContext ctx)
         {
