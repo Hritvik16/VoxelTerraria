@@ -225,15 +225,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2607204ab8ea94c1bbe6b5ffa9360946, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::TestSdfContext
-  world: {fileID: 11400000, guid: effd945f9edc7465fbe004df79c2b70c, type: 2}
-  mountains:
-  - {fileID: 11400000, guid: 8fcf0da6b5b8142ba92c702e56b7a3e4, type: 2}
-  lakes:
-  - {fileID: 11400000, guid: e45f5c870f8f44a359149839ce833e0c, type: 2}
-  forests:
-  - {fileID: 11400000, guid: 01f4a0cc793de454fb95a650b4aadd54, type: 2}
-  cities:
-  - {fileID: 11400000, guid: f25ed92241c1641b982ba431cd0b32ab, type: 2}
 --- !u!114 &753621643
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -478,17 +469,19 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1950718932}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 064a3a9f0f6d048cf8ff999cc01d9e3b, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SdfBootstrap
   worldSettings: {fileID: 11400000, guid: effd945f9edc7465fbe004df79c2b70c, type: 2}
-  mountainFeatures: []
+  mountainFeatures:
+  - {fileID: 11400000, guid: 8fcf0da6b5b8142ba92c702e56b7a3e4, type: 2}
   lakeFeatures:
   - {fileID: 11400000, guid: e45f5c870f8f44a359149839ce833e0c, type: 2}
   forestFeatures: []
-  cityFeatures: []
+  cityFeatures:
+  - {fileID: 11400000, guid: f25ed92241c1641b982ba431cd0b32ab, type: 2}
 --- !u!4 &1950718934
 Transform:
   m_ObjectHideFlags: 0
@@ -497,8 +490,8 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1950718932}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 77.04036, y: 0, z: 215.43675}
+  m_LocalRotation: {x: -0.14598432, y: 0.84196717, z: -0.2816469, w: -0.43641147}
+  m_LocalPosition: {x: 90.09349, y: 12.033865, z: 224.64555}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
