@@ -4,8 +4,11 @@ public static class CombinedTerrainSdf
 {
     public static float Evaluate(float3 p, in SdfContext ctx)
     {
-        // 1. Base island SDF
+        // 1. Base island
         float f = BaseIslandSdf.Evaluate(p, ctx);
+
+        // Extract the current terrain height before features
+        float baseHeight = p.y - f;
 
         // 2. Mountains
         if (ctx.mountains.IsCreated && ctx.mountains.Length > 0)
@@ -14,27 +17,18 @@ public static class CombinedTerrainSdf
             f = math.min(f, mountainF);
         }
 
-        // 3. Lakes (cut terrain downward)
+        // 3. Lakes relative to base height
         if (ctx.lakes.IsCreated && ctx.lakes.Length > 0)
         {
-            float lakeF = LakeSdf.Evaluate(p, ctx);
+            float lakeF = LakeSdfRelative.Evaluate(p, baseHeight, ctx);
             f = math.min(f, lakeF);
         }
 
-        // 4. City plateau (height modifier)
+        // 4. City plateau
         if (ctx.cities.IsCreated && ctx.cities.Length > 0)
         {
-            // Extract current terrain height from the current f:
-            // p.y - height = f  → height = p.y - f
-            float baseHeight = p.y - f;
-
-            // Plateau modifies this height
             float plateauHeight = CityPlateauSdf.Evaluate(p, baseHeight, ctx);
-
-            // Convert back to SDF
             float plateauF = p.y - plateauHeight;
-
-            // Combine
             f = math.min(f, plateauF);
         }
 

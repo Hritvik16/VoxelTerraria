@@ -52,3 +52,13 @@ public static class LakeSdf
         return result;
     }
 }
+public static class LakeSdfRelative
+{
+    public static float Evaluate(float3 p, float baseHeight, in SdfContext ctx)
+    {
+        float rawLake = LakeSdf.Evaluate(p, ctx);
+
+        // Adjust lake SDF based on base terrain height
+        return rawLake - (p.y - baseHeight);
+    }
+}

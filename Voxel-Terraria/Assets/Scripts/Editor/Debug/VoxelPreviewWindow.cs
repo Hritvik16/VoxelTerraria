@@ -7,7 +7,8 @@ public class VoxelPreviewWindow : EditorWindow
     enum ViewMode { DensityXZ, DensityXY, BiomeXZ, BiomeXY, MountainHeatmapXZ, 
     LakeHeatmapXZ,
     CityHeatmapXZ,
-    CombinedSdfXZ }
+    CombinedSdfXZ,
+    CombinedHeightXZ }
 
     ViewMode mode = ViewMode.DensityXZ;
 
@@ -24,6 +25,12 @@ public class VoxelPreviewWindow : EditorWindow
     public static void ShowWindow()
     {
         GetWindow<VoxelPreviewWindow>("Voxel Preview");
+    }
+
+    float ComputeCombinedHeight(float3 p, SdfContext ctx)
+    {
+        float f = CombinedTerrainSdf.Evaluate(p, ctx);
+        return p.y - f;
     }
 
     void OnGUI()
@@ -212,32 +219,56 @@ public class VoxelPreviewWindow : EditorWindow
                     continue;
                 }
 
-                // if (mode == ViewMode.CombinedSdfXZ)
-                // {
-                //     float f = CombinedTerrainSdf.Evaluate(p, ctx);
+                if (mode == ViewMode.CombinedHeightXZ)
+                {
+                    float3 p1 = new float3(
+                        u * w - w * 0.5f,
+                        sliceHeight,
+                        v * d - d * 0.5f
+                    );
 
-                //     float norm = math.saturate(( -f ) / 50f); 
-                //     // f < 0 = solid → white
-                //     // f > 0 = air → black
+                    float h = ComputeCombinedHeight(p1, ctx);
 
-                //     c = new Color(norm, norm, norm);
+                    // Normalize height for display
+                    float t = math.saturate((h - ctx.seaLevel + 50f) / 200f);
 
-                //     previewTex.SetPixel(x, y, c);
-                //     continue;
-                // }
+                    // White = highest, black = lowest
+                    Color baseColor = new Color(t, t, t);
 
-                // if (mode == ViewMode.CombinedSdfXZ)
-                // {
-                //     float f = CombinedTerrainSdf.Evaluate(p, ctx);
+                    // Feature overlay colors:
+                    Color overlay = Color.clear;
 
-                //     if (f < 0)
-                //         c = Color.Lerp(Color.white, Color.red, math.saturate(-f / 50f));   // DEEP solid
-                //     else
-                //         c = Color.Lerp(Color.black, Color.blue, math.saturate(f / 50f));  // air above terrain
+                    // Lake overlay (blue)
+                    foreach (var lake in ctx.lakes)
+                    {
+                        float dist = math.length(p1.xz - lake.centerXZ);
+                        if (dist < lake.radius)
+                            overlay = Color.Lerp(overlay, new Color(0f, 0.5f, 1f), 0.5f);
+                    }
 
-                //     previewTex.SetPixel(x, y, c);
-                //     continue;
-                // }
+                    // Mountain overlay (red)
+                    foreach (var m in ctx.mountains)
+                    {
+                        float dist = math.length(p1.xz - m.centerXZ);
+                        if (dist < m.radius)
+                            overlay = Color.Lerp(overlay, new Color(1f, 0.2f, 0.1f), 0.5f);
+                    }
+
+                    // City overlay (yellow)
+                    foreach (var cCity in ctx.cities)
+                    {
+                        float dist = math.length(p1.xz - cCity.centerXZ);
+                        if (dist < cCity.radius)
+                            overlay = Color.Lerp(overlay, new Color(1f, 1f, 0f), 0.6f);
+                    }
+
+                    // Final color (overlay blended onto heightmap)
+                    c = Color.Lerp(baseColor, overlay, 0.6f);
+
+                    previewTex.SetPixel(x, y, c);
+                    continue;
+                }
+
                 if (mode == ViewMode.CombinedSdfXZ)
                 {
                     float f = CombinedTerrainSdf.Evaluate(p, ctx);
