@@ -181,7 +181,7 @@ namespace VoxelTerraria.World
                         const float DensityScale = 64f;  // you can tweak this later
 
                         float sdf = CombinedTerrainSdf.Evaluate(worldPos, ctx);
-                        short densityShort = (short)math.clamp(sdf * DensityScale, short.MinValue, short.MaxValue);
+                        short densityShort = (short)math.clamp(-sdf * DensityScale, short.MinValue, short.MaxValue);
 
                         // Optional SDF debug sample on a specific chunk + voxel
                         if (debugSdf &&
