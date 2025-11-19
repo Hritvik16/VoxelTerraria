@@ -2,47 +2,35 @@ using Unity.Mathematics;
 
 public static class BaseIslandSdf
 {
-    /// <summary>
-    /// Evaluate the island SDF at world-space position p.
-    /// Returns a signed distance: negative = inside terrain, positive = air.
-    /// </summary>
     public static float Evaluate(float3 p, in SdfContext ctx)
     {
-        float islandRadius   = ctx.islandRadius;     // must exist in SdfContext
-        float maxBaseHeight  = ctx.maxBaseHeight;    // must exist in SdfContext
+        float islandRadius = ctx.islandRadius;
+        float maxHeight    = ctx.maxBaseHeight;
 
-        // ---------------------------------------------------------------------
-        // EARLY OUT: outside island radius (safe margin)
-        // ---------------------------------------------------------------------
-        float distXZ = math.length(p.xz);
-        float margin = 20f; // avoids evaluating expensive noise for far-away positions
+        float2 xz = p.xz;
+        float dist = math.length(xz);
 
-        if (distXZ > islandRadius + margin)
-            return 9999f;  // definitely air
+        if (dist > islandRadius + 150f)
+            return 999f;
 
-        // ---------------------------------------------------------------------
-        // Warp the XZ coordinate with low-frequency noise
-        // ---------------------------------------------------------------------
+        // ----- STRONG WARP -----
+        float warpFreq = 0.006f;   // important change
+        float warpAmp  = 80f;      // important change
+
         float2 warpOffset = new float2(
-            NoiseUtils.Noise2D(p.xz * 0.01f, 0.1f, 10f),
-            NoiseUtils.Noise2D(p.xz * 0.01f + 100, 0.1f, 10f)
-        );
+            NoiseUtils.Noise2D(xz * warpFreq, 1f, 1f),
+            NoiseUtils.Noise2D((xz + 200f) * warpFreq, 1f, 1f)
+        ) * warpAmp;
 
-        float2 warpedXZ = p.xz + warpOffset;
-
+        float2 warpedXZ = xz + warpOffset;
         float warpedDist = math.length(warpedXZ);
 
-        // ---------------------------------------------------------------------
-        // Compute radial height falloff
-        // baseHeight = (1 - d / r) * maxHeight
-        // ---------------------------------------------------------------------
-        float t = math.saturate(1f - (warpedDist / islandRadius));
-        float baseHeight = t * maxBaseHeight;
+        // ----- SMOOTHED FALLBACK -----
+        float t = 1f - warpedDist / islandRadius;
+        t = math.smoothstep(0f, 1f, t);
 
-        // ---------------------------------------------------------------------
-        // SDF: terrain is where p.y <= baseHeight
-        // return positive above surface, negative below
-        // ---------------------------------------------------------------------
+        float baseHeight = t * maxHeight;
+
         return p.y - baseHeight;
     }
 }

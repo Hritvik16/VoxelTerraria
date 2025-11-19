@@ -67,8 +67,15 @@ public static class MountainSdf
             // ------------------------------------------------------------
             // Smooth fade out at the edges
             // ------------------------------------------------------------
-            float smoothFalloff = math.smoothstep(0f, m.radius, warpedDist);
-            mountainSdf = math.lerp(mountainSdf, 9999f, smoothFalloff);
+            // float smoothFalloff = math.smoothstep(0f, m.radius, warpedDist);
+            // mountainSdf = math.lerp(mountainSdf, 9999f, smoothFalloff);
+            // Better falloff: only starts near the boundary
+            float edgeStart = m.radius * 0.8f;   // start fading at 80% of radius
+            float edgeEnd   = m.radius;          // fully faded at radius
+            float fade = math.smoothstep(edgeStart, edgeEnd, warpedDist);
+
+            // Blend but DO NOT erase the entire height
+            mountainSdf = math.lerp(mountainSdf, 300f, fade);  // 300 = "far outside"
 
             // ------------------------------------------------------------
             // Combine multiple mountains using min()

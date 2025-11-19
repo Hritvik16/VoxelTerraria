@@ -18,7 +18,7 @@ MonoBehaviour:
   voxelSize: 0.1
   chunkSize: 32
   islandRadius: 400
-  maxBaseHeight: 60
+  maxBaseHeight: 140
   mountainRadius: 200
   mountainHeight: 160
   lakeRadius: 150

@@ -484,14 +484,11 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SdfBootstrap
   worldSettings: {fileID: 11400000, guid: effd945f9edc7465fbe004df79c2b70c, type: 2}
-  mountainFeatures:
-  - {fileID: 11400000, guid: 8fcf0da6b5b8142ba92c702e56b7a3e4, type: 2}
+  mountainFeatures: []
   lakeFeatures:
   - {fileID: 11400000, guid: e45f5c870f8f44a359149839ce833e0c, type: 2}
-  forestFeatures:
-  - {fileID: 11400000, guid: 01f4a0cc793de454fb95a650b4aadd54, type: 2}
-  cityFeatures:
-  - {fileID: 11400000, guid: f25ed92241c1641b982ba431cd0b32ab, type: 2}
+  forestFeatures: []
+  cityFeatures: []
 --- !u!4 &1950718934
 Transform:
   m_ObjectHideFlags: 0

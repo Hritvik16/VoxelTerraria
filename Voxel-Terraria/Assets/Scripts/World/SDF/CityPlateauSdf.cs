@@ -43,4 +43,40 @@ public static class CityPlateauSdf
 
         return modifiedHeight;
     }
+    public static float DebugEvaluate(float3 p, in SdfContext ctx)
+{
+    if (!ctx.cities.IsCreated || ctx.cities.Length == 0)
+        return 9999f;
+
+    float closest = 9999f;
+
+    for (int i = 0; i < ctx.cities.Length; i++)
+    {
+        var c = ctx.cities[i];
+        float2 localXZ = p.xz - c.centerXZ;
+        float dist = math.length(localXZ);
+
+        if (dist > c.radius + 20f)
+            continue;
+
+        float t = math.saturate(dist / c.radius);
+        float mask = 1f - math.smoothstep(0.6f, 1f, t);
+
+        // THIS LINE is changed: use plateau height always,
+        // instead of blending with p.y
+        float desiredHeight = c.plateauHeight;
+
+        // Distance to the plateau Y-plane
+        float sdf = math.abs(p.y - desiredHeight);
+
+        // distance in XZ also matters — fade out ambience
+        sdf += dist;
+
+        closest = math.min(closest, sdf);
+    }
+
+    return closest;
+}
+
+
 }

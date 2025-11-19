@@ -1,5 +1,7 @@
 using UnityEngine;
+using System;
 
+[ExecuteAlways]
 public class SdfBootstrap : MonoBehaviour
 {
     [Header("World Settings")]
@@ -11,32 +13,32 @@ public class SdfBootstrap : MonoBehaviour
     public ForestFeature[] forestFeatures;
     public CityPlateauFeature[] cityFeatures;
 
-    private void Awake()
+    // private void Awake()
+    void OnEnable()
     {
-        if (worldSettings == null)
-        {
-            Debug.LogError("SdfBootstrap: WorldSettings is not assigned!");
-            return;
-        }
+        // Debug.Log("SdfBootstrap.OnEnable()");
 
-        // Null-safe initialization
-        mountainFeatures ??= new MountainFeature[0];
-        lakeFeatures     ??= new LakeFeature[0];
-        forestFeatures   ??= new ForestFeature[0];
-        cityFeatures     ??= new CityPlateauFeature[0];
+        // Debug.Log($"City features array: {cityFeatures}");
+        // Debug.Log($"City features length: {(cityFeatures == null ? -1 : cityFeatures.Length)}");
 
-        // Build the Burst-friendly context
-        var ctx = SdfBootstrapInternal.Build(
+        // foreach (var c in cityFeatures)
+        //     Debug.Log($"City entry: {c}");
+        
+
+        var mountains = mountainFeatures ?? Array.Empty<MountainFeature>();
+        var lakes     = lakeFeatures     ?? Array.Empty<LakeFeature>();
+        var forests   = forestFeatures   ?? Array.Empty<ForestFeature>();
+        var cities    = cityFeatures     ?? Array.Empty<CityPlateauFeature>();
+
+        SdfRuntime.Context = SdfBootstrapInternal.Build(
             worldSettings,
-            mountainFeatures,
-            lakeFeatures,
-            forestFeatures,
-            cityFeatures
+            mountains,
+            lakes,
+            forests,
+            cities
         );
 
-        SdfRuntime.SetContext(ctx);
-
-        Debug.Log("SDF Context successfully built and stored in SdfRuntime.");
+        // Debug.Log($"Cities built: {cities.Length}");
     }
 
     private void OnDestroy()

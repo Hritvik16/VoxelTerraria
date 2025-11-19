@@ -4,14 +4,21 @@ using Unity.Mathematics;
 public static class SdfBootstrapInternal
 {
     public static SdfContext Build(
-        WorldSettings world, 
+        WorldSettings world,
         MountainFeature[] mountainSOs,
         LakeFeature[] lakeSOs,
         ForestFeature[] forestSOs,
         CityPlateauFeature[] citySOs,
         Allocator allocator = Allocator.Persistent)
     {
-        // SAME EXACT BUILD CODE WE ALREADY WROTE
+//         UnityEngine.Debug.Log(
+//     $"Build() called with: world={world != null}, " +
+//     $"mountainSOs null? {mountainSOs == null}, " +
+//     $"lakeSOs null? {lakeSOs == null}, " +
+//     $"forestSOs null? {forestSOs == null}, " +
+//     $"citySOs null? {citySOs == null}"
+// );
+
         SdfContext ctx = new SdfContext
         {
             worldWidth = world.worldWidth,
@@ -20,20 +27,22 @@ public static class SdfBootstrapInternal
 
             voxelSize = world.voxelSize,
             chunkSize = world.chunkSize,
-            seaLevel  = world.seaLevel,
+            seaLevel = world.seaLevel,
 
             islandRadius = world.islandRadius,
             maxBaseHeight = world.maxBaseHeight,
 
-            mountains = new NativeArray<MountainFeatureData>(mountainSOs != null ? mountainSOs.Length : 0, allocator),
-            lakes     = new NativeArray<LakeFeatureData>(lakeSOs != null ? lakeSOs.Length : 0, allocator),
-            forests   = new NativeArray<ForestFeatureData>(forestSOs != null ? forestSOs.Length : 0, allocator),
-            cities    = new NativeArray<CityPlateauFeatureData>(citySOs != null ? citySOs.Length : 0, allocator)
+            // Create empty NativeArrays safely
+            mountains = new NativeArray<MountainFeatureData>(mountainSOs?.Length ?? 0, allocator),
+            lakes     = new NativeArray<LakeFeatureData>(lakeSOs?.Length ?? 0, allocator),
+            forests   = new NativeArray<ForestFeatureData>(forestSOs?.Length ?? 0, allocator),
+            cities    = new NativeArray<CityPlateauFeatureData>(citySOs?.Length ?? 0, allocator)
         };
-
-
-        // Convert arrays — same as before
-        if (mountainSOs != null)
+        
+        // ------------------------------
+        // Mountains
+        // ------------------------------
+        if (mountainSOs != null && mountainSOs.Length > 0)
         {
             for (int i = 0; i < mountainSOs.Length; i++)
             {
@@ -44,12 +53,15 @@ public static class SdfBootstrapInternal
                     height = mountainSOs[i].Height,
                     ridgeFrequency = mountainSOs[i].RidgeFrequency,
                     ridgeAmplitude = mountainSOs[i].RidgeAmplitude,
-                    warpStrength   = mountainSOs[i].WarpStrength
+                    warpStrength = mountainSOs[i].WarpStrength
                 };
             }
         }
 
-        if (lakeSOs != null)
+        // ------------------------------
+        // Lakes
+        // ------------------------------
+        if (lakeSOs != null && lakeSOs.Length > 0)
         {
             for (int i = 0; i < lakeSOs.Length; i++)
             {
@@ -58,12 +70,15 @@ public static class SdfBootstrapInternal
                     centerXZ = new float2(lakeSOs[i].CenterXZ.x, lakeSOs[i].CenterXZ.y),
                     radius = lakeSOs[i].Radius,
                     bottomHeight = lakeSOs[i].BottomHeight,
-                    shoreHeight  = lakeSOs[i].ShoreHeight
+                    shoreHeight = lakeSOs[i].ShoreHeight
                 };
             }
         }
 
-        if (forestSOs != null)
+        // ------------------------------
+        // Forests
+        // ------------------------------
+        if (forestSOs != null && forestSOs.Length > 0)
         {
             for (int i = 0; i < forestSOs.Length; i++)
             {
@@ -76,7 +91,10 @@ public static class SdfBootstrapInternal
             }
         }
 
-        if (citySOs != null)
+        // ------------------------------
+        // Cities
+        // ------------------------------
+        if (citySOs != null && citySOs.Length > 0)
         {
             for (int i = 0; i < citySOs.Length; i++)
             {
