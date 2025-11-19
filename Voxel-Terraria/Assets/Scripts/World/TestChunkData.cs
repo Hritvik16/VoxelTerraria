@@ -6,6 +6,7 @@ public class TestChunkData : MonoBehaviour
 {
     public int chunkSize = 32;
 
+    
     void Start()
     {
         Debug.Log("Testing ChunkData allocation...");

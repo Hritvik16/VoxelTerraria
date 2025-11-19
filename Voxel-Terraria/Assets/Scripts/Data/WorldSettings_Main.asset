@@ -14,7 +14,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::WorldSettings
   worldWidth: 1024
   worldDepth: 1024
-  worldHeight: 256
+  worldHeight: 2000
   voxelSize: 0.1
   chunkSize: 32
   islandRadius: 400

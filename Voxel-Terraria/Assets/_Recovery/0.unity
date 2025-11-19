@@ -510,15 +510,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b9c8da801fe6748d6a4e9767766b8dcb, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelTerraria.World.VoxelWorld
-  debugSdf: 1
-  debugChunkX: 0
-  debugChunkZ: 68
   worldSettings: {fileID: 11400000, guid: effd945f9edc7465fbe004df79c2b70c, type: 2}
   chunkPrefab: {fileID: 5104856941093618946, guid: acd0c07ec09024fb8841639703efa302, type: 3}
   generateOnStart: 1
   limitChunksForDebug: 1
-  debugChunksX: 1
-  debugChunksZ: 69
+  debugChunksX: 30
+  debugChunksZ: 30
   biomeMaterialMappings:
   - biome: 0
     materialId: 0

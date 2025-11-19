@@ -37,7 +37,10 @@ public class SdfBootstrap : MonoBehaviour
             forests,
             cities
         );
-
+        // Debug.Log($"Mountains: {SdfRuntime.Context.mountains.Length}");
+        // Debug.Log($"Lakes: {SdfRuntime.Context.lakes.Length}");
+        // Debug.Log($"Forests: {SdfRuntime.Context.forests.Length}");
+        // Debug.Log($"Cities: {SdfRuntime.Context.cities.Length}");
         // Debug.Log($"Cities built: {cities.Length}");
     }
 

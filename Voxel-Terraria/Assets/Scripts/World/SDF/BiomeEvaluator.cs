@@ -1,5 +1,5 @@
 using Unity.Mathematics;
-
+using UnityEngine;
 public struct BiomeWeights
 {
     public float grass;
@@ -146,10 +146,21 @@ public static class BiomeEvaluator
             }
         }
 
+        // Fallback grass biome so that empty regions still get biome data
+        if (bw.grass + bw.forest + bw.mountain + bw.lakeshore + bw.city < 0.0001f)
+        {
+            bw.grass = 1f;
+        }
         // ------------------------------------------------------------
         // 8. Normalize
         // ------------------------------------------------------------
         bw.Normalize();
+        // #if UNITY_EDITOR
+        // if (math.abs(p.x - 128.05f) < 0.1f && math.abs(p.z - 128.05f) < 0.1f)
+        // {
+        //     Debug.Log($"[Biome Debug] height={height}, slope={slope}");
+        // }
+        // #endif
         return bw;
     }
 }
