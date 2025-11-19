@@ -22,11 +22,15 @@ public static class SdfBootstrapInternal
             chunkSize = world.chunkSize,
             seaLevel  = world.seaLevel,
 
+            islandRadius = world.islandRadius,
+            maxBaseHeight = world.maxBaseHeight,
+
             mountains = new NativeArray<MountainFeatureData>(mountainSOs != null ? mountainSOs.Length : 0, allocator),
             lakes     = new NativeArray<LakeFeatureData>(lakeSOs != null ? lakeSOs.Length : 0, allocator),
             forests   = new NativeArray<ForestFeatureData>(forestSOs != null ? forestSOs.Length : 0, allocator),
             cities    = new NativeArray<CityPlateauFeatureData>(citySOs != null ? citySOs.Length : 0, allocator)
         };
+
 
         // Convert arrays — same as before
         if (mountainSOs != null)

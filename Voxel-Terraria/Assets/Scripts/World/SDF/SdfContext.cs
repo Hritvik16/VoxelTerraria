@@ -58,6 +58,11 @@ public struct SdfContext
 
     public float seaLevel;
 
+    public float islandRadius;
+    
+    public float maxBaseHeight;
+
+
     // -------------------------------
     // Feature arrays
     // -------------------------------
