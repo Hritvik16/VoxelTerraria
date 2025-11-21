@@ -1,86 +1,61 @@
 using Unity.Collections;
-using UnityEngine;
 using Unity.Mathematics;
-using System.Runtime.CompilerServices;
+using UnityEngine;
 
 namespace VoxelTerraria.World
 {
     public struct ChunkData
     {
-        public ChunkCoord coord;
+        public readonly int chunkSize;
+        public readonly int voxelResolution;
 
-        // One NativeArray per chunk — Burst/job friendly.
+        public ChunkCoord3 coord3;
+
         public NativeArray<Voxel> voxels;
 
         public bool isGenerated;
         public bool isDirty;
 
-        // Number of cells per axis (matches WorldSettings.chunkSize)
-        public int chunkSize;
-
-        // Number of voxel samples per axis = chunkSize + 1
-        public int voxelResolution;
-
-        // --------------------------------------------------------------
-        // Constructor
-        // --------------------------------------------------------------
-        public ChunkData(ChunkCoord coord, int chunkSize, Allocator allocator)
+        public ChunkData(ChunkCoord3 coord3, int chunkSize, Allocator allocator)
         {
-            this.coord = coord;
+            this.coord3 = coord3;
             this.chunkSize = chunkSize;
+            voxelResolution = chunkSize + 1;
 
-            // padded grid: size+1 samples per axis
-            this.voxelResolution = chunkSize + 1;
-
-            int count = voxelResolution * voxelResolution * voxelResolution;
-
-            voxels = new NativeArray<Voxel>(count, allocator, NativeArrayOptions.ClearMemory);
+            voxels = new NativeArray<Voxel>(
+                voxelResolution * voxelResolution * voxelResolution,
+                allocator,
+                NativeArrayOptions.ClearMemory
+            );
 
             isGenerated = false;
             isDirty = false;
         }
 
-        // --------------------------------------------------------------
-        // Dispose (call when chunk is no longer needed)
-        // --------------------------------------------------------------
+        public ChunkData(ChunkCoord coord, int chunkSize, Allocator allocator)
+            : this(coord.As3(), chunkSize, allocator) {}
+
         public void Dispose()
         {
             if (voxels.IsCreated)
                 voxels.Dispose();
         }
 
-        // --------------------------------------------------------------
-        // Index Conversion
-        // Linear index: x + y*voxelResolution + z*voxelResolution*voxelResolution
-        // --------------------------------------------------------------
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int Index3D(int x, int y, int z)
+        private int Index(int x, int y, int z)
         {
-            int r = voxelResolution;
-            return x + y * r + z * r * r;
+            return (z * voxelResolution * voxelResolution) +
+                   (y * voxelResolution) +
+                    x;
         }
 
-        // --------------------------------------------------------------
-        // Public Accessors
-        // --------------------------------------------------------------
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Set(int x, int y, int z, in Voxel voxel)
+        {
+            voxels[Index(x, y, z)] = voxel;
+        }
+
         public Voxel Get(int x, int y, int z)
         {
-            return voxels[Index3D(x, y, z)];
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Set(int x, int y, int z, Voxel voxel)
-        {
-            voxels[Index3D(x, y, z)] = voxel;
-            isDirty = true;
-        }
-
-        // Optional: inlined no-check write for jobs
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void SetFast(int index, Voxel voxel)
-        {
-            voxels[index] = voxel;
+            return voxels[Index(x, y, z)];
         }
     }
 }

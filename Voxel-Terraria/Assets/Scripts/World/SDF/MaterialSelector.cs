@@ -2,103 +2,47 @@ using Unity.Mathematics;
 
 public static class MaterialSelector
 {
-    // ------------------------------------------------------------
-    // Material IDs — adjust if your library uses different ones
-    // ------------------------------------------------------------
-    private const ushort GrassID       = 1;
-    private const ushort DirtID        = 2;
-    private const ushort StoneID       = 3;
-    private const ushort SandID        = 4;
-    private const ushort ForestFloorID = 5;
-    private const ushort CityGroundID  = 6;
-    private const ushort LakeBedID     = 7;
-
-    public static ushort ChooseMaterialId(
-        float3 p,
-        float density,
-        BiomeWeights weights,
-        in SdfContext ctx)
+    /// <summary>
+    /// Returns the material ID for a voxel based on world position,
+    /// SDF value, and biome weights from the SdfContext.
+    /// </summary>
+    public static ushort SelectMaterialId(float3 worldPos, float sdf, in SdfContext ctx)
     {
-        // --------------------------------------------------------
-        // 1. HEIGHT & SLOPE ESTIMATION
-        // --------------------------------------------------------
-        float sdfValue = CombinedTerrainSdf.Evaluate(p, ctx);
+        // Air
+        if (sdf > 0f)
+            return 0;  // ID 0 = air (must exist in TerrainMaterials.asset)
 
-        // height of terrain surface at this point
-        float surfaceHeight = p.y - sdfValue;
+        // Ground material logic
+        var bw = BiomeEvaluator.EvaluateBiomeWeights(worldPos, ctx);
 
-        // depth relative to ground (negative when inside terrain)
-        float depth = -density;
+        // Pick dominant biome
+        float best = bw.grass;
+        ushort id = 1;   // default grass
 
-        // slope detection (expensive but reasonably cached in caller)
-        float3 dx = new float3(0.5f, 0, 0);
-        float3 dz = new float3(0, 0, 0.5f);
-
-        float slope = math.max(
-            math.abs(CombinedTerrainSdf.Evaluate(p + dx, ctx) - CombinedTerrainSdf.Evaluate(p - dx, ctx)),
-            math.abs(CombinedTerrainSdf.Evaluate(p + dz, ctx) - CombinedTerrainSdf.Evaluate(p - dz, ctx))
-        );
-
-        // --------------------------------------------------------
-        // 2. LAKEBED & SAND NEAR WATER
-        // --------------------------------------------------------
-        if (p.y <= ctx.seaLevel + 0.5f)
+        if (bw.forest > best)
         {
-            // deeper below water → lake bed
-            if (depth > 2f)
-                return LakeBedID;
-
-            // near shoreline → sand
-            return SandID;
+            best = bw.forest;
+            id = 2;   // forest floor
         }
 
-        // --------------------------------------------------------
-        // 3. CITY GROUND
-        // --------------------------------------------------------
-        if (weights.city > 0.5f)
-            return CityGroundID;
-
-        // --------------------------------------------------------
-        // 4. MOUNTAIN (steep slopes → stone)
-        // --------------------------------------------------------
-        if (weights.mountain > 0.4f || slope > 0.7f)
-            return StoneID;
-
-        // --------------------------------------------------------
-        // 5. FOREST REGION
-        // --------------------------------------------------------
-        if (weights.forest > 0.5f)
+        if (bw.mountain > best)
         {
-            if (depth < 1f)
-                return ForestFloorID;   // leaf litter, humus
-            else if (depth < 4f)
-                return DirtID;
-            else
-                return StoneID;
+            best = bw.mountain;
+            id = 3;   // stone
         }
 
-        // --------------------------------------------------------
-        // 6. GRASSLAND
-        // --------------------------------------------------------
-        if (weights.grass > 0.3f)
+        if (bw.lakeshore > best)
         {
-            if (depth < 1.2f)
-                return GrassID;
-            else if (depth < 6f)
-                return DirtID;
-            else
-                return StoneID;
+            best = bw.lakeshore;
+            id = 4;   // sand
         }
 
-        // --------------------------------------------------------
-        // 7. LAKE SHORE BLEND ABOVE WATER
-        // --------------------------------------------------------
-        if (weights.lakeshore > 0.4f)
-            return SandID;
+        if (bw.city > best)
+        {
+            best = bw.city;
+            id = 5;   // city ground
+        }
 
-        // --------------------------------------------------------
-        // 8. DEFAULT: STONE UNDER EVERYTHING ELSE
-        // --------------------------------------------------------
-        return StoneID;
+        return id;
     }
 }

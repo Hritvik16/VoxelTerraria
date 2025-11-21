@@ -1,164 +1,91 @@
 using Unity.Mathematics;
 using UnityEngine;
-using System.Runtime.CompilerServices;
+using VoxelTerraria.World;   // for ChunkCoord3, VoxelCoord
 
-namespace VoxelTerraria.World
+namespace VoxelTerraria.World.Generation
 {
-    // ------------------------
-    //  STRUCT DEFINITIONS
-    // ------------------------
-
-    [System.Serializable]
-    public struct ChunkCoord
-    {
-        public int x;
-        public int z;
-
-        public ChunkCoord(int x, int z)
-        {
-            this.x = x;
-            this.z = z;
-        }
-
-        public override string ToString() => $"ChunkCoord({x}, {z})";
-    }
-
-    [System.Serializable]
-    public struct VoxelCoord
-    {
-        public int x;
-        public int y;
-        public int z;
-
-        public VoxelCoord(int x, int y, int z)
-        {
-            this.x = x;
-            this.y = y;
-            this.z = z;
-        }
-
-        public override string ToString() => $"VoxelCoord({x}, {y}, {z})";
-    }
-
-
-    // -----------------------------------------------------------------
-    //  WORLD COORDINATE HELPERS
-    // -----------------------------------------------------------------
-
+    /// <summary>
+    /// Helpers to convert between world-space, chunk-space, and voxel-space.
+    /// All math is based on WorldSettings.voxelSize + chunkSize.
+    /// </summary>
     public static class WorldCoordUtils
     {
-        // ----------- INTERNAL MATH UTILITIES --------------------------
+        /// <summary>
+        /// World-space origin of the given chunk.
+        /// </summary>
+        public static Vector3 ChunkOriginWorld(ChunkCoord3 coord, WorldSettings settings)
+        {
+            float v = settings.voxelSize;
+            int   cs = settings.chunkSize;
+
+            float chunkWorld = v * cs;
+
+            float originX = coord.x * chunkWorld;
+            float originY = coord.y * chunkWorld;
+            float originZ = coord.z * chunkWorld;
+
+            return new Vector3(originX, originY, originZ);
+        }
 
         /// <summary>
-        /// Floor division that correctly handles negative values.
+        /// World-space position of the voxel *sample node* (grid corner) for this chunk + voxel index.
+        /// Used for SDF sampling (voxelResolution = cells+1).
         /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int FloorDiv(int value, int divisor)
+        public static float3 VoxelSampleWorld(ChunkCoord3 chunk, VoxelCoord index, WorldSettings settings)
         {
-            if (value >= 0) return value / divisor;
-            return (value - divisor + 1) / divisor;
+            Vector3 origin = ChunkOriginWorld(chunk, settings);
+            float v = settings.voxelSize;
+
+            return new float3(
+                origin.x + index.x * v,
+                origin.y + index.y * v,
+                origin.z + index.z * v
+            );
         }
 
         /// <summary>
-        /// Fast floor-to-int for floats (Burst-safe).
+        /// World-space center position of a voxel cell.
         /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int FastFloor(float f)
+        public static float3 VoxelCenterWorld(ChunkCoord3 chunk, VoxelCoord index, WorldSettings settings)
         {
-            int i = (int)f;
-            return (f < i) ? (i - 1) : i;
+            Vector3 origin = ChunkOriginWorld(chunk, settings);
+            float v = settings.voxelSize;
+
+            return new float3(
+                origin.x + (index.x + 0.5f) * v,
+                origin.y + (index.y + 0.5f) * v,
+                origin.z + (index.z + 0.5f) * v
+            );
         }
 
-
-        // ---------------------------------------------------------------
-        // 1) World → Chunk (by cells)
-        // ---------------------------------------------------------------
-        public static ChunkCoord WorldToChunk(float3 worldPos, WorldSettings settings)
+        /// <summary>
+        /// Convert world position to chunk coordinates.
+        /// </summary>
+        public static ChunkCoord3 WorldToChunk(float3 worldPos, WorldSettings settings)
         {
-            float voxelSize = settings.voxelSize;
-            int chunkSize  = settings.chunkSize;
+            float v  = settings.voxelSize;
+            int   cs = settings.chunkSize;
+            float chunkWorld = v * cs;
 
-            float wx = worldPos.x;
-            float wz = worldPos.z;
+            int cx = Mathf.FloorToInt(worldPos.x / chunkWorld);
+            int cy = Mathf.FloorToInt(worldPos.y / chunkWorld);
+            int cz = Mathf.FloorToInt(worldPos.z / chunkWorld);
 
-            // Convert world → voxel index first
-            int vx = FastFloor(wx / voxelSize);
-            int vz = FastFloor(wz / voxelSize);
-
-            // Convert voxel index → chunk index using floor division
-            int cx = FloorDiv(vx, chunkSize);
-            int cz = FloorDiv(vz, chunkSize);
-
-            return new ChunkCoord(cx, cz);
+            return new ChunkCoord3(cx, cy, cz);
         }
 
-
-        // ---------------------------------------------------------------
-        // 2) Chunk → World Origin
-        // ---------------------------------------------------------------
-        public static float3 ChunkOriginWorld(ChunkCoord chunk, WorldSettings settings)
-        {
-            float voxelSize = settings.voxelSize;
-            int chunkSize   = settings.chunkSize;
-
-            float wx = chunk.x * chunkSize * voxelSize;
-            float wz = chunk.z * chunkSize * voxelSize;
-
-            return new float3(wx, 0f, wz);
-        }
-
-
-        // ---------------------------------------------------------------
-        // 3) World → Voxel index (global grid)
-        // ---------------------------------------------------------------
+        /// <summary>
+        /// Convert world position to voxel indices in global voxel grid (not chunk-relative).
+        /// </summary>
         public static VoxelCoord WorldToVoxel(float3 worldPos, WorldSettings settings)
         {
             float v = settings.voxelSize;
 
-            return new VoxelCoord(
-                FastFloor(worldPos.x / v),
-                FastFloor(worldPos.y / v),
-                FastFloor(worldPos.z / v)
-            );
-        }
+            int vx = Mathf.FloorToInt(worldPos.x / v);
+            int vy = Mathf.FloorToInt(worldPos.y / v);
+            int vz = Mathf.FloorToInt(worldPos.z / v);
 
-
-        // ---------------------------------------------------------------
-        // 4a) Chunk + InnerVoxel (cell center) → World center position
-        // (old behavior – still useful for some tools)
-        // ---------------------------------------------------------------
-        public static float3 VoxelCenterWorld(ChunkCoord chunk, VoxelCoord inner, WorldSettings settings)
-        {
-            float voxelSize = settings.voxelSize;
-            int chunkSize   = settings.chunkSize;
-
-            float baseX = chunk.x * chunkSize * voxelSize;
-            float baseZ = chunk.z * chunkSize * voxelSize;
-
-            return new float3(
-                baseX + (inner.x + 0.5f) * voxelSize,
-                (inner.y + 0.5f) * voxelSize,
-                baseZ + (inner.z + 0.5f) * voxelSize
-            );
-        }
-
-        // ---------------------------------------------------------------
-        // 4b) Chunk + Voxel index (node) → World sample position
-        // NEW: used for padded SDF sampling (Fix A)
-        // ---------------------------------------------------------------
-        public static float3 VoxelSampleWorld(ChunkCoord chunk, VoxelCoord index, WorldSettings settings)
-        {
-            float voxelSize = settings.voxelSize;
-            int chunkSize   = settings.chunkSize;
-
-            float baseX = chunk.x * chunkSize * voxelSize;
-            float baseZ = chunk.z * chunkSize * voxelSize;
-
-            return new float3(
-                baseX + index.x * voxelSize,
-                index.y * voxelSize,
-                baseZ + index.z * voxelSize
-            );
+            return new VoxelCoord(vx, vy, vz);
         }
     }
 }

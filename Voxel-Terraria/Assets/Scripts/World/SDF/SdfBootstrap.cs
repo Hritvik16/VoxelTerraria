@@ -1,6 +1,7 @@
 using UnityEngine;
 using System;
 
+namespace VoxelTerraria.World.SDF {
 [ExecuteAlways]
 public class SdfBootstrap : MonoBehaviour
 {
@@ -13,40 +14,42 @@ public class SdfBootstrap : MonoBehaviour
     public ForestFeature[] forestFeatures;
     public CityPlateauFeature[] cityFeatures;
 
-    // private void Awake()
-    void OnEnable()
+    // Called in Edit Mode and Play Mode whenever the component becomes enabled/active
+    private void OnEnable()
     {
-        // Debug.Log("SdfBootstrap.OnEnable()");
-
-        // Debug.Log($"City features array: {cityFeatures}");
-        // Debug.Log($"City features length: {(cityFeatures == null ? -1 : cityFeatures.Length)}");
-
-        // foreach (var c in cityFeatures)
-        //     Debug.Log($"City entry: {c}");
-        
+        if (worldSettings == null)
+        {
+            Debug.LogWarning("SdfBootstrap: Missing WorldSettings reference.");
+            return;
+        }
 
         var mountains = mountainFeatures ?? Array.Empty<MountainFeature>();
         var lakes     = lakeFeatures     ?? Array.Empty<LakeFeature>();
         var forests   = forestFeatures   ?? Array.Empty<ForestFeature>();
         var cities    = cityFeatures     ?? Array.Empty<CityPlateauFeature>();
 
-        SdfRuntime.Context = SdfBootstrapInternal.Build(
+        var ctx = SdfBootstrapInternal.Build(
             worldSettings,
             mountains,
             lakes,
             forests,
             cities
         );
-        // Debug.Log($"Mountains: {SdfRuntime.Context.mountains.Length}");
-        // Debug.Log($"Lakes: {SdfRuntime.Context.lakes.Length}");
-        // Debug.Log($"Forests: {SdfRuntime.Context.forests.Length}");
-        // Debug.Log($"Cities: {SdfRuntime.Context.cities.Length}");
-        // Debug.Log($"Cities built: {cities.Length}");
+
+        // Important: use SetContext so old arrays are disposed
+        SdfRuntime.SetContext(ctx);
     }
 
-    private void OnDestroy()
+    // In the editor, this is what runs when exiting Play Mode or disabling the object
+    private void OnDisable()
     {
-        // Dispose when exiting Play Mode
         SdfRuntime.Dispose();
     }
+
+    // In case the object is explicitly destroyed in Edit Mode
+    private void OnDestroy()
+    {
+        SdfRuntime.Dispose();
+    }
+}
 }

@@ -2,66 +2,27 @@ using UnityEngine;
 
 namespace VoxelTerraria.World
 {
-    [RequireComponent(typeof(MeshFilter))]
-    [RequireComponent(typeof(MeshRenderer))]
-    [RequireComponent(typeof(MeshCollider))]
     public class VoxelChunkView : MonoBehaviour
     {
-        [Header("Chunk Coordinates")]
-        public ChunkCoord coord;
+        [SerializeField] ChunkCoord3 coord3;
 
-        // Optional runtime reference for debugging
-        public ChunkData? chunkDataReference;
-
-        // Cached components
-        private MeshFilter meshFilter;
-        private MeshRenderer meshRenderer;
-        private MeshCollider meshCollider;
-
-        // -------------------------------------------------------------
-        // Ensure all components exist (Awake does not always run in Editor)
-        // -------------------------------------------------------------
-        private void EnsureComponents()
+        public void SetCoord(ChunkCoord coord)
         {
-            if (!meshFilter)  meshFilter  = GetComponent<MeshFilter>();
-            if (!meshRenderer) meshRenderer = GetComponent<MeshRenderer>();
-            if (!meshCollider) meshCollider = GetComponent<MeshCollider>();
+            coord3 = coord.As3();
         }
 
-        private void Awake()
+        public void SetCoord(ChunkCoord3 c)
         {
-            EnsureComponents();
+            coord3 = c;
         }
 
-        // -------------------------------------------------------------
-        // Assign Mesh to Renderer + Collider
-        // -------------------------------------------------------------
-        public void ApplyMesh(Mesh mesh)
+        public ChunkCoord3 Coord3 => coord3;
+
+        private void OnDrawGizmosSelected()
         {
-            EnsureComponents();
-
-            if (mesh == null)
-            {
-                meshFilter.sharedMesh = null;
-                meshCollider.sharedMesh = null;
-                return;
-            }
-
-            // Assign mesh to renderer
-            meshFilter.sharedMesh = mesh;
-
-            // Refresh collider safely
-            meshCollider.sharedMesh = null;
-            meshCollider.sharedMesh = mesh;
-        }
-
-        // -------------------------------------------------------------
-        // Helper for naming GameObjects
-        // -------------------------------------------------------------
-        public void SetCoord(ChunkCoord newCoord)
-        {
-            coord = newCoord;
-            gameObject.name = $"Chunk_{coord.x}_{coord.z}";
+            Gizmos.color = Color.yellow;
+            Vector3 pos = transform.position;
+            Gizmos.DrawWireCube(pos + Vector3.one * 0.5f, Vector3.one);
         }
     }
 }

@@ -13,9 +13,9 @@ MonoBehaviour:
   m_Name: MountainFeature_Main
   m_EditorClassIdentifier: Assembly-CSharp::MountainFeature
   drawGizmos: 1
-  centerXZ: {x: 0, y: 250}
-  radius: 150
-  height: 80
-  ridgeFrequency: 0.05
-  ridgeAmplitude: 1
-  warpStrength: 30
+  centerXZ: {x: 0, y: 0}
+  radius: 10
+  height: 25
+  ridgeFrequency: 0.02
+  ridgeAmplitude: 3
+  warpStrength: 6

@@ -4,7 +4,6 @@ public static class MountainSdf
 {
     public static float Evaluate(float3 p, in SdfContext ctx)
     {
-        // If no mountains, return "no effect" = large positive
         if (!ctx.mountains.IsCreated || ctx.mountains.Length == 0)
             return 9999f;
 
@@ -14,73 +13,58 @@ public static class MountainSdf
         {
             var m = ctx.mountains[i];
 
-            // ------------------------------------------------------------
-            // Shift point into mountain-local space
-            // ------------------------------------------------------------
             float2 center = m.centerXZ;
             float2 localXZ = p.xz - center;
-
             float dist = math.length(localXZ);
 
-            // Early-out for performance
-            if (dist > m.radius + 30f)
+            // Ignore far away
+            if (dist > m.radius * 1.6f)
                 continue;
 
             // ------------------------------------------------------------
-            // Domain warp: distort XZ to make mountain less uniform
+            // 1. DOMAIN WARP
             // ------------------------------------------------------------
-            float warpX = NoiseUtils.Noise2D(localXZ * 0.02f, 0.3f, m.warpStrength);
-            float warpZ = NoiseUtils.Noise2D(localXZ * 0.02f + 100f, 0.3f, m.warpStrength);
+            float2 warp = new float2(
+                NoiseUtils.Noise2D(localXZ * 0.03f, 1f, m.warpStrength),
+                NoiseUtils.Noise2D((localXZ + 200f) * 0.03f, 1f, m.warpStrength)
+            );
 
-            float2 warpedXZ = localXZ + new float2(warpX, warpZ);
-
+            float2 warpedXZ = localXZ + warp;
             float warpedDist = math.length(warpedXZ);
 
             // ------------------------------------------------------------
-            // Base cone shape
-            //
-            // If:
-            //   warpedDist = 0 => height = m.height
-            //   warpedDist = radius => height = 0
+            // 2. EXPONENTIAL PEAK SHAPING (NO FLAT TOP)
             // ------------------------------------------------------------
-            float radialT = math.saturate(1f - warpedDist / m.radius);
-            float baseShapeHeight = radialT * m.height;
+            float radial01 = math.saturate(warpedDist / m.radius);
 
-            // This is the core SDF difference:
-            // "p.y - mountain surface height"
-            float mountainSdf = p.y - baseShapeHeight;
+            // Exponential falloff → smooth, non-flat top
+            // THIS guarantees no plateau.
+            float peak = math.exp(-6f * radial01 * radial01);
+
+            float height = peak * m.height;
 
             // ------------------------------------------------------------
-            // Ridged noise for rocky peaks
+            // 3. RIDGED NOISE
             // ------------------------------------------------------------
-            float3 noiseP = new float3(warpedXZ.x, p.y, warpedXZ.y) * m.ridgeFrequency;
-
             float ridge = NoiseUtils.RidgedNoise3D(
-                noiseP,
-                1f,                // frequency already baked above
-                m.ridgeAmplitude   // amplitude slider in SO
+                new float3(warpedXZ.x, p.y, warpedXZ.y) * m.ridgeFrequency,
+                1f,
+                m.ridgeAmplitude
             );
 
-            // Ridge noise lowers the SDF (more terrain)
-            mountainSdf -= ridge;
+            height += ridge;
 
             // ------------------------------------------------------------
-            // Smooth fade out at the edges
+            // 4. EDGE FADE
             // ------------------------------------------------------------
-            // float smoothFalloff = math.smoothstep(0f, m.radius, warpedDist);
-            // mountainSdf = math.lerp(mountainSdf, 9999f, smoothFalloff);
-            // Better falloff: only starts near the boundary
-            float edgeStart = m.radius * 0.8f;   // start fading at 80% of radius
-            float edgeEnd   = m.radius;          // fully faded at radius
-            float fade = math.smoothstep(edgeStart, edgeEnd, warpedDist);
-
-            // Blend but DO NOT erase the entire height
-            mountainSdf = math.lerp(mountainSdf, 300f, fade);  // 300 = "far outside"
+            float fade = math.smoothstep(m.radius * 0.9f, m.radius, warpedDist);
+            height = math.lerp(height, 0f, fade);
 
             // ------------------------------------------------------------
-            // Combine multiple mountains using min()
+            // 5. FINAL SDF
             // ------------------------------------------------------------
-            result = math.min(result, mountainSdf);
+            float sdf = p.y - height;
+            result = math.min(result, sdf);
         }
 
         return result;

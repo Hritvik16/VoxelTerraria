@@ -12,22 +12,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 39b6ab2c329354f0893e3d3ffeb5d9f0, type: 3}
   m_Name: WorldSettings_Main
   m_EditorClassIdentifier: Assembly-CSharp::WorldSettings
-  worldWidth: 1024
-  worldDepth: 1024
-  worldHeight: 2000
-  voxelSize: 0.1
+  voxelSize: 0.25
   chunkSize: 32
-  islandRadius: 400
-  maxBaseHeight: 140
-  mountainRadius: 200
-  mountainHeight: 160
-  lakeRadius: 150
-  lakeBottomHeight: 20
-  lakeShoreHeight: 40
-  cityRadius: 100
-  cityHeight: 10
+  islandRadius: 40
+  maxBaseHeight: 0
+  stepHeight: 0
   seaLevel: 0
-  maxChunksToRebuildPerFrame: 4
-  useMarchingCubes: 1
   useJobs: 1
   useBurst: 1
+  useMarchingCubes: 0

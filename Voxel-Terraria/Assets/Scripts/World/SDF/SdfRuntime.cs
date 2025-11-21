@@ -7,7 +7,7 @@ public static class SdfRuntime
 
     public static void SetContext(SdfContext ctx)
     {
-        // If old context exists, dispose it
+        // If old context exists, dispose it first
         if (Initialized)
         {
             Context.Dispose();
@@ -19,10 +19,10 @@ public static class SdfRuntime
 
     public static void Dispose()
     {
-        if (Initialized)
-        {
-            Context.Dispose();
-            Initialized = false;
-        }
+        if (!Initialized)
+            return;
+
+        Context.Dispose();
+        Initialized = false;
     }
 }

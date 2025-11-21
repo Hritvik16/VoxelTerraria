@@ -13,6 +13,6 @@ MonoBehaviour:
   m_Name: CityPlateauFeature_Main
   m_EditorClassIdentifier: Assembly-CSharp::CityPlateauFeature
   drawGizmos: 1
-  centerXZ: {x: 77.1, y: -60}
+  centerXZ: {x: 77.100006, y: -60}
   radius: 157.7
   plateauHeight: 30

@@ -1,172 +1,79 @@
+using System;
 using Unity.Collections;
 using Unity.Mathematics;
-using UnityEngine;
+// MountainFeatureData, LakeFeatureData, etc.
 
-// ------------------------------------------------------------
-// Burst-friendly feature data containers
-// ------------------------------------------------------------
-[System.Serializable]
-public struct MountainFeatureData
-{
-    public float2 centerXZ;
-    public float radius;
-    public float height;
-    public float ridgeFrequency;
-    public float ridgeAmplitude;
-    public float warpStrength;
-}
-
-[System.Serializable]
-public struct LakeFeatureData
-{
-    public float2 centerXZ;
-    public float radius;
-    public float bottomHeight;
-    public float shoreHeight;
-}
-
-[System.Serializable]
-public struct ForestFeatureData
-{
-    public float2 centerXZ;
-    public float radius;
-    public float treeDensity;
-}
-
-[System.Serializable]
-public struct CityPlateauFeatureData
-{
-    public float2 centerXZ;
-    public float radius;
-    public float plateauHeight;
-}
-
-// ------------------------------------------------------------
-// SDF Context (passed into all SDF evaluation jobs)
-// ------------------------------------------------------------
+/// <summary>
+/// Burst-friendly terrain context used by all SDF evaluators, voxel generators,
+/// and editor generation tools.
+/// 
+/// This version supports FULL 3D world bounds:
+///   • min/max chunk X
+///   • min/max chunk Y  <-- NEW
+///   • min/max chunk Z
+///   
+/// And also stores measured SDF height extents:
+///   • minTerrainHeight
+///   • maxTerrainHeight
+///   
+/// These are computed once by SdfBootstrapInternal via SDF probing.
+/// </summary>
+/// 
+[Serializable]
 public struct SdfContext
 {
-    // -------------------------------
-    // World settings
-    // -------------------------------
-    public int worldWidth;
-    public int worldDepth;
-    public int worldHeight;
+    // ------------------------------------------------------------
+    // GLOBAL SCALAR WORLD SETTINGS
+    // ------------------------------------------------------------
+    public float voxelSize;        // world units per voxel corner
+    public int   chunkSize;        // voxel cells per chunk (e.g. 32)
+    public float seaLevel;         // sea level Y
+    public float islandRadius;     // base island extent in XZ
+    public float maxBaseHeight;    // island dome height
+    public float stepHeight;       // quantization (0 to disable)
 
-    public float voxelSize;
-    public int chunkSize;
+    // ------------------------------------------------------------
+    // WORLD EXTENTS (2D XZ)   — computed by ChunkBoundsAutoComputer
+    // ------------------------------------------------------------
+    public float2 worldMinXZ;      // min X,Z of world
+    public float2 worldMaxXZ;      // max X,Z of world
 
-    public float seaLevel;
+    public int minChunkX;
+    public int maxChunkX;
 
-    public float islandRadius;
-    
-    public float maxBaseHeight;
+    public int minChunkZ;
+    public int maxChunkZ;
 
+    public int chunksX;            
+    public int chunksZ;
 
-    // -------------------------------
-    // Feature arrays
-    // -------------------------------
-    public NativeArray<MountainFeatureData> mountains;
-    public NativeArray<LakeFeatureData> lakes;
-    public NativeArray<ForestFeatureData> forests;
-    public NativeArray<CityPlateauFeatureData> cities;
+    // ------------------------------------------------------------
+    // VERTICAL EXTENTS (NEW)
+    // Vertical chunk bounds automatically computed by SDF sampling.
+    // ------------------------------------------------------------
+    public float minTerrainHeight;     // lowest SDF surface point detected
+    public float maxTerrainHeight;     // highest SDF surface point detected
 
-    // -------------------------------
-    // Lifecycle
-    // -------------------------------
+    public int minChunkY;              // lowest chunk index containing terrain
+    public int maxChunkY;              // highest chunk index containing terrain
+    public int chunksY;                // vertical chunk count
+
+    // ------------------------------------------------------------
+    // FEATURE ARRAYS (Burst-friendly)
+    // ------------------------------------------------------------
+    public NativeArray<MountainFeatureData>       mountains;
+    public NativeArray<LakeFeatureData>           lakes;
+    public NativeArray<ForestFeatureData>         forests;
+    public NativeArray<CityPlateauFeatureData>    cities;
+
+    // ------------------------------------------------------------
+    // CLEANUP
+    // ------------------------------------------------------------
     public void Dispose()
     {
         if (mountains.IsCreated) mountains.Dispose();
-        if (lakes.IsCreated) lakes.Dispose();
-        if (forests.IsCreated) forests.Dispose();
-        if (cities.IsCreated) cities.Dispose();
+        if (lakes.IsCreated)     lakes.Dispose();
+        if (forests.IsCreated)   forests.Dispose();
+        if (cities.IsCreated)    cities.Dispose();
     }
 }
-
-// ------------------------------------------------------------
-// Helper for building SdfContext from ScriptableObjects
-// ------------------------------------------------------------
-// public static class SdfBootstrap
-// {
-//     public static SdfContext Build(WorldSettings world, 
-//                                    MountainFeature[] mountainSOs,
-//                                    LakeFeature[] lakeSOs,
-//                                    ForestFeature[] forestSOs,
-//                                    CityPlateauFeature[] citySOs,
-//                                    Allocator allocator = Allocator.Persistent)
-//     {
-//         SdfContext ctx = new SdfContext
-//         {
-//             worldWidth = world.worldWidth,
-//             worldDepth = world.worldDepth,
-//             worldHeight = world.worldHeight,
-
-//             voxelSize = world.voxelSize,
-//             chunkSize = world.chunkSize,
-//             seaLevel = world.seaLevel,
-
-//             mountains = new NativeArray<MountainFeatureData>(mountainSOs.Length, allocator),
-//             lakes     = new NativeArray<LakeFeatureData>(lakeSOs.Length, allocator),
-//             forests   = new NativeArray<ForestFeatureData>(forestSOs.Length, allocator),
-//             cities    = new NativeArray<CityPlateauFeatureData>(citySOs.Length, allocator)
-//         };
-
-//         // --------------------------------------
-//         // Convert Mountain features
-//         // --------------------------------------
-//         for (int i = 0; i < mountainSOs.Length; i++)
-//         {
-//             ctx.mountains[i] = new MountainFeatureData
-//             {
-//                 centerXZ = new float2(mountainSOs[i].CenterXZ.x, mountainSOs[i].CenterXZ.y),
-//                 radius = mountainSOs[i].Radius,
-//                 height = mountainSOs[i].Height,
-//                 ridgeFrequency = mountainSOs[i].RidgeFrequency,
-//                 ridgeAmplitude = mountainSOs[i].RidgeAmplitude,
-//                 warpStrength   = mountainSOs[i].WarpStrength
-//             };
-//         }
-
-//         // --------------------------------------
-//         // Convert Lake features
-//         // --------------------------------------
-//         for (int i = 0; i < lakeSOs.Length; i++)
-//         {
-//             ctx.lakes[i] = new LakeFeatureData
-//             {
-//                 centerXZ = new float2(lakeSOs[i].CenterXZ.x, lakeSOs[i].CenterXZ.y),
-//                 radius = lakeSOs[i].Radius,
-//                 bottomHeight = lakeSOs[i].BottomHeight,
-//                 shoreHeight  = lakeSOs[i].ShoreHeight
-//             };
-//         }
-
-//         // --------------------------------------
-//         // Convert Forest features
-//         // --------------------------------------
-//         for (int i = 0; i < forestSOs.Length; i++)
-//         {
-//             ctx.forests[i] = new ForestFeatureData
-//             {
-//                 centerXZ = new float2(forestSOs[i].CenterXZ.x, forestSOs[i].CenterXZ.y),
-//                 radius = forestSOs[i].Radius,
-//                 treeDensity = forestSOs[i].TreeDensity
-//             };
-//         }
-
-//         // --------------------------------------
-//         // Convert City Plateau features
-//         // --------------------------------------
-//         for (int i = 0; i < citySOs.Length; i++)
-//         {
-//             ctx.cities[i] = new CityPlateauFeatureData
-//             {
-//                 centerXZ = new float2(citySOs[i].CenterXZ.x, citySOs[i].CenterXZ.y),
-//                 radius = citySOs[i].Radius,
-//                 plateauHeight = citySOs[i].PlateauHeight
-//             };
-//         }
-
-//         return ctx;
-//     }
-// }
