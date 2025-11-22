@@ -1,5 +1,6 @@
 using Unity.Mathematics;
 using UnityEngine;
+
 public struct BiomeWeights
 {
     public float grass;
@@ -11,7 +12,7 @@ public struct BiomeWeights
     public void Normalize()
     {
         float sum = grass + forest + mountain + lakeshore + city;
-        if (sum > 0)
+        if (sum > 0f)
         {
             float inv = 1f / sum;
             grass     *= inv;
@@ -23,144 +24,66 @@ public struct BiomeWeights
     }
 }
 
-
-
 public static class BiomeEvaluator
 {
+    /// <summary>
+    /// Biome weights driven by RAW SDF fields only.
+    /// - BaseIslandSdf.EvaluateRaw: island footprint
+    /// - MountainSdf.EvaluateRaw: mountain footprint
+    ///
+    /// For now:
+    ///   • grass = island but not mountain
+    ///   • mountain = mountain footprint
+    ///   • forest/lakeshore/city = 0 (not wired yet)
+    /// </summary>
     public static BiomeWeights EvaluateBiomeWeights(float3 p, in SdfContext ctx)
     {
         BiomeWeights bw = new BiomeWeights();
 
-        // ------------------------------------------------------------
-        // 1. APPROXIMATE SURFACE HEIGHT
-        // ------------------------------------------------------------
-        // This extracts the height = p.y - sdf(p)
-        float sdfValue = CombinedTerrainSdf.Evaluate(p, ctx);
-        float height    = p.y - sdfValue;
+        //------------------------------------------------------
+        // 1. Island mask from BaseIslandSdf.EvaluateRaw
+        //    raw < 0 => inside island, raw > 0 => outside
+        //------------------------------------------------------
+        float islandRaw = BaseIslandSdf.EvaluateRaw(p, ctx);
+        float islandMask = islandRaw < 0f ? 1f : 0f;
 
-        // ------------------------------------------------------------
-        // 2. APPROXIMATE SLOPE (sample sdf around the point)
-        // ------------------------------------------------------------
-        float3 dx = new float3(0.5f, 0, 0);
-        float3 dz = new float3(0, 0, 0.5f);
-
-        float sdfX  = CombinedTerrainSdf.Evaluate(p + dx, ctx);
-        float sdfXn = CombinedTerrainSdf.Evaluate(p - dx, ctx);
-        float sdfZ  = CombinedTerrainSdf.Evaluate(p + dz, ctx);
-        float sdfZn = CombinedTerrainSdf.Evaluate(p - dz, ctx);
-
-        float slopeX = math.abs(sdfX - sdfXn);
-        float slopeZ = math.abs(sdfZ - sdfZn);
-        float slope = math.max(slopeX, slopeZ);  // slope estimate
-
-        // ------------------------------------------------------------
-        // 3. GRASSLAND (default everywhere except steep or special)
-        // ------------------------------------------------------------
-        // Grassland prefers:
-        // - low slopes
-        // - mid heights
-        float grassSlopeMask = 1f - math.saturate(slope * 4f);
-        float grassHeightMask = math.saturate(1f - math.abs(height) * 0.02f);
-        bw.grass = grassSlopeMask * grassHeightMask;
-
-        // ------------------------------------------------------------
-        // 4. FOREST (near forest features, low slopes)
-        // ------------------------------------------------------------
-        if (ctx.forests.IsCreated)
+        //------------------------------------------------------
+        // 2. Mountain mask from MountainSdf.EvaluateRaw
+        //    raw < 0 => inside mountain footprint
+        //------------------------------------------------------
+        float mountainMask = 0f;
+        if (ctx.mountains.IsCreated && ctx.mountains.Length > 0)
         {
-            for (int i = 0; i < ctx.forests.Length; i++)
-            {
-                var f = ctx.forests[i];
-
-                float dist = math.length(p.xz - f.centerXZ);
-                if (dist < f.radius)
-                {
-                    float t = dist / f.radius;
-                    float mask = 1f - math.saturate(t);
-
-                    // forests prefer low slopes
-                    float slopeMask = 1f - math.saturate(slope * 5f);
-
-                    bw.forest = math.max(bw.forest, mask * slopeMask);
-                }
-            }
+            float mountainRaw = MountainSdf.EvaluateRaw(p, ctx);
+            mountainMask = mountainRaw < 0f ? 1f : 0f;
         }
 
-        // ------------------------------------------------------------
-        // 5. MOUNTAIN (high height near mountain footprint)
-        // ------------------------------------------------------------
-        if (ctx.mountains.IsCreated)
+        //------------------------------------------------------
+        // 3. Assign biomes
+        //------------------------------------------------------
+        // Mountain overrides grass where present
+        bw.mountain = mountainMask;
+
+        // Grass = island but not mountain
+        bw.grass = math.max(0f, islandMask * (1f - mountainMask));
+
+        // Others not used yet – leave at 0 for now
+        bw.forest    = 0f;
+        bw.lakeshore = 0f;
+        bw.city      = 0f;
+
+        //------------------------------------------------------
+        // 4. Fallback: outside island, just return all zeros.
+        //    MaterialSelector will only be called when sdf < 0 anyway.
+        //------------------------------------------------------
+        float sum = bw.grass + bw.forest + bw.mountain + bw.lakeshore + bw.city;
+        if (sum < 0.0001f)
         {
-            for (int i = 0; i < ctx.mountains.Length; i++)
-            {
-                var m = ctx.mountains[i];
-
-                float dist = math.length(p.xz - m.centerXZ);
-                if (dist < m.radius)
-                {
-                    float radial = 1f - math.saturate(dist / m.radius);
-                    float heightMask = math.saturate((height - (m.height * 0.3f)) * 0.02f);
-
-                    bw.mountain = math.max(bw.mountain, radial * heightMask);
-                }
-            }
+            // No biome; leave as zero (air / outside island)
+            return bw;
         }
 
-        // ------------------------------------------------------------
-        // 6. LAKE SHORE (near lake edge)
-        // ------------------------------------------------------------
-        if (ctx.lakes.IsCreated)
-        {
-            for (int i = 0; i < ctx.lakes.Length; i++)
-            {
-                var l = ctx.lakes[i];
-
-                float dist = math.length(p.xz - l.centerXZ);
-                float edgeDist = math.abs(dist - l.radius);
-
-                // lake shore appears near water level
-                float nearWater = math.exp(-math.pow(math.abs(height - ctx.seaLevel), 1.2f));
-
-                float shoreMask = math.exp(-edgeDist * 0.1f) * nearWater;
-
-                bw.lakeshore = math.max(bw.lakeshore, shoreMask);
-            }
-        }
-
-        // ------------------------------------------------------------
-        // 7. CITY (inside plateau radius)
-        // ------------------------------------------------------------
-        if (ctx.cities.IsCreated)
-        {
-            for (int i = 0; i < ctx.cities.Length; i++)
-            {
-                var c = ctx.cities[i];
-
-                float dist = math.length(p.xz - c.centerXZ);
-                if (dist < c.radius)
-                {
-                    float t = dist / c.radius;
-                    float mask = 1f - math.saturate(t);
-                    bw.city = math.max(bw.city, mask);
-                }
-            }
-        }
-
-        // Fallback grass biome so that empty regions still get biome data
-        if (bw.grass + bw.forest + bw.mountain + bw.lakeshore + bw.city < 0.0001f)
-        {
-            bw.grass = 1f;
-        }
-        // ------------------------------------------------------------
-        // 8. Normalize
-        // ------------------------------------------------------------
         bw.Normalize();
-        // #if UNITY_EDITOR
-        // if (math.abs(p.x - 128.05f) < 0.1f && math.abs(p.z - 128.05f) < 0.1f)
-        // {
-        //     Debug.Log($"[Biome Debug] height={height}, slope={slope}");
-        // }
-        // #endif
         return bw;
     }
 }

@@ -12,12 +12,12 @@ public static class MaterialSelector
         if (sdf > 0f)
             return 0;  // ID 0 = air (must exist in TerrainMaterials.asset)
 
-        // Ground material logic
-        var bw = BiomeEvaluator.EvaluateBiomeWeights(worldPos, ctx);
+        // Ground material logic – now raw-SDF driven biomes
+        BiomeWeights bw = BiomeEvaluator.EvaluateBiomeWeights(worldPos, ctx);
 
-        // Pick dominant biome
+        // If everything is zero (shouldn't happen for solid voxels), default to grass
         float best = bw.grass;
-        ushort id = 1;   // default grass
+        ushort id = 1;   // 1 = grass
 
         if (bw.forest > best)
         {

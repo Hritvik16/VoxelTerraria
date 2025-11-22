@@ -8,25 +8,42 @@ namespace VoxelTerraria.World.Meshing
     /// <summary>
     /// A simple container for mesh construction.
     /// Works for both BlockMesher and MarchingCubesMesher.
+    /// Supports:
+    ///   • Single-material meshes   (indices list)
+    ///   • Multi-material meshes    (submeshTris by materialId)
     /// </summary>
     public class MeshData
     {
         public readonly List<float3> vertices;
         public readonly List<float3> normals;
         public readonly List<float2> uvs;
+
+        // Legacy single-material index buffer (used by MarchingCubes, etc.)
         public readonly List<int> indices;
 
-        public MeshData(int initialCapacity = 256)
+        // Multi-material: one triangle list per materialId / submesh index
+        public readonly List<List<int>> submeshTris;
+
+        // How many material IDs/submeshes we support (0..materialCount-1)
+        public int materialCount;
+
+        public MeshData(int initialCapacity = 256, int materialCount = 8)
         {
+            this.materialCount = materialCount;
+
             vertices = new List<float3>(initialCapacity);
             normals  = new List<float3>(initialCapacity);
             uvs      = new List<float2>(initialCapacity);
+
             indices  = new List<int>(initialCapacity * 2);
+
+            submeshTris = new List<List<int>>(materialCount);
+            for (int i = 0; i < materialCount; i++)
+                submeshTris.Add(new List<int>(initialCapacity));
         }
 
-        /// <summary>
-        /// Adds a triangle (3 vertices, 3 normals, 3 uvs).
-        /// </summary>
+        // -------- Single-material helpers (still used by some debug code) --------
+
         public void AddTriangle(float3 v0, float3 v1, float3 v2,
                                 float3 n0, float3 n1, float3 n2,
                                 float2 uv0, float2 uv1, float2 uv2)
@@ -50,9 +67,6 @@ namespace VoxelTerraria.World.Meshing
             indices.Add(indexStart + 2);
         }
 
-        /// <summary>
-        /// Adds a quad (two triangles) given four positions and a normal.
-        /// </summary>
         public void AddQuad(float3 v0, float3 v1, float3 v2, float3 v3, float3 normal)
         {
             float2 uv0 = new float2(0, 0);
@@ -64,45 +78,10 @@ namespace VoxelTerraria.World.Meshing
             AddTriangle(v0, v2, v3, normal, normal, normal, uv0, uv2, uv3);
         }
 
-        /// <summary>
-        /// Converts MeshData into a UnityEngine.Mesh.
-        /// </summary>
-        public Mesh ToMesh(bool calculateNormals = false)
-        {
-            Mesh mesh = new Mesh();
-            mesh.indexFormat = IndexFormat.UInt32; // allow large meshes
-
-            // Convert float3 → Vector3
-            Vector3[] v = new Vector3[vertices.Count];
-            Vector3[] n = new Vector3[normals.Count];
-            Vector2[] u = new Vector2[uvs.Count];
-
-            for (int i = 0; i < vertices.Count; i++)
-                v[i] = new Vector3(vertices[i].x, vertices[i].y, vertices[i].z);
-
-            for (int i = 0; i < normals.Count; i++)
-                n[i] = new Vector3(normals[i].x, normals[i].y, normals[i].z);
-
-            for (int i = 0; i < uvs.Count; i++)
-                u[i] = new Vector2(uvs[i].x, uvs[i].y);
-
-            mesh.SetVertices(v);
-            mesh.SetNormals(n);
-            mesh.SetUVs(0, u);
-            mesh.SetTriangles(indices, 0);
-
-            if (calculateNormals)
-                mesh.RecalculateNormals();
-
-            mesh.RecalculateBounds();
-            return mesh;
-        }
         public void AddTriangle(float3 v0, float3 v1, float3 v2)
         {
-            // Compute flat triangle normal
             float3 normal = math.normalize(math.cross(v1 - v0, v2 - v0));
 
-            // Basic UVs for now (good enough for terrain)
             float2 uv0 = new float2(0, 0);
             float2 uv1 = new float2(1, 0);
             float2 uv2 = new float2(0, 1);
@@ -114,5 +93,112 @@ namespace VoxelTerraria.World.Meshing
             );
         }
 
+        // -------- Multi-material helper --------
+
+        public void AddQuad(float3 v0, float3 v1, float3 v2, float3 v3, float3 normal, ushort materialId)
+        {
+            int matIndex = materialId;
+            if (matIndex < 0 || matIndex >= materialCount)
+            {
+                matIndex = math.clamp(matIndex, 0, materialCount - 1);
+            }
+
+            int baseIndex = vertices.Count;
+
+            vertices.Add(v0);
+            vertices.Add(v1);
+            vertices.Add(v2);
+            vertices.Add(v3);
+
+            normals.Add(normal);
+            normals.Add(normal);
+            normals.Add(normal);
+            normals.Add(normal);
+
+            uvs.Add(new float2(0, 0));
+            uvs.Add(new float2(1, 0));
+            uvs.Add(new float2(1, 1));
+            uvs.Add(new float2(0, 1));
+
+            var tris = submeshTris[matIndex];
+
+            tris.Add(baseIndex + 0);
+            tris.Add(baseIndex + 1);
+            tris.Add(baseIndex + 2);
+
+            tris.Add(baseIndex + 0);
+            tris.Add(baseIndex + 2);
+            tris.Add(baseIndex + 3);
+        }
+
+        // -------- Convert to Unity Mesh --------
+
+        public Mesh ToMesh(bool calculateNormals = false)
+        {
+            Mesh mesh = new Mesh
+            {
+                indexFormat = IndexFormat.UInt32
+            };
+
+            int vCount = vertices.Count;
+            int nCount = normals.Count;
+            int uCount = uvs.Count;
+
+            var v = new Vector3[vCount];
+            var n = new Vector3[nCount];
+            var u = new Vector2[uCount];
+
+            for (int i = 0; i < vCount; i++)
+                v[i] = new Vector3(vertices[i].x, vertices[i].y, vertices[i].z);
+
+            for (int i = 0; i < nCount; i++)
+                n[i] = new Vector3(normals[i].x, normals[i].y, normals[i].z);
+
+            for (int i = 0; i < uCount; i++)
+                u[i] = new Vector2(uvs[i].x, uvs[i].y);
+
+            mesh.SetVertices(v);
+            mesh.SetNormals(n);
+            mesh.SetUVs(0, u);
+
+            bool hasAnySubmesh = false;
+            for (int m = 0; m < materialCount; m++)
+            {
+                if (submeshTris[m].Count > 0)
+                {
+                    hasAnySubmesh = true;
+                    break;
+                }
+            }
+
+            if (hasAnySubmesh)
+            {
+                mesh.subMeshCount = materialCount;
+
+                for (int m = 0; m < materialCount; m++)
+                {
+                    var tris = submeshTris[m];
+                    if (tris.Count > 0)
+                    {
+                        mesh.SetTriangles(tris, m);
+                    }
+                    else
+                    {
+                        mesh.SetTriangles(System.Array.Empty<int>(), m);
+                    }
+                }
+            }
+            else
+            {
+                mesh.subMeshCount = 1;
+                mesh.SetTriangles(indices, 0);
+            }
+
+            if (calculateNormals)
+                mesh.RecalculateNormals();
+
+            mesh.RecalculateBounds();
+            return mesh;
+        }
     }
 }

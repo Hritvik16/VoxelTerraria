@@ -4,20 +4,21 @@ public static class CombinedTerrainSdf
 {
     public static float Evaluate(float3 p, in SdfContext ctx)
     {
-        if (ctx.mountains.IsCreated && ctx.mountains.Length > 0)
-            return MountainSdf.Evaluate(p, ctx);
-        // 1. Base island height SDF
-        float f = BaseIslandSdf.Evaluate(p, ctx);
+        float f = 9999f;
 
-        float baseHeight = p.y - f;
+        // 1. Base island
+        float baseSdf = BaseIslandSdf.Evaluate(p, ctx);
+        f = math.min(f, baseSdf);
 
         // 2. Mountains
         if (ctx.mountains.IsCreated && ctx.mountains.Length > 0)
         {
-            float fm = MountainSdf.Evaluate(p, ctx);
-            f = math.min(f, fm);
+            float m = MountainSdf.Evaluate(p, ctx);
+            f = math.min(f, m);
         }
 
+        // (later you'll add lakes, forest, city here)
+        
         return f;
     }
 }

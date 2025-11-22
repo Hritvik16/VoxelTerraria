@@ -1,58 +1,74 @@
-using Unity.Mathematics;
+using Unity.Burst;
 using Unity.Collections;
+using Unity.Jobs;
+using Unity.Mathematics;
 using VoxelTerraria.World;
-using VoxelTerraria.World.Generation; // WorldCoordUtils
-using VoxelTerraria.World;    // (optional, but fine to have)
+using VoxelTerraria.World.SDF;
 
 namespace VoxelTerraria.World.Generation
 {
-    /// <summary>
-    /// Pure terrain voxel generation: SDF → density + material ID.
-    /// Called from editor tools (WorldGenerationWindow, ChunkTestWindow)
-    /// and later from runtime world streaming.
-    /// </summary>
     public static class VoxelGenerator
     {
-        // How strongly we scale SDF to a signed short.
         private const float DensityScale = 64f;
 
-        /// <summary>
-        /// Fills the given ChunkData with densities + material IDs using the global SDF context.
-        /// Uses a padded grid: voxelResolution = chunkSize + 1 samples per axis.
-        /// </summary>
+        [BurstCompile]
+        private struct GenerateVoxelsJob : IJobParallelFor
+        {
+            public NativeArray<Voxel> voxels;
+
+            [ReadOnly] public ChunkCoord3 coord;
+            [ReadOnly] public int voxelResolution;
+            [ReadOnly] public float voxelSize;
+            [ReadOnly] public float3 chunkOrigin;
+            [ReadOnly] public SdfContext ctx;
+
+            public void Execute(int index)
+            {
+                int res = voxelResolution;
+
+                int z = index / (res * res);
+                int rem = index - z * res * res;
+                int y = rem / res;
+                int x = rem - y * res;
+
+                float3 worldPos = new float3(
+                    chunkOrigin.x + x * voxelSize,
+                    chunkOrigin.y + y * voxelSize,
+                    chunkOrigin.z + z * voxelSize
+                );
+
+                float sdf = CombinedTerrainSdf.Evaluate(worldPos, ctx);
+
+                // SDF → density (>0 = solid)
+                short density = (short)math.clamp(-sdf * DensityScale, short.MinValue, short.MaxValue);
+
+                // Biome-based material selection (0=air, 1..7 = terrain)
+                ushort materialId = MaterialSelector.SelectMaterialId(worldPos, sdf, ctx);
+
+                voxels[index] = new Voxel(density, materialId);
+            }
+        }
+
         public static void GenerateChunkVoxels(ref ChunkData chunkData, in SdfContext ctx, WorldSettings settings)
         {
-            int cells   = chunkData.chunkSize;
-            int voxRes  = chunkData.voxelResolution; // usually cells + 1
+            int voxRes = chunkData.voxelResolution;
             ChunkCoord3 coord = chunkData.coord3;
 
-            for (int z = 0; z < voxRes; z++)
+            float voxelSize = settings.voxelSize;
+            float3 origin = WorldCoordUtils.ChunkOriginWorld(coord, settings);
+
+            var job = new GenerateVoxelsJob
             {
-                for (int y = 0; y < voxRes; y++)
-                {
-                    for (int x = 0; x < voxRes; x++)
-                    {
-                        var index = new VoxelCoord(x, y, z);
+                voxels          = chunkData.voxels,
+                coord           = coord,
+                voxelResolution = voxRes,
+                voxelSize       = voxelSize,
+                chunkOrigin     = origin,
+                ctx             = ctx
+            };
 
-                        // Sample position in world-space for this voxel node
-                        float3 worldPos = WorldCoordUtils.VoxelSampleWorld(coord, index, settings);
-
-                        // Evaluate combined terrain SDF
-                        float sdf = CombinedTerrainSdf.Evaluate(worldPos, ctx);
-
-                        // Convert SDF→density: convention density > 0 = solid
-                        short density = (short)math.clamp(-sdf * DensityScale, short.MinValue, short.MaxValue);
-
-                        // Choose material based on biome + SDF/height
-                        // ushort materialId = TerrainMaterialLibrary.SelectMaterialId(worldPos, sdf, ctx);
-                        ushort materialId = MaterialSelector.SelectMaterialId(worldPos, sdf, ctx);
-
-
-                        var voxel = new Voxel(density, materialId);
-                        chunkData.Set(x, y, z, voxel);
-                    }
-                }
-            }
+            JobHandle handle = job.Schedule(chunkData.voxels.Length, 64);
+            handle.Complete();
 
             chunkData.isGenerated = true;
             chunkData.isDirty     = true;

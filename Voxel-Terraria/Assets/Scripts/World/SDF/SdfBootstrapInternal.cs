@@ -214,7 +214,7 @@ namespace VoxelTerraria.World.SDF
             float chunkWorldHeight = voxelSize * chunkSize;
 
             // Probe grid resolution (you can bump to 24 or 32 if needed)
-            int probeCount = 16;
+            int probeCount = 32;
 
             // TEMP local vars for tracking vertical range
             float minH = float.MaxValue;
@@ -246,6 +246,7 @@ namespace VoxelTerraria.World.SDF
             // Save to context
             ctx.minTerrainHeight = minH;
             ctx.maxTerrainHeight = maxH;
+            ctx.maxTerrainHeight += world.voxelSize * 4f;  // safety padding (~2m)
 
             // Convert heights to chunk indices
             ctx.minChunkY = Mathf.FloorToInt(minH / chunkWorldHeight);
@@ -283,7 +284,7 @@ namespace VoxelTerraria.World.SDF
 
         private static float FindSurfaceHeightDownwards(float2 xz, ref SdfContext ctx, WorldSettings world)
         {
-            float step = 2f;
+            float step = .75f;
             float minSearch = world.seaLevel - 200f;
 
             float lastY = world.seaLevel;

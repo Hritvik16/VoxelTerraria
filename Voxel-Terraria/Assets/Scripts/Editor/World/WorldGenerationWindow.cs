@@ -367,6 +367,7 @@ namespace VoxelTerraria.EditorTools
             Application.SetStackTraceLogType(LogType.Log, StackTraceLogType.ScriptOnly);
             Application.SetStackTraceLogType(LogType.Warning, StackTraceLogType.ScriptOnly);
             Application.SetStackTraceLogType(LogType.Error, StackTraceLogType.ScriptOnly);
+            
         }
 
         private void StopGeneration()
@@ -387,6 +388,8 @@ namespace VoxelTerraria.EditorTools
 
         private void FinishGeneration()
         {
+            CreateOrUpdateWaterPlane(cachedWorldSettings);
+
             isGenerating = false;
 
             if (generationQueue != null)
@@ -401,6 +404,34 @@ namespace VoxelTerraria.EditorTools
             double elapsed = EditorApplication.timeSinceStartup - generationStartTime;
             Debug.Log($"WorldGenerationWindow: Generation complete. {totalChunks} chunks in {elapsed:F2} seconds.");
         }
+        private void CreateOrUpdateWaterPlane(WorldSettings settings)
+{
+    Transform root = GetOrCreateRoot();
+
+    Transform existing = root.Find("WaterPlane");
+    GameObject go;
+
+    if (existing != null)
+    {
+        go = existing.gameObject;
+    }
+    else
+    {
+        go = GameObject.CreatePrimitive(PrimitiveType.Plane);
+        go.name = "WaterPlane";
+        go.transform.parent = root;
+
+        var renderer = go.GetComponent<MeshRenderer>();
+        // assign water material (lakebed placeholder is fine)
+        renderer.sharedMaterial = TerrainMaterialLibrary.GetMaterials(6)[0]; 
+    }
+
+    float radius = settings.islandRadius;
+    float planeScale = radius * 0.1f; // plane is 10x10 units → convert to radius scale
+
+    go.transform.localScale = new Vector3(planeScale, 1f, planeScale);
+    go.transform.position = new Vector3(0f, settings.seaLevel, 0f);
+}
 
         // ------------------------------------------------------
         // Editor update loop (progressive generation)
@@ -442,6 +473,7 @@ namespace VoxelTerraria.EditorTools
 
             if (generationQueue == null || generationQueue.Count == 0)
             {
+                
                 FinishGeneration();
             }
         }
@@ -451,7 +483,12 @@ namespace VoxelTerraria.EditorTools
         // ------------------------------------------------------
         private void GenerateSingleChunk(ChunkCoord3 coord)
         {
+            
             WorldSettings settings = cachedWorldSettings;
+            // Fast check: skip chunk if entire chunk is above terrain (air)
+            // if (SdfRuntime.FastRejectChunk(coord, settings))
+            //     return; // don’t allocate voxels, don’t mesh, skip entirely
+
             SdfContext ctx = cachedSdfContext;
 
             int chunkSize = settings.chunkSize;
@@ -577,30 +614,67 @@ namespace VoxelTerraria.EditorTools
             var mr = go.AddComponent<MeshRenderer>();
             var mc = go.AddComponent<MeshCollider>();
 
+            // mf.sharedMesh = mesh;
+            // mc.sharedMesh = mesh;
+
+            // // Reuse a single material for all chunks
+            // if (s_sharedChunkMaterial == null)
+            // {
+            //     Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+            //     if (shader == null)
+            //         shader = Shader.Find("Standard");
+
+            //     if (shader != null)
+            //     {
+            //         s_sharedChunkMaterial = new Material(shader);
+            //     }
+            //     else
+            //     {
+            //         Debug.LogWarning("WorldGenerationWindow: Could not find a suitable shader. Assign a material manually.");
+            //     }
+            // }
+            // //---------------------------------------------------
+            // // Assign materials based on terrain material IDs
+            // //---------------------------------------------------
+            // mr.sharedMaterials = TerrainMaterialLibrary.GetMaterials(); 
+
+            // // if (s_sharedChunkMaterial != null)
+            // // {
+            // //     mr.sharedMaterial = s_sharedChunkMaterial;
+            // // }
             mf.sharedMesh = mesh;
-            mc.sharedMesh = mesh;
+mc.sharedMesh = mesh;
 
-            // Reuse a single material for all chunks
-            if (s_sharedChunkMaterial == null)
-            {
-                Shader shader = Shader.Find("Universal Render Pipeline/Lit");
-                if (shader == null)
-                    shader = Shader.Find("Standard");
+// If we have multiple submeshes, use terrain material array
+if (mesh.subMeshCount > 1)
+{
+    mr.sharedMaterials = TerrainMaterialLibrary.GetMaterials(mesh.subMeshCount);
+}
+else
+{
+    // Fallback: reuse a single material for all chunks (legacy path)
+    if (s_sharedChunkMaterial == null)
+    {
+        Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+        if (shader == null)
+            shader = Shader.Find("Standard");
 
-                if (shader != null)
-                {
-                    s_sharedChunkMaterial = new Material(shader);
-                }
-                else
-                {
-                    Debug.LogWarning("WorldGenerationWindow: Could not find a suitable shader. Assign a material manually.");
-                }
-            }
+        if (shader != null)
+        {
+            s_sharedChunkMaterial = new Material(shader);
+        }
+        else
+        {
+            Debug.LogWarning("WorldGenerationWindow: Could not find a suitable shader. Assign a material manually.");
+        }
+    }
 
-            if (s_sharedChunkMaterial != null)
-            {
-                mr.sharedMaterial = s_sharedChunkMaterial;
-            }
+    if (s_sharedChunkMaterial != null)
+    {
+        mr.sharedMaterial = s_sharedChunkMaterial;
+    }
+}
+
         }
     }
 }
