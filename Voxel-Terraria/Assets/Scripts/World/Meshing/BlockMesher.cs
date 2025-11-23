@@ -1,37 +1,22 @@
 using Unity.Mathematics;
-using VoxelTerraria.World;          // ChunkData, Voxel, WorldSettings
-using VoxelTerraria.World.SDF;      // SdfRuntime, CombinedTerrainSdf
+using VoxelTerraria.World;
+using VoxelTerraria.World.SDF;
 
 namespace VoxelTerraria.World.Meshing
 {
-    /// <summary>
-    /// Naive block-based mesher for debugging voxel and SDF correctness.
-    /// Uses the padded voxel grid (voxelResolution = chunkSize + 1).
-    /// 
-    /// Convention:
-    ///   Voxel.density > 0 => solid
-    ///   Voxel.density <= 0 => air
-    /// 
-    /// This version:
-    ///   • Avoids internal faces at chunk borders via SDF sampling
-    ///   • Routes faces into submeshes by voxel.materialId
-    ///   • Coastline override: stone/grass become sand near sea level
-    /// </summary>
     public static class BlockMesher
     {
         public static MeshData BuildMesh(in ChunkData chunkData, WorldSettings settings)
         {
-            int cells = chunkData.chunkSize;           // number of cells per axis
-            int r     = chunkData.voxelResolution;     // = cells + 1
+            int cells = chunkData.chunkSize;
+            int r     = chunkData.voxelResolution;
             float voxelSize = settings.voxelSize;
 
-            // materialCount = 8 => IDs 0..7
             MeshData meshData = new MeshData(cells * cells * cells, 8);
 
             var voxels = chunkData.voxels;
             var coord  = chunkData.coord3;
 
-            // Precompute chunk origin in world space
             float chunkWorld = voxelSize * cells;
             float3 chunkOrigin = new float3(
                 coord.x * chunkWorld,
@@ -39,23 +24,18 @@ namespace VoxelTerraria.World.Meshing
                 coord.z * chunkWorld
             );
 
-            // Grab current SDF context (read-only)
             SdfContext ctx = SdfRuntime.Context;
 
-            // Node index helper: matches ChunkData padded grid layout
             int IndexNode(int x, int y, int z)
             {
                 return x + y * r + z * r * r;
             }
 
-            // Is this CELL solid, using only this chunk's voxel data?
-            // We consider the 8 corner nodes; if any corner is solid, the block is solid.
             bool IsCellSolidLocal(int cx, int cy, int cz)
             {
                 if (cx < 0 || cy < 0 || cz < 0 ||
                     cx >= cells || cy >= cells || cz >= cells)
                 {
-                    // Out of local chunk range: handled by SDF path.
                     return false;
                 }
 
@@ -77,22 +57,16 @@ namespace VoxelTerraria.World.Meshing
                 return solidCount > 0;
             }
 
-            // Is this CELL solid, using local voxels when in-bounds,
-            // and falling back to SDF when the cell is outside this chunk?
             bool IsCellSolidWithSdf(int cx, int cy, int cz)
             {
-                // Inside this chunk → trust voxel data
                 if (cx >= 0 && cy >= 0 && cz >= 0 &&
                     cx <  cells && cy <  cells && cz <  cells)
                 {
                     return IsCellSolidLocal(cx, cy, cz);
                 }
 
-                // Outside this chunk → sample SDF at the cell center in world space
                 if (ctx.chunkSize <= 0 || ctx.voxelSize <= 0f)
                 {
-                    // If context isn't initialized properly, be conservative:
-                    // treat out-of-bounds as solid to avoid creating gaps.
                     return true;
                 }
 
@@ -102,16 +76,15 @@ namespace VoxelTerraria.World.Meshing
                     chunkOrigin.z + (cz + 0.5f) * voxelSize
                 );
 
-                float sdf = CombinedTerrainSdf.Evaluate(cellCenter, ctx);
+                float sdf = CombinedTerrainSdf.Evaluate(cellCenter, ref ctx);
                 return sdf < 0f;
             }
 
             bool IsCellAir(int cx, int cy, int cz) => !IsCellSolidWithSdf(cx, cy, cz);
 
-            // Pick a materialId for this CELL by looking at its 8 corners.
             ushort GetCellMaterialIdLocal(int cx, int cy, int cz)
             {
-                ushort mat = 1; // default grass if something weird
+                ushort mat = 1;
 
                 if (cx < 0 || cy < 0 || cz < 0 ||
                     cx >= cells || cy >= cells || cz >= cells)
@@ -140,7 +113,6 @@ namespace VoxelTerraria.World.Meshing
                 return mat;
             }
 
-            // Main loop: walk each cell and emit faces where neighbor is air.
             for (int z = 0; z < cells; z++)
             {
                 for (int y = 0; y < cells; y++)
@@ -157,7 +129,6 @@ namespace VoxelTerraria.World.Meshing
                         float3 basePos = new float3(vx, vy, vz);
                         float s = voxelSize;
 
-                        // Helper: material for this cell/face with coastline override
                         ushort MaterialForFace(float3 faceCenterLocal)
                         {
                             ushort matId = GetCellMaterialIdLocal(x, y, z);
@@ -169,14 +140,15 @@ namespace VoxelTerraria.World.Meshing
                             float distFromSea = math.abs(worldFaceCenter.y - ctx.seaLevel);
                             float nearCoast = math.exp(-distFromSea * 0.6f);
 
-                            // Near sea level, override to sand unless it's mountain stone
                             if (nearCoast > 0.35f && matId != 3)
-                                matId = 4; // sand
+                                matId = 4;
 
                             return matId;
                         }
 
-                        // +X face (right)
+                        // Same face generation as before…
+
+                        // +X face
                         if (IsCellAir(x + 1, y, z))
                         {
                             float3 normal = new float3(1, 0, 0);
@@ -192,7 +164,7 @@ namespace VoxelTerraria.World.Meshing
                                 meshData.AddQuad(v0, v1, v2, v3, normal, matId);
                         }
 
-                        // -X face (left)
+                        // -X face
                         if (IsCellAir(x - 1, y, z))
                         {
                             float3 normal = new float3(-1, 0, 0);
@@ -208,7 +180,7 @@ namespace VoxelTerraria.World.Meshing
                                 meshData.AddQuad(v0, v1, v2, v3, normal, matId);
                         }
 
-                        // +Y face (top)
+                        // +Y face
                         if (IsCellAir(x, y + 1, z))
                         {
                             float3 normal = new float3(0, 1, 0);
@@ -224,7 +196,7 @@ namespace VoxelTerraria.World.Meshing
                                 meshData.AddQuad(v0, v1, v2, v3, normal, matId);
                         }
 
-                        // -Y face (bottom)
+                        // -Y face
                         if (IsCellAir(x, y - 1, z))
                         {
                             float3 normal = new float3(0, -1, 0);
@@ -240,7 +212,7 @@ namespace VoxelTerraria.World.Meshing
                                 meshData.AddQuad(v0, v1, v2, v3, normal, matId);
                         }
 
-                        // +Z face (forward)
+                        // +Z face
                         if (IsCellAir(x, y, z + 1))
                         {
                             float3 normal = new float3(0, 0, 1);
@@ -256,7 +228,7 @@ namespace VoxelTerraria.World.Meshing
                                 meshData.AddQuad(v0, v1, v2, v3, normal, matId);
                         }
 
-                        // -Z face (back)
+                        // -Z face
                         if (IsCellAir(x, y, z - 1))
                         {
                             float3 normal = new float3(0, 0, -1);

@@ -15,7 +15,7 @@ MonoBehaviour:
   drawGizmos: 1
   centerXZ: {x: 0, y: 0}
   radius: 30
-  height: 20
+  height: 100
   ridgeFrequency: 0.25
   ridgeAmplitude: 4
   warpStrength: 2

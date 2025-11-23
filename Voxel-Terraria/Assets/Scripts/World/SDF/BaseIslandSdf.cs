@@ -12,6 +12,8 @@ public static class BaseIslandSdf
     /// </summary>
     public static float Evaluate(float3 p, in SdfContext ctx)
     {
+        if (p.y < ctx.seaLevel)
+    return 1f;
         float R = ctx.islandRadius;
         float H = ctx.maxBaseHeight;
 
@@ -43,11 +45,12 @@ public static class BaseIslandSdf
         //------------------------------------------------------
         // 3. Dome falloff (controls height)
         //------------------------------------------------------
-        float t = math.saturate(1f - warpedDist / R); // 1 at center, 0 at warped radius
-        t = math.pow(t, 1.5f);
+        float t = math.saturate(1f - warpedDist / R);
+t = t * t * (3f - 2f * t);  // smoothstep for footprint
+float heightFactor = math.pow(t, 1.5f); // dome blend
 
-        // Base dome height
-        float finalHeight = t * H * 0.6f;
+float finalHeight = heightFactor * H;
+
 
         //------------------------------------------------------
         // 4. Micro-terrain detail (only where t > 0)
@@ -66,7 +69,16 @@ public static class BaseIslandSdf
         //------------------------------------------------------
         // 5. Return SDF (terrain below the height)
         //------------------------------------------------------
-        return p.y - finalHeight;
+        // return p.y - finalHeight;
+        // footprint SDF (negative inside, positive outside)
+float raw = EvaluateRaw(p, ctx);
+
+// height SDF (negative below surface, positive above)
+float h = p.y - finalHeight;
+
+// correct blend:
+return math.max(raw, h);
+
     }
 
     /// <summary>

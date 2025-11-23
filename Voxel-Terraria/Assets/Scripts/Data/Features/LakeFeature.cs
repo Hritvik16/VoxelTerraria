@@ -8,6 +8,7 @@ public class LakeFeature : ScriptableObject
 {
     [SerializeField] private bool drawGizmos = true;
     public bool DrawGizmos => drawGizmos;
+
     [SerializeField] private Vector2 centerXZ = Vector2.zero;
 
     [Header("Lake Shape")]
@@ -21,4 +22,15 @@ public class LakeFeature : ScriptableObject
     public float Radius => radius;
     public float BottomHeight => bottomHeight;
     public float ShoreHeight => shoreHeight;
+
+    internal LakeFeatureData ToData()
+    {
+        return new LakeFeatureData
+        {
+            centerXZ     = centerXZ,
+            radius       = radius,
+            bottomHeight = bottomHeight,
+            shoreHeight  = shoreHeight
+        };
+    }
 }

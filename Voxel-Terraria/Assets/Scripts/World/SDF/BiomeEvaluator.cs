@@ -54,7 +54,8 @@ public static class BiomeEvaluator
         float mountainMask = 0f;
         if (ctx.mountains.IsCreated && ctx.mountains.Length > 0)
         {
-            float mountainRaw = MountainSdf.EvaluateRaw(p, ctx);
+            // float mountainRaw = MountainSdf.EvaluateRaw(p, ctx);
+            float mountainRaw = MountainSdf.EvaluateRaw3D(p, ctx);
             mountainMask = mountainRaw < 0f ? 1f : 0f;
         }
 

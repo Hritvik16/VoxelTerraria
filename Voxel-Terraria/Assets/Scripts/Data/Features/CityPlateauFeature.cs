@@ -11,11 +11,23 @@ public class CityPlateauFeature : ScriptableObject
 
     [SerializeField] private Vector2 centerXZ = Vector2.zero;
 
-    [Header("City Plateau")]
-    [SerializeField] private float radius = 180f;
-    [SerializeField] private float plateauHeight = 30f;
+    [Header("Plateau Shape")]
+    [SerializeField] private float radius = 150f;
+
+    [Header("Height")]
+    [SerializeField] private float plateauHeight = 25f;
 
     public Vector2 CenterXZ => centerXZ;
     public float Radius => radius;
     public float PlateauHeight => plateauHeight;
+
+    internal CityPlateauFeatureData ToData()
+    {
+        return new CityPlateauFeatureData
+        {
+            centerXZ      = centerXZ,
+            radius        = radius,
+            plateauHeight = plateauHeight
+        };
+    }
 }

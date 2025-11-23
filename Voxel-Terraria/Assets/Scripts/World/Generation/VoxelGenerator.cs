@@ -37,12 +37,10 @@ namespace VoxelTerraria.World.Generation
                     chunkOrigin.z + z * voxelSize
                 );
 
-                float sdf = CombinedTerrainSdf.Evaluate(worldPos, ctx);
+                float sdf = CombinedTerrainSdf.Evaluate(worldPos, ref ctx);
 
-                // SDF → density (>0 = solid)
                 short density = (short)math.clamp(-sdf * DensityScale, short.MinValue, short.MaxValue);
 
-                // Biome-based material selection (0=air, 1..7 = terrain)
                 ushort materialId = MaterialSelector.SelectMaterialId(worldPos, sdf, ctx);
 
                 voxels[index] = new Voxel(density, materialId);

@@ -1,55 +1,48 @@
 using UnityEngine;
-using System;
 
-namespace VoxelTerraria.World.SDF {
-[ExecuteAlways]
-public class SdfBootstrap : MonoBehaviour
+namespace VoxelTerraria.World.SDF
 {
-    [Header("World Settings")]
-    public WorldSettings worldSettings;
-
-    [Header("Features")]
-    public MountainFeature[] mountainFeatures;
-    public LakeFeature[] lakeFeatures;
-    public ForestFeature[] forestFeatures;
-    public CityPlateauFeature[] cityFeatures;
-
-    // Called in Edit Mode and Play Mode whenever the component becomes enabled/active
-    private void OnEnable()
+    [ExecuteAlways]
+    public class SdfBootstrap : MonoBehaviour
     {
-        if (worldSettings == null)
+        [Header("World Settings")]
+        public WorldSettings worldSettings;
+
+        [Header("Features – Typed Lists (Editor-facing)")]
+        public BaseIslandFeature baseIsland;
+        public MountainFeature[] mountainFeatures;
+        public LakeFeature[] lakeFeatures;
+        public ForestFeature[] forestFeatures;
+        public CityPlateauFeature[] cityFeatures;
+
+        private void OnEnable()
         {
-            Debug.LogWarning("SdfBootstrap: Missing WorldSettings reference.");
-            return;
+            if (worldSettings == null)
+            {
+                Debug.LogWarning("SdfBootstrap: Missing WorldSettings reference.");
+                return;
+            }
+
+            var ctx = SdfBootstrapInternal.Build(
+                worldSettings,
+                baseIsland,
+                mountainFeatures,
+                lakeFeatures,
+                forestFeatures,
+                cityFeatures
+            );
+
+            SdfRuntime.SetContext(ctx);
         }
 
-        var mountains = mountainFeatures ?? Array.Empty<MountainFeature>();
-        var lakes     = lakeFeatures     ?? Array.Empty<LakeFeature>();
-        var forests   = forestFeatures   ?? Array.Empty<ForestFeature>();
-        var cities    = cityFeatures     ?? Array.Empty<CityPlateauFeature>();
+        private void OnDisable()
+        {
+            SdfRuntime.Dispose();
+        }
 
-        var ctx = SdfBootstrapInternal.Build(
-            worldSettings,
-            mountains,
-            lakes,
-            forests,
-            cities
-        );
-
-        // Important: use SetContext so old arrays are disposed
-        SdfRuntime.SetContext(ctx);
+        private void OnDestroy()
+        {
+            SdfRuntime.Dispose();
+        }
     }
-
-    // In the editor, this is what runs when exiting Play Mode or disabling the object
-    private void OnDisable()
-    {
-        SdfRuntime.Dispose();
-    }
-
-    // In case the object is explicitly destroyed in Edit Mode
-    private void OnDestroy()
-    {
-        SdfRuntime.Dispose();
-    }
-}
 }

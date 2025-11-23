@@ -13,9 +13,9 @@ MonoBehaviour:
   m_Name: WorldSettings_Main
   m_EditorClassIdentifier: Assembly-CSharp::WorldSettings
   voxelSize: 0.25
-  chunkSize: 32
+  chunkSize: 64
   islandRadius: 60
-  maxBaseHeight: 10
+  maxBaseHeight: 0
   stepHeight: 0
   seaLevel: 0
   useJobs: 1

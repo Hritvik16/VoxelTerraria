@@ -15,9 +15,19 @@ public class ForestFeature : ScriptableObject
     [SerializeField] private float radius = 200f;
 
     [Header("Tree Density")]
-    [SerializeField] private float treeDensity = 0.5f; // 0–1 normalized
+    [SerializeField] private float treeDensity = 0.5f;
 
     public Vector2 CenterXZ => centerXZ;
     public float Radius => radius;
     public float TreeDensity => treeDensity;
+
+    internal ForestFeatureData ToData()
+    {
+        return new ForestFeatureData
+        {
+            centerXZ    = centerXZ,
+            radius      = radius,
+            treeDensity = treeDensity
+        };
+    }
 }
