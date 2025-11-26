@@ -98,3 +98,9 @@ Voxel-Terraria/Assets/ProceduralOutput/
 *.tga
 *.fbx
 *.wav
+
+Voxel-Terraria/.DS_Store
+Voxel-Terraria/Assets/Google Gemini.html
+Voxel-Terraria/Assets/Google Gemini.html.meta
+**/.DS_Store
+Voxel-Terraria/**/.DS_Store

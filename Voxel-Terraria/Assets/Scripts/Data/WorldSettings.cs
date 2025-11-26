@@ -37,4 +37,11 @@ public class WorldSettings : ScriptableObject
 
     [Tooltip("Use marching cubes mesh (if false, block mesher).")]
     public bool useMarchingCubes = false;
+
+    [Header("Randomization")]
+    [Tooltip("If true, features will be randomized on every generation.")]
+    public bool randomizeFeatures = false;
+
+    [Tooltip("Global seed for feature generation (used if Randomize is false).")]
+    public int globalSeed = 12345;
 }

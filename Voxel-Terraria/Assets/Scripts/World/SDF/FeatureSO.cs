@@ -18,5 +18,14 @@ public abstract class FeatureSO : ScriptableObject
     /// Convert this ScriptableObject into a Burst-friendly unmanaged Feature struct.
     /// Must be implemented by all subclasses.
     /// </summary>
-    public abstract Feature ToFeature();
+    public abstract Feature ToFeature(WorldSettings settings);
+
+    /// <summary>
+    /// Returns a world-space point that other features (like rivers) can connect to.
+    /// Default: returns (0,0,0).
+    /// </summary>
+    public virtual Vector3 GetConnectorPoint(WorldSettings settings)
+    {
+        return Vector3.zero;
+    }
 }

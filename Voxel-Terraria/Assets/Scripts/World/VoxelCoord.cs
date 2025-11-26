@@ -19,7 +19,7 @@ namespace VoxelTerraria.World
             this.z = z;
         }
 
-        public int3 ToInt3() => new int3(x, y, z);
+        // public int3 ToInt3() => new int3(x, y, z);
 
         public override string ToString() => $"({x},{y},{z})";
     }

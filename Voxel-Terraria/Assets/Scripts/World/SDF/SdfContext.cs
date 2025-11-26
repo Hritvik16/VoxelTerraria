@@ -53,10 +53,10 @@ public struct SdfContext
     // ------------------------------------------------------------
     // OLD FEATURE ARRAYS (still here during migration)
     // ------------------------------------------------------------
-    public NativeArray<MountainFeatureData> mountains;
-    public NativeArray<LakeFeatureData> lakes;
-    public NativeArray<ForestFeatureData> forests;
-    public NativeArray<CityPlateauFeatureData> cities;
+    // public NativeArray<MountainFeatureData> mountains;
+    // public NativeArray<LakeFeatureData> lakes;
+    // public NativeArray<ForestFeatureData> forests;
+    // public NativeArray<CityPlateauFeatureData> cities;
 
     // ------------------------------------------------------------
     // NEW UNIFIED FEATURE LIST (generic + Burst-friendly)
@@ -69,11 +69,11 @@ public struct SdfContext
     // ------------------------------------------------------------
     public void Dispose()
     {
-        if (mountains.IsCreated) mountains.Dispose();
-        if (lakes.IsCreated) lakes.Dispose();
-        if (forests.IsCreated) forests.Dispose();
-        if (cities.IsCreated) cities.Dispose();
+        // if (mountains.IsCreated) mountains.Dispose();
+        // if (lakes.IsCreated) lakes.Dispose();
+        // if (forests.IsCreated) forests.Dispose();
+        // if (cities.IsCreated) cities.Dispose();
 
-        if (features.IsCreated) features.Dispose();
+        // if (features.IsCreated) features.Dispose();
     }
 }

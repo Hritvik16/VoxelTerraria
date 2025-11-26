@@ -3,46 +3,38 @@ using Unity.Mathematics;
 public static class MaterialSelector
 {
     /// <summary>
-    /// Returns the material ID for a voxel based on world position,
-    /// SDF value, and biome weights from the SdfContext.
+    /// Selects a voxel's material based solely on biomeId.
+    /// Fully feature-agnostic:
+    ///   - Uses BiomeEvaluator to get biomeId
+    ///   - No special cases for mountains, islands, forests, etc.
+    ///
+    /// Material mapping is defined by WorldSettings or a simple lookup table.
     /// </summary>
     public static ushort SelectMaterialId(float3 worldPos, float sdf, in SdfContext ctx)
     {
-        // Air
+        // Air above terrain
         if (sdf > 0f)
-            return 0;  // ID 0 = air (must exist in TerrainMaterials.asset)
+            return 0;
 
-        // Ground material logic – now raw-SDF driven biomes
-        BiomeWeights bw = BiomeEvaluator.EvaluateBiomeWeights(worldPos, ctx);
+        // Resolve biome
+        int biomeId = BiomeEvaluator.EvaluateDominantBiomeId(worldPos, ctx);
 
-        // If everything is zero (shouldn't happen for solid voxels), default to grass
-        float best = bw.grass;
-        ushort id = 1;   // 1 = grass
+        // No biome feature influences this voxel → default solid
+        if (biomeId < 0)
+            return 1;
 
-        if (bw.forest > best)
-        {
-            best = bw.forest;
-            id = 2;   // forest floor
-        }
+        //------------------------------------------------------------
+        // GENERIC BIOME → MATERIAL MAPPING
+        //------------------------------------------------------------
+        // For now: materialId = biomeId + 1
+        //   biomeId 0 → material 1
+        //   biomeId 1 → material 2
+        //   biomeId 2 → material 3
+        //   ...
+        //
+        // Later you can store mappings inside WorldSettings.
+        //------------------------------------------------------------
 
-        if (bw.mountain > best)
-        {
-            best = bw.mountain;
-            id = 3;   // stone
-        }
-
-        if (bw.lakeshore > best)
-        {
-            best = bw.lakeshore;
-            id = 4;   // sand
-        }
-
-        if (bw.city > best)
-        {
-            best = bw.city;
-            id = 5;   // city ground
-        }
-
-        return id;
+        return (ushort)(biomeId + 1);
     }
 }

@@ -17,8 +17,7 @@ public static class BaseIslandFeatureAdapter
 
         FeatureBounds3DComputer.Register(
             FeatureType.BaseIsland,
-            ComputeAnalyticBounds,
-            Evaluate
+            ComputeAnalyticBounds
         );
 
         s_registered = true;
@@ -56,52 +55,129 @@ public static class BaseIslandFeatureAdapter
 
     // --------------------------------------------------------------------
     // SDF evaluation for bounds & terrain
-    // Signature matches FeatureBounds3DComputer.SdfEvalFunc
+    // Signature is called from FeatureBounds3DComputer.EvaluateSdf_Fast
     // --------------------------------------------------------------------
- 
-
-public static float Evaluate(float3 p, in Feature f)
-{
-    SdfContext ctx = new SdfContext
+    public static float Evaluate(float3 p, in Feature f)
     {
-        islandRadius     = f.data0.x,
-        maxBaseHeight    = f.data0.y,
-        voxelSize        = 1f,  // irrelevant for this SDF
-        seaLevel         = 0f   // if needed
-    };
+        // Local XZ relative to island center; world Y as-is.
+        float2 centerXZ = f.centerXZ;
 
-    return BaseIslandSdf.Evaluate(p, ctx);
-}
+        float3 localP = new float3(
+            p.x - centerXZ.x,
+            p.y,
+            p.z - centerXZ.y
+        );
+
+        // Minimal context for BaseIslandSdf
+        SdfContext ctx = new SdfContext
+        {
+            islandRadius  = f.data0.x,
+            maxBaseHeight = f.data0.y,
+            voxelSize     = 1f,
+            seaLevel      = 0f
+        };
+
+        float seed = f.data1.y;
+        return BaseIslandSdf.Evaluate(localP, ctx, seed);
+    }
+
+    // --------------------------------------------------------------------
+    // RAW footprint for biome logic.
+    // Called via FeatureBounds3DComputer.EvaluateRaw_Fast
+    // --------------------------------------------------------------------
+    public static float EvaluateRaw(float3 p, in Feature f)
+    {
+        float2 centerXZ = f.centerXZ;
+
+        float3 localP = new float3(
+            p.x - centerXZ.x,
+            p.y,
+            p.z - centerXZ.y
+        );
+
+        SdfContext ctx = new SdfContext
+        {
+            islandRadius  = f.data0.x,
+            maxBaseHeight = f.data0.y,
+            voxelSize     = 1f,
+            seaLevel      = 0f
+        };
+        
+        // We need to pass the seed to match the warp!
+        float seed = f.data1.y;
+        
+        return BaseIslandSdf.EvaluateRaw(localP, ctx, seed);
+    }
 
     // --------------------------------------------------------------------
     // Analytic bounds for base island (used only by bounds system)
     // --------------------------------------------------------------------
+    
+    // in Feature f,
+    // WorldSettings settings,
+    // out float3 center,
+    // out float3 halfExtents)
+    // {
+    //     // Unpack feature data
+    //     float radius    = math.max(f.data0.x, 0.01f);
+    //     float maxHeight = f.data0.y;
+
+    //     float sea       = settings.seaLevel;
+    //     float voxelSize = math.max(settings.voxelSize, 0.0001f);
+
+    //     // ---- Horizontal: exact footprint based on BaseIslandSdf warp ----
+    //     // In BaseIslandSdf:
+    //     //   warpMax = R * 0.20f;
+    //     //   inside island if warpedDist <= R;
+    //     // So max |xz| inside island is R + warpMax = R * 1.20f.
+    //     float warpMax       = radius * 0.20f;
+    //     float horizontalRad = radius + warpMax; // = radius * 1.2f
+
+    //     // ---- Vertical: from sea level up to maxHeight + micro ----
+    //     float microAmp = voxelSize * 0.15f;      // same formula as BaseIslandSdf
+    //     float minY     = sea;                    // base is around sea level
+    //     float maxY     = sea + maxHeight + microAmp;
+
+    //     float centerY  = (minY + maxY) * 0.5f;
+    //     float halfY    = (maxY - minY) * 0.5f;
+
+    //     center = new float3(f.centerXZ.x, centerY, f.centerXZ.y);
+    //     halfExtents = new float3(horizontalRad, halfY, horizontalRad);
+    // }
+
     private static void ComputeAnalyticBounds(
-        in Feature f,
-        WorldSettings settings,
-        out float3 center,
-        out float3 halfExtents)
-    {
-        // Unpack
-        float radius      = f.data0.x;
-        float maxHeight   = f.data0.y;
-        float microDetail = f.data1.x;
+    in Feature f,
+    WorldSettings settings,
+    out float3 center,
+    out float3 halfExtents)
+{
+    // Unpack feature data
+    float radius    = math.max(f.data0.x, 0.01f);   // islandRadius
+    float maxHeight = f.data0.y;                    // maxBaseHeight
 
-        float sea = settings.seaLevel;
+    float sea       = settings.seaLevel;
+    float voxelSize = math.max(settings.voxelSize, 0.0001f);
 
-        // Horizontal: radius + max warp (0.2R)
-        float R        = math.max(radius, 1f);
-        float warpMax  = R * 0.20f;
-        // // Full safe horizontal envelope
-float horizontal = R * 1.5f;   // 150% of radius = ALWAYS contains full warp
+    // ---- Horizontal: exact footprint based on BaseIslandSdf warp ----
+    // BaseIslandSdf:
+    //   warpMax = R * 0.20f;
+    //   inside island if warpedDist <= R;
+    // => max |xz| inside island is R + warpMax = R * 1.20f.
+    float warpMax       = radius * 0.20f;
+    float horizontalRad = radius + warpMax; // = radius * 1.2f
 
-        // Vertical: based on BaseIslandSdf math
-        float microAmp = 0.15f * microDetail;
-        float maxTop   = maxHeight * 0.6f + microAmp;
+    // ---- Vertical: from sea level up to maxHeight + micro ----
+    float microAmp = voxelSize * 0.15f;      // same formula as BaseIslandSdf
+    float minY     = sea;
+    float maxY     = sea + maxHeight + microAmp;
 
-        float centerY = sea + maxTop * 0.5f;
+    float centerY  = (minY + maxY) * 0.5f;
+    float halfY    = (maxY - minY) * 0.5f;
 
-        center      = new float3(f.centerXZ.x, centerY, f.centerXZ.y);
-        halfExtents = new float3(horizontal, maxTop * 0.5f, horizontal);
-    }
+    center = new float3(f.centerXZ.x, centerY, f.centerXZ.y);
+    halfExtents = new float3(horizontalRad, halfY, horizontalRad);
+}
+
+
+
 }

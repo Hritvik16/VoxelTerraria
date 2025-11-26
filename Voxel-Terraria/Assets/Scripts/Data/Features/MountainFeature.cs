@@ -26,6 +26,10 @@ public class MountainFeature : FeatureSO
     [Header("Warp")]
     [SerializeField] private float warpStrength = 30f;
 
+    [Header("Complex Shape")]
+    [SerializeField] private float archThreshold = 0.6f;
+    [SerializeField] private float overhangStrength = 1.0f;
+
     // Public accessors
     public Vector2 CenterXZ => centerXZ;
     public float Radius => radius;
@@ -33,12 +37,21 @@ public class MountainFeature : FeatureSO
     public float RidgeFrequency => ridgeFrequency;
     public float RidgeAmplitude => ridgeAmplitude;
     public float WarpStrength => warpStrength;
+    public float ArchThreshold => archThreshold;
+    public float OverhangStrength => overhangStrength;
 
     /// <summary>
     /// Convert this MountainFeature SO into a plain Feature struct.
     /// This is the ONLY place that knows how mountain data maps into Feature.
     /// </summary>
-    public override Feature ToFeature()
+    public override Vector3 GetConnectorPoint(WorldSettings settings)
+    {
+        // Connect to the peak of the mountain
+        // Peak height is seaLevel + height
+        return new Vector3(centerXZ.x, settings.seaLevel + height, centerXZ.y);
+    }
+
+    public override Feature ToFeature(WorldSettings settings)
     {
         Feature f = new Feature();
 
@@ -48,7 +61,12 @@ public class MountainFeature : FeatureSO
         // Pack all mountain data into float3 slots
         f.data0 = new float3(centerXZ.x, centerXZ.y, radius);
         f.data1 = new float3(height, ridgeFrequency, ridgeAmplitude);
-        f.data2 = new float3(warpStrength, 0f, 0f);
+        
+        // data2: x=warp, y=seed(injected), z=archThreshold
+        f.data2 = new float3(warpStrength, 0f, archThreshold);
+        
+        // data3: x=overhangStrength
+        f.data3 = new float3(overhangStrength, 0f, 0f);
 
         return f;
     }

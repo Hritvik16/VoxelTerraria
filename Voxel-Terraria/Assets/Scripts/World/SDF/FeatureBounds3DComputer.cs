@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Unity.Mathematics;
 using UnityEngine;
+using VoxelTerraria.World.Generation;
 
 namespace VoxelTerraria.World.SDF
 {
@@ -18,13 +19,8 @@ namespace VoxelTerraria.World.SDF
     /// Computes 3D bounds for a single Feature using a registry of
     /// feature-specific callbacks.
     ///
-    /// This class itself is FEATURE-AGNOSTIC:
-    ///   • It does NOT know about mountains, islands, lakes, etc.
-    ///   • It only calls delegates registered per FeatureType.
-    ///
-    /// Each feature type registers:
-    ///   • An analytic bounds function:   (Feature, WorldSettings) -> center+halfExtents
-    ///   • An SDF evaluation function:    (float3, Feature)        -> sdf
+    /// This class itself is FEATURE-AGNOSTIC in terms of data;
+    /// it does not store any SDF delegates (Burst can't handle that).
     ///
     /// Bounds strategy:
     ///   1. Use analytic bounds for a guaranteed safe box (no clipping).
@@ -35,43 +31,81 @@ namespace VoxelTerraria.World.SDF
     public static class FeatureBounds3DComputer
     {
         // ------------------------------------------------------------
-        // Delegate types for registry
+        // Delegate types for registry (bounds only — not used in Burst jobs)
         // ------------------------------------------------------------
-        public delegate void AnalyticBoundsFunc(in Feature f, WorldSettings settings,
-                                                out float3 center, out float3 halfExtents);
+        public delegate void AnalyticBoundsFunc(
+            in Feature f,
+            WorldSettings settings,
+            out float3 center,
+            out float3 halfExtents
+        );
 
-        public delegate float SdfEvalFunc(float3 p, in Feature f);
-
-        // ------------------------------------------------------------
-        // Registry: one entry per FeatureType
-        // ------------------------------------------------------------
+        // Registry: one entry per FeatureType (editor / bootstrap only)
         private static readonly Dictionary<FeatureType, AnalyticBoundsFunc> s_boundsFuncs =
             new Dictionary<FeatureType, AnalyticBoundsFunc>();
 
-        private static readonly Dictionary<FeatureType, SdfEvalFunc> s_sdfFuncs =
-            new Dictionary<FeatureType, SdfEvalFunc>();
-
         /// <summary>
-        /// Register a feature type with its analytic bounds and SDF evaluator.
-        /// Call this once (e.g., from a static constructor in the feature's adapter).
+        /// Register a feature type with its analytic bounds function.
+        /// Called from adapters (e.g., BaseIslandFeatureAdapter.EnsureRegistered()).
         /// </summary>
         public static void Register(
             FeatureType type,
-            AnalyticBoundsFunc boundsFunc,
-            SdfEvalFunc sdfFunc)
+            AnalyticBoundsFunc boundsFunc)
         {
             if (boundsFunc != null)
                 s_boundsFuncs[type] = boundsFunc;
-
-            if (sdfFunc != null)
-                s_sdfFuncs[type] = sdfFunc;
         }
+
+        /// <summary>
+        /// Burst-friendly SDF dispatch for geometry.
+        /// No delegates, no dictionaries – just a switch on FeatureType.
+        /// </summary>
+        public static float EvaluateSdf_Fast(float3 p, in Feature f)
+        {
+            switch (f.type)
+            {
+                case FeatureType.BaseIsland:
+                    return BaseIslandFeatureAdapter.Evaluate(p, in f);
+
+                case FeatureType.Mountain:
+                    return MountainFeatureAdapter.EvaluateShape(p, in f);
+
+                case FeatureType.Volcano:
+                    return VolcanoFeatureAdapter.EvaluateShape(p, in f);
+                case FeatureType.River:
+                    return RiverSdf.Evaluate(p, in f);
+                // Add more feature types here as you create adapters.
+                default:
+                    return 9999f; // air
+            }
+        }
+
+        /// <summary>
+        /// Burst-friendly RAW SDF dispatch for biome logic.
+        /// No delegates, no dictionaries – just a switch on FeatureType.
+        /// </summary>
+        // public static float EvaluateRaw_Fast(float3 p, in Feature f)
+        // {
+        //     switch (f.type)
+        //     {
+        //         case FeatureType.BaseIsland:
+        //             return BaseIslandFeatureAdapter.EvaluateRaw(p, in f);
+
+        //         case FeatureType.Mountain:
+        //             return MountainFeatureAdapter.EvaluateRaw(p, in f);
+
+        //         // Add more feature types here as you create adapters.
+        //         default:
+        //             return 9999f;
+        //     }
+        // }
 
         /// <summary>
         /// Computes an AABB for the given Feature using the registered
         /// analytic bounds + SDF sampling.
         ///
         /// If the feature type is not registered, returns aabb.valid = false.
+        /// This is not used inside Burst jobs.
         /// </summary>
         public static FeatureAabb ComputeAabb(in Feature f, WorldSettings settings)
         {
@@ -101,60 +135,14 @@ namespace VoxelTerraria.World.SDF
             float analyticMaxY = center.y + halfExtents.y;
 
             // --------------------------------------------------------
-            // 2. SDF sampling to tighten X/Z (but not Y)
+            // 2. Use analytic bounds directly (safe, no sampling)
             // --------------------------------------------------------
-            const int GridResolution = 8; // 8^3 = 512 samples per feature
-
-            for (int iz = 0; iz < GridResolution; iz++)
-            {
-                float tz = (iz + 0.5f) / GridResolution;
-                float z = math.lerp(-halfExtents.z, halfExtents.z, tz);
-
-                for (int iy = 0; iy < GridResolution; iy++)
-                {
-                    float ty = (iy + 0.5f) / GridResolution;
-                    float y = math.lerp(-halfExtents.y, halfExtents.y, ty);
-
-                    for (int ix = 0; ix < GridResolution; ix++)
-                    {
-                        float tx = (ix + 0.5f) / GridResolution;
-                        float x = math.lerp(-halfExtents.x, halfExtents.x, tx);
-
-                        float3 p = center + new float3(x, y, z);
-                        float sdf = EvaluateSdf(p, in f);
-
-                        if (sdf < 0f)
-                        {
-                            if (!aabb.valid)
-                            {
-                                aabb.valid = true;
-                                aabb.min = aabb.max = p;
-                            }
-                            else
-                            {
-                                aabb.min = math.min(aabb.min, p);
-                                aabb.max = math.max(aabb.max, p);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // If sampling didn’t hit inside region, fall back to analytic box
-            if (!aabb.valid)
-            {
-                aabb.valid = true;
-                aabb.min = center - halfExtents;
-                aabb.max = center + halfExtents;
-            }
-            else
-            {
-                // Restore vertical extents to analytic envelope:
-                //   - sampling tightens X/Z,
-                //   - analytic bounds ensure robust height coverage.
-                aabb.min.y = analyticMinY;
-                aabb.max.y = analyticMaxY;
-            }
+            // We previously sampled the SDF to tighten bounds, but sparse sampling
+            // can miss thin features or edges, causing cutoff.
+            // Analytic bounds are guaranteed to contain the feature.
+            aabb.valid = true;
+            aabb.min = center - halfExtents;
+            aabb.max = center + halfExtents;
 
             // --------------------------------------------------------
             // 3. Voxel-size safety margin (prevents voxelization gaps)
@@ -166,18 +154,6 @@ namespace VoxelTerraria.World.SDF
             aabb.max += margin;
 
             return aabb;
-        }
-
-        /// <summary>
-        /// Evaluate SDF for a single feature via the registry.
-        /// If no SDF is registered, returns a large positive value (air).
-        /// </summary>
-        public static float EvaluateSdf(float3 p, in Feature f)
-        {
-            if (s_sdfFuncs.TryGetValue(f.type, out var func))
-                return func(p, in f);
-
-            return 9999f;
         }
     }
 }

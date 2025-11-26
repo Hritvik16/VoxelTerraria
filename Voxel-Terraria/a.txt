@@ -1,0 +1,48 @@
+(base) hritvikjv@Hritviks-MacBook-Air-2 Voxel-Terraria % python3 scan_cs_calls.py
+
+Scanning C# files under Assets/Scripts ...
+Discovered 118 methods. Searching for call sites...
+
+================================================================================
+POTENTIALLY UNUSED METHODS (no explicit call sites found):
+================================================================================
+- World/VoxelCoord:Global.ToInt3
+    defined in: Assets/Scripts/World/VoxelCoord.cs:22
+- World/SDF/SdfRuntime:SdfRuntime.FastRejectChunk
+    defined in: Assets/Scripts/World/SDF/SdfRuntime.cs:12
+- World/SDF/NoiseUtils:NoiseUtils.FractalNoise3D
+    defined in: Assets/Scripts/World/SDF/NoiseUtils.cs:43
+- World/Meshing/MeshDataTest:MeshDataTest.GenerateTest
+    defined in: Assets/Scripts/World/Meshing/MeshDataTest.cs:9
+- World/Meshing/MarchingCubesTables:MarchingCubesTables.GetEdge
+    defined in: Assets/Scripts/World/Meshing/MarchingCubesTables.cs:313
+- World/Meshing/MarchingCubesTables:MarchingCubesTables.GetTri
+    defined in: Assets/Scripts/World/Meshing/MarchingCubesTables.cs:314
+- World/Generation/VoxelGenerator:VoxelGenerator.Execute
+    defined in: Assets/Scripts/World/Generation/VoxelGenerator.cs:25
+- World/Generation/WorldCoordUtils:WorldCoordUtils.VoxelSampleWorld
+    defined in: Assets/Scripts/World/Generation/WorldCoordUtils.cs:34
+- World/Generation/WorldCoordUtils:WorldCoordUtils.VoxelCenterWorld
+    defined in: Assets/Scripts/World/Generation/WorldCoordUtils.cs:49
+- World/Generation/WorldCoordUtils:WorldCoordUtils.WorldToChunk
+    defined in: Assets/Scripts/World/Generation/WorldCoordUtils.cs:64
+- World/Generation/WorldCoordUtils:WorldCoordUtils.WorldToVoxel
+    defined in: Assets/Scripts/World/Generation/WorldCoordUtils.cs:80
+- Editor/MountainFeatureEditor:MountainFeatureEditor.OnInspectorGUI
+    defined in: Assets/Scripts/Editor/MountainFeatureEditor.cs:9
+- Editor/Gizmos/FeatureGizmoDrawer:FeatureGizmoDrawer.OnSceneGUI
+    defined in: Assets/Scripts/Editor/Gizmos/FeatureGizmoDrawer.cs:11
+- Editor/World/WorldGenerationWindow:WorldGenerationWindow.ShowWindow
+    defined in: Assets/Scripts/Editor/World/WorldGenerationWindow.cs:67
+- Editor/World/WorldGenerationWindow:WorldGenerationWindow.OnEditorUpdate
+    defined in: Assets/Scripts/Editor/World/WorldGenerationWindow.cs:439
+- Editor/Debug/DebugListMountainFeatures:DebugListMountainFeatures.ListMountainFeatures
+    defined in: Assets/Scripts/Editor/Debug/DebugListMountainFeatures.cs:7
+
+NOTE:
+  • This is static text search — treat results as *candidates*.
+  • Methods used only via UnityEvents, attributes, or reflection
+    will appear here even though they are actually used.
+(base) hritvikjv@Hritviks-MacBook-Air-2 Voxel-Terraria % 
+
+

@@ -5,4 +5,6 @@ public enum FeatureType : int
     Lake       = 2,
     Forest     = 3,
     City       = 4,
+    Volcano = 5,
+    River = 6,
 }

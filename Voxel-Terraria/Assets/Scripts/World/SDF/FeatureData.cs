@@ -12,7 +12,30 @@ public struct MountainFeatureData
     public float ridgeAmplitude;  // Ridged noise amplitude
 
     public float warpStrength;    // Domain warp strength
+    public float archThreshold;   // Threshold for carving arches
+    public float overhangStrength;// Strength of overhang distortion
+    public float seed;            // Randomization seed
 }
+
+public struct VolcanoFeatureData
+{
+    public float2 centerXZ;
+
+    public float radius;
+    public float height;
+    public float baseHeight;
+
+    public float craterRadius;
+    public float craterDepth;
+    public float pathWidth;
+    public float pathDepth;
+
+    public float pathNoiseFreq;
+    public float pathNoiseAmp;
+    
+    public float seed;            // Randomization seed
+}
+
 
 [Serializable]
 public struct LakeFeatureData

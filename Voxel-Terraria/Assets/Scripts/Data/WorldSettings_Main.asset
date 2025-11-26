@@ -13,11 +13,13 @@ MonoBehaviour:
   m_Name: WorldSettings_Main
   m_EditorClassIdentifier: Assembly-CSharp::WorldSettings
   voxelSize: 0.25
-  chunkSize: 64
-  islandRadius: 60
-  maxBaseHeight: 0
+  chunkSize: 32
+  islandRadius: 40
+  maxBaseHeight: 5
   stepHeight: 0
   seaLevel: 0
   useJobs: 1
   useBurst: 1
   useMarchingCubes: 0
+  randomizeFeatures: 1
+  globalSeed: 12345

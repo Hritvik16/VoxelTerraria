@@ -5,7 +5,7 @@ using VoxelTerraria.World.SDF;
 /// <summary>
 /// Adapter converting MountainFeature (SO) or packed Feature ↔ MountainFeatureData.
 /// Used by SdfBootstrapInternal (to pack) and CombinedTerrainSdf (to evaluate),
-/// and now also by the agnostic bounds system via FeatureBounds3DComputer.
+/// and by FeatureBounds3DComputer for bounds + RAW evaluation.
 /// </summary>
 public static class MountainFeatureAdapter
 {
@@ -21,8 +21,7 @@ public static class MountainFeatureAdapter
 
         FeatureBounds3DComputer.Register(
             FeatureType.Mountain,
-            ComputeAnalyticBounds,
-            EvaluateShape
+            ComputeAnalyticBounds
         );
 
         s_registered = true;
@@ -31,46 +30,49 @@ public static class MountainFeatureAdapter
     /// <summary>
     /// Convert a MountainFeature ScriptableObject into a generic Feature.
     /// </summary>
-    public static Feature ToFeature(MountainFeature so, int biomeId = 2)
-    {
-        Feature f = new Feature();
+    // public static Feature ToFeature(MountainFeature so, int biomeId = 2)
+    // {
+    //     Feature f = new Feature();
 
-        f.type    = FeatureType.Mountain;
-        f.biomeId = biomeId;
+    //     f.type    = FeatureType.Mountain;
+    //     f.biomeId = biomeId;
 
-        // Center is stored both as a dedicated field and inside data0
-        f.centerXZ = so.CenterXZ;
+    //     // Center is stored both as a dedicated field and inside data0
+    //     f.centerXZ = so.CenterXZ;
 
-        // data0 = center.x, center.y, radius
-        f.data0 = new float3(so.CenterXZ.x, so.CenterXZ.y, so.Radius);
+    //     // data0 = center.x, center.y, radius
+    //     f.data0 = new float3(so.CenterXZ.x, so.CenterXZ.y, so.Radius);
 
-        // data1 = height, ridgeFrequency, ridgeAmplitude
-        f.data1 = new float3(so.Height, so.RidgeFrequency, so.RidgeAmplitude);
+    //     // data1 = height, ridgeFrequency, ridgeAmplitude
+    //     f.data1 = new float3(so.Height, so.RidgeFrequency, so.RidgeAmplitude);
 
-        // data2 = warpStrength, (unused), (unused)
-        f.data2 = new float3(so.WarpStrength, 0f, 0f);
+    //     // data2 = warpStrength, (unused), (unused)
+    //     f.data2 = new float3(so.WarpStrength, 0f, 0f);
 
-        return f;
-    }
+    //     return f;
+    // }
 
     /// <summary>
     /// SDF for geometry: used by CombinedTerrainSdf and bounds system.
-    /// Signature matches FeatureBounds3DComputer.SdfEvalFunc.
+    /// Called via FeatureBounds3DComputer.EvaluateSdf_Fast.
     /// </summary>
     public static float EvaluateShape(float3 p, in Feature f)
     {
         MountainFeatureData m = Unpack(f);
+
+        // MountainSdf expects world-space p, and uses m.centerXZ itself.
         return MountainSdf.Evaluate(p, in m);
     }
 
     /// <summary>
-    /// RAW field for biome classification (not wired up yet, but ready).
+    /// RAW field for biome classification.
+    /// Called via FeatureBounds3DComputer.EvaluateRaw_Fast.
     /// </summary>
-    public static float EvaluateRaw(float3 p, in Feature f)
-    {
-        MountainFeatureData m = Unpack(f);
-        return MountainSdf.EvaluateRaw(p, in m);
-    }
+    // public static float EvaluateRaw(float3 p, in Feature f)
+    // {
+    //     MountainFeatureData m = Unpack(f);
+    //     return MountainSdf.EvaluateRaw(p, in m);
+    // }
 
     // -----------------------------------------
     // Helper: Feature → MountainFeatureData
@@ -84,7 +86,11 @@ public static class MountainFeatureAdapter
             height          = f.data1.x,
             ridgeFrequency  = f.data1.y,
             ridgeAmplitude  = f.data1.z,
-            warpStrength    = f.data2.x
+            warpStrength    = f.data2.x,
+            seed            = f.data2.y,
+            archThreshold   = f.data2.z,
+            
+            overhangStrength = f.data3.x
         };
     }
 

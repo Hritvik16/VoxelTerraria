@@ -353,7 +353,14 @@ namespace VoxelTerraria.EditorTools
             // Ensure root exists
             cachedRoot = GetOrCreateRoot();
 
-            // Temporarily simplify log stack traces for cleaner spam
+            // *** NEW: Force a refresh of the SDF context to pick up new seeds/settings ***
+            var bootstrap = cachedRoot.GetComponent<VoxelTerraria.World.SDF.SdfBootstrap>();
+            if (bootstrap != null)
+            {
+                bootstrap.Refresh();
+            }
+
+
             Application.SetStackTraceLogType(LogType.Log, StackTraceLogType.None);
             Application.SetStackTraceLogType(LogType.Warning, StackTraceLogType.None);
             Application.SetStackTraceLogType(LogType.Error, StackTraceLogType.None);
