@@ -38,6 +38,14 @@ public class VolcanoFeature : FeatureSO
         return new Vector3(CenterXZ.x, BaseHeight + Height, CenterXZ.y);
     }
 
+    public override float GetRadius() => Radius;
+    public override Vector2 GetCenter() => CenterXZ;
+
+    public override float GetBaseHeight(WorldSettings settings)
+    {
+        return BaseHeight;
+    }
+
     public override Feature ToFeature(WorldSettings settings)
     {
         Feature f = new Feature();

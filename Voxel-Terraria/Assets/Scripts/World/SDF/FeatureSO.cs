@@ -11,8 +11,8 @@ using UnityEngine;
 /// </summary>
 public abstract class FeatureSO : ScriptableObject
 {
-    [SerializeField] private bool drawGizmos = true;
-    public bool DrawGizmos => drawGizmos;
+    [SerializeField] private bool showGizmos = true;
+    public bool ShowGizmos => showGizmos;
 
     /// <summary>
     /// Convert this ScriptableObject into a Burst-friendly unmanaged Feature struct.
@@ -27,5 +27,29 @@ public abstract class FeatureSO : ScriptableObject
     public virtual Vector3 GetConnectorPoint(WorldSettings settings)
     {
         return Vector3.zero;
+    }
+
+    /// <summary>
+    /// Returns the base height of the feature (where it meets the ground/water).
+    /// Used for river connections.
+    /// </summary>
+    public virtual float GetBaseHeight(WorldSettings settings)
+    {
+        return settings.seaLevel;
+    }
+
+    public virtual float GetRadius()
+    {
+        return 0f;
+    }
+
+    public virtual Vector2 GetCenter()
+    {
+        return Vector2.zero;
+    }
+
+    public virtual void DrawGizmos(WorldSettings settings)
+    {
+        // Optional override
     }
 }

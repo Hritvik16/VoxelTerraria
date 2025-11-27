@@ -122,4 +122,33 @@ public static class MountainFeatureAdapter
         center      = new float3(centerXZ.x, centerY, centerXZ.y);
         halfExtents = new float3(horizontal, halfY, horizontal);
     }
+
+    /// <summary>
+    /// Returns the approximate surface height of the mountain at the given XZ position.
+    /// Used for placing cave entrances.
+    /// </summary>
+    public static float GetSurfaceHeight(float2 xz, in Feature f)
+    {
+        MountainFeatureData m = Unpack(f);
+        
+        float dist = math.distance(xz, m.centerXZ);
+        if (dist > m.radius) return -999f; // Outside mountain
+
+        // Simple analytic approximation:
+        // Height falls off from center to radius.
+        // Using a smooth falloff similar to the SDF envelope.
+        // SDF uses: k = 1 - (dist/radius)^2 (roughly)
+        
+        float t = math.saturate(dist / m.radius);
+        // Cubic falloff: (1-t^2)^2 or similar
+        float envelope = (1f - t * t);
+        envelope *= envelope;
+        
+        // Add some noise approximation if possible, or just return base shape.
+        // For entrance placement, base shape is usually enough, 
+        // but we can sample a simple noise if we want to be more accurate.
+        // Let's stick to the main shape for now to avoid expensive noise calls here.
+        
+        return m.height * envelope; // + baseHeight (which is usually seaLevel for mountains)
+    }
 }

@@ -74,6 +74,10 @@ namespace VoxelTerraria.World.SDF
                     return VolcanoFeatureAdapter.EvaluateShape(p, in f);
                 case FeatureType.River:
                     return RiverSdf.Evaluate(p, in f);
+                case FeatureType.CaveRoom:
+                    return CaveRoomSdf.Evaluate(p, in f);
+                case FeatureType.CaveTunnel:
+                    return CaveTunnelSdf.Evaluate(p, in f);
                 // Add more feature types here as you create adapters.
                 default:
                     return 9999f; // air

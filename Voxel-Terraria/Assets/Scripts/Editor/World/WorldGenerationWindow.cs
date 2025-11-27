@@ -21,6 +21,12 @@ namespace VoxelTerraria.EditorTools
         [SerializeField]
         private MeshMode meshMode = MeshMode.BlockyCubes; // default to block mesher (final art style)
 
+        private enum GenerationMode { FullWorld, SingleFeaturePreview }
+        [SerializeField] private GenerationMode generationMode = GenerationMode.FullWorld;
+
+        [SerializeField] private FeatureType previewFeatureType = FeatureType.CaveRoom;
+        [SerializeField] private int previewFeatureIndex = 0;
+
         // ------------------------------------------------------
         // Constants
         // ------------------------------------------------------
@@ -50,6 +56,11 @@ namespace VoxelTerraria.EditorTools
         private int maxChunkX;
         private int minChunkZ;
         private int maxChunkZ;
+
+        // Custom Vertical Slice
+        private bool useCustomYRange = false;
+        private int customMinY = -5;
+        private int customMaxY = 0;
 
         // Generation timing
         private double generationStartTime;
@@ -138,6 +149,22 @@ namespace VoxelTerraria.EditorTools
 
             DrawStatusSection();
 
+            DrawStatusSection();
+
+            EditorGUILayout.Space();
+
+            // Mode Selection
+            EditorGUILayout.LabelField("Generation Mode", EditorStyles.boldLabel);
+            generationMode = (GenerationMode)EditorGUILayout.EnumPopup("Mode", generationMode);
+
+            if (generationMode == GenerationMode.SingleFeaturePreview)
+            {
+                EditorGUI.indentLevel++;
+                previewFeatureType = (FeatureType)EditorGUILayout.EnumPopup("Feature Type", previewFeatureType);
+                previewFeatureIndex = EditorGUILayout.IntField("Feature Index", previewFeatureIndex);
+                EditorGUI.indentLevel--;
+            }
+
             EditorGUILayout.Space();
 
             // Options
@@ -170,12 +197,24 @@ namespace VoxelTerraria.EditorTools
             );
 
             EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Vertical Slice (Debug)", EditorStyles.boldLabel);
+            useCustomYRange = EditorGUILayout.Toggle("Use Custom Y Range", useCustomYRange);
+            if (useCustomYRange)
+            {
+                customMinY = EditorGUILayout.IntField("Min Chunk Y", customMinY);
+                customMaxY = EditorGUILayout.IntField("Max Chunk Y", customMaxY);
+            }
+
+            EditorGUILayout.Space();
 
             // Buttons
             EditorGUI.BeginDisabledGroup(isGenerating || !CanGenerateWorld());
-            if (GUILayout.Button("Generate All Chunks (Editor)", GUILayout.Height(32)))
+            if (GUILayout.Button(generationMode == GenerationMode.SingleFeaturePreview ? "Preview Feature" : "Generate All Chunks (Editor)", GUILayout.Height(32)))
             {
-                StartGeneration();
+                if (generationMode == GenerationMode.SingleFeaturePreview)
+                    StartPreview();
+                else
+                    StartGeneration();
             }
             EditorGUI.EndDisabledGroup();
 
@@ -321,7 +360,10 @@ namespace VoxelTerraria.EditorTools
             {
                 for (int x = minChunkX; x <= maxChunkX; x++)
                 {
-                    for (int y = cachedSdfContext.minChunkY; y <= cachedSdfContext.maxChunkY; y++)
+                    int startY = useCustomYRange ? customMinY : cachedSdfContext.minChunkY;
+                    int endY = useCustomYRange ? customMaxY : cachedSdfContext.maxChunkY;
+
+                    for (int y = startY; y <= endY; y++)
                         generationQueue.Enqueue(new ChunkCoord3(x, y, z));
 
                 }
@@ -682,6 +724,123 @@ else
     }
 }
 
+        }
+
+        // ------------------------------------------------------
+        // Preview Logic
+        // ------------------------------------------------------
+        private void StartPreview()
+        {
+            if (cachedWorldSettings == null) return;
+
+            // 1. Get the feature
+            var bootstrap = FindObjectOfType<SdfBootstrap>();
+            if (bootstrap == null) return;
+
+            FeatureSO selectedFeature = null;
+
+            switch (previewFeatureType)
+            {
+                case FeatureType.CaveRoom:
+                    if (bootstrap.caveRooms != null && previewFeatureIndex >= 0 && previewFeatureIndex < bootstrap.caveRooms.Length)
+                        selectedFeature = bootstrap.caveRooms[previewFeatureIndex];
+                    break;
+                case FeatureType.CaveTunnel:
+                    if (bootstrap.caveTunnels != null && previewFeatureIndex >= 0 && previewFeatureIndex < bootstrap.caveTunnels.Length)
+                        selectedFeature = bootstrap.caveTunnels[previewFeatureIndex];
+                    break;
+                // Add others as needed
+            }
+
+            if (selectedFeature == null)
+            {
+                Debug.LogError($"Invalid feature selection: {previewFeatureType} [{previewFeatureIndex}]");
+                return;
+            }
+
+            // 2. Build a temporary context
+            SdfContext ctx = new SdfContext();
+            ctx.voxelSize = cachedWorldSettings.voxelSize;
+            ctx.chunkSize = cachedWorldSettings.chunkSize;
+            ctx.seaLevel = cachedWorldSettings.seaLevel;
+            
+            // Create a single feature in the context
+            ctx.featureCount = 1;
+            ctx.features = new NativeArray<Feature>(1, Allocator.Persistent);
+            
+            Feature f = selectedFeature.ToFeature(cachedWorldSettings);
+            // FORCE UNION for visualization (so we see the shape as solid)
+            f.blendMode = BlendMode.Union; 
+            ctx.features[0] = f;
+
+            // 3. Compute bounds for this single feature
+            // We can use the FeatureBounds3DComputer directly or just use the feature's center/radius
+            // Let's use the generic computer to be safe
+            var boundsResult = ChunkBoundsAutoComputer.ComputeFromFeatures(
+                cachedWorldSettings,
+                ctx.features,
+                1
+            );
+
+            if (!boundsResult.valid)
+            {
+                Debug.LogError("Could not compute bounds for preview.");
+                ctx.Dispose();
+                return;
+            }
+
+            // Update context bounds
+            ctx.minChunkX = boundsResult.minChunkX;
+            ctx.maxChunkX = boundsResult.maxChunkX;
+            ctx.minChunkZ = boundsResult.minChunkZ;
+            ctx.maxChunkZ = boundsResult.maxChunkZ;
+            ctx.minChunkY = boundsResult.minChunkY;
+            ctx.maxChunkY = boundsResult.maxChunkY;
+            
+            // Override cached context for generation
+            // We need to be careful not to leak the old one if it was ours, but usually it's SdfRuntime.Context
+            // We will just use this local 'ctx' for generation queue, but GenerateSingleChunk uses cachedSdfContext.
+            // So we must temporarily swap it.
+            
+            // Actually, let's just set it to SdfRuntime for now, but remember to restore?
+            // Or just set it in our local 'cachedSdfContext' field.
+            cachedSdfContext = ctx; // This is a struct copy? No, SdfContext is a struct.
+            // So 'cachedSdfContext' is a copy.
+            
+            // 4. Start Generation
+            // Same logic as StartGeneration but with our specific bounds
+            if (isGenerating) StopGeneration();
+
+            minChunkX = ctx.minChunkX;
+            maxChunkX = ctx.maxChunkX;
+            minChunkZ = ctx.minChunkZ;
+            maxChunkZ = ctx.maxChunkZ;
+
+            int chunksX = maxChunkX - minChunkX + 1;
+            int chunksZ = maxChunkZ - minChunkZ + 1;
+
+            generationQueue = new Queue<ChunkCoord3>(chunksX * chunksZ);
+
+            for (int z = minChunkZ; z <= maxChunkZ; z++)
+            {
+                for (int x = minChunkX; x <= maxChunkX; x++)
+                {
+                    for (int y = ctx.minChunkY; y <= ctx.maxChunkY; y++)
+                        generationQueue.Enqueue(new ChunkCoord3(x, y, z));
+                }
+            }
+
+            totalChunks = generationQueue.Count;
+            processedChunks = 0;
+            isGenerating = true;
+            generationStartTime = EditorApplication.timeSinceStartup;
+            cachedRoot = GetOrCreateRoot();
+            
+            // Clear existing world to show only preview
+            ClearGeneratedWorld();
+            cachedRoot = GetOrCreateRoot(); // Recreate root
+
+            Debug.Log($"Starting Preview for {previewFeatureType} {previewFeatureIndex}. Chunks: {totalChunks}");
         }
     }
 }

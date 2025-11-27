@@ -92,4 +92,35 @@ public static class VolcanoFeatureAdapter
         center      = new float3(centerXZ.x, centerY, centerXZ.y);
         halfExtents = new float3(horizontal, halfY, horizontal);
     }
+
+    /// <summary>
+    /// Returns the approximate surface height of the volcano at the given XZ position.
+    /// Used for placing cave entrances.
+    /// </summary>
+    public static float GetSurfaceHeight(float2 xz, in Feature f)
+    {
+        VolcanoFeatureData v = Unpack(f);
+        
+        float dist = math.distance(xz, v.centerXZ);
+        if (dist > v.radius) return v.baseHeight;
+
+        // Volcano shape approximation:
+        // Cone with a crater.
+        // Cone: Lerp(BaseHeight + Height, BaseHeight, dist/Radius)
+        
+        float t = math.saturate(dist / v.radius);
+        float coneHeight = math.lerp(v.baseHeight + v.height, v.baseHeight, t);
+        
+        // Crater subtraction (simple)
+        if (dist < v.craterRadius)
+        {
+            // Inside crater
+            float craterT = dist / v.craterRadius;
+            // Simple bowl shape
+            float craterDepth = math.lerp(v.craterDepth, 0f, craterT * craterT);
+            coneHeight -= craterDepth;
+        }
+        
+        return coneHeight;
+    }
 }

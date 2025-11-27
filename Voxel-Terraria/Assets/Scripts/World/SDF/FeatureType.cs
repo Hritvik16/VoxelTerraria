@@ -7,4 +7,6 @@ public enum FeatureType : int
     City       = 4,
     Volcano = 5,
     River = 6,
+    CaveRoom = 7,
+    CaveTunnel = 8,
 }

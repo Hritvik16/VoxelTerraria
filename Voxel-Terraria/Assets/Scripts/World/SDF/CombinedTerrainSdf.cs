@@ -9,8 +9,8 @@ public static class CombinedTerrainSdf
 
         // Temporary: everything below sea level is air.
         // You can relax this later when you add caves / underwater.
-        if (p.y < ctx.seaLevel)
-            return 1f;  // positive → air
+        // if (p.y < ctx.seaLevel)
+        //     return 1f;  // positive → air
 
         // 1. Find Base Island Mask (if any)
         // We want to clip everything to the island's footprint.
@@ -48,10 +48,10 @@ public static class CombinedTerrainSdf
 
         // Apply Island Mask
         // If we are outside the island footprint (mask > 0), force air.
-        // if (hasIsland)
-        // {
-        //     sdf = math.max(sdf, islandMask);
-        // }
+        if (hasIsland)
+        {
+            sdf = math.max(sdf, islandMask);
+        }
 
         return sdf;
     }

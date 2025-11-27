@@ -51,6 +51,14 @@ public class MountainFeature : FeatureSO
         return new Vector3(centerXZ.x, settings.seaLevel + height, centerXZ.y);
     }
 
+    public override float GetRadius() => radius;
+    public override Vector2 GetCenter() => centerXZ;
+
+    public override float GetBaseHeight(WorldSettings settings)
+    {
+        return settings.seaLevel;
+    }
+
     public override Feature ToFeature(WorldSettings settings)
     {
         Feature f = new Feature();
