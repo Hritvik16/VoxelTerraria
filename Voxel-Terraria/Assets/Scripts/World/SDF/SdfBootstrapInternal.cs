@@ -320,37 +320,30 @@ namespace VoxelTerraria.World.SDF
                 ctx.features[i] = f;
             }
 
+            //----------------------------------------------------
+            // 3c. PRE-CALCULATE FEATURE BOUNDS
+            //----------------------------------------------------
+            ctx.featureBounds = new NativeArray<FeatureAabb>(ctx.featureCount, Allocator.Persistent);
+            
+            // Ensure all adapters are registered before computing bounds
+            if (baseIslandSO != null) BaseIslandFeatureAdapter.EnsureRegistered();
+            if (mountainCount > 0) MountainFeatureAdapter.EnsureRegistered();
+            if (volcanoCount > 0) VolcanoFeatureAdapter.EnsureRegistered();
+            if (riverCount > 0) RiverFeatureAdapter.EnsureRegistered();
+            if (caveRoomCount > 0) CaveRoomFeatureAdapter.EnsureRegistered();
+            if (caveTunnelCount > 0) CaveTunnelFeatureAdapter.EnsureRegistered();
+
+            for (int i = 0; i < ctx.featureCount; i++)
+            {
+                ctx.featureBounds[i] = FeatureBounds3DComputer.ComputeAabb(ctx.features[i], ws);
+            }
+
 //----------------------------------------------------
 // 4. Chunk bounds (XZ + Y) from generic features
 //----------------------------------------------------
 
-// Ensure bounds/SDF registry is populated for any feature types we actually use.
-if (baseIslandSO != null)
-{
-    BaseIslandFeatureAdapter.EnsureRegistered();
-}
-if (mountainCount > 0)
-{
-    MountainFeatureAdapter.EnsureRegistered();
-}
+            // Adapters already registered above for bounds calculation
 
-if (volcanoCount > 0)
-{
-    VolcanoFeatureAdapter.EnsureRegistered();
-}
-            if (riverCount > 0)
-            {
-                RiverFeatureAdapter.EnsureRegistered();
-            }
-            // Caves - REMOVED
-            if (caveRoomCount > 0)
-            {
-                CaveRoomFeatureAdapter.EnsureRegistered();
-            }
-            if (caveTunnelCount > 0)
-            {
-                CaveTunnelFeatureAdapter.EnsureRegistered();
-            }
 
 // (Later: when lakes/forests/cities get adapters, call their EnsureRegistered()
 //  here too before computing bounds.)

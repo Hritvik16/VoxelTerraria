@@ -1,6 +1,7 @@
 using System;
 using Unity.Collections;
 using Unity.Mathematics;
+using VoxelTerraria.World.SDF;
 
 /// <summary>
 /// Burst-friendly terrain context used by all SDF evaluators, voxel generators,
@@ -65,6 +66,11 @@ public struct SdfContext
     public int featureCount;
 
     // ------------------------------------------------------------
+    // FEATURE BOUNDS (Pre-calculated for culling)
+    // ------------------------------------------------------------
+    public NativeArray<FeatureAabb> featureBounds;
+
+    // ------------------------------------------------------------
     // CLEANUP
     // ------------------------------------------------------------
     public void Dispose()
@@ -74,6 +80,7 @@ public struct SdfContext
         // if (forests.IsCreated) forests.Dispose();
         // if (cities.IsCreated) cities.Dispose();
 
-        // if (features.IsCreated) features.Dispose();
+        if (features.IsCreated) features.Dispose();
+        if (featureBounds.IsCreated) featureBounds.Dispose();
     }
 }
