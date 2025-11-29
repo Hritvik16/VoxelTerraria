@@ -107,6 +107,23 @@ public static class VolcanoSdf
         // --------------------------------------------------------------------
         // 7. Final SDF
         // --------------------------------------------------------------------
-        return p.y - terrainHeight;
+        // Fix: Prevent generating below y=0
+        // We want the terrain to stop at y=0 (or whatever the floor is).
+        // If p.y < 0, we want to return a value that indicates "solid" only if we are above the floor?
+        // Wait, standard SDF for terrain is (p.y - height).
+        // If p.y is -10 and height is 0, SDF is -10 (Solid).
+        // We want to force it to be Air (positive) or at least 0 if we are below the world floor?
+        // Actually, if we want to CUT OFF below 0, we want the SDF to be positive (Air) when p.y < 0?
+        // No, usually we want a floor.
+        // But the user says "I see it under y=0". This implies they see the cone extending infinitely down.
+        // To cut it off, we can intersect with a plane at y=0.
+        // Intersection in SDF is max(sdf1, sdf2).
+        // Plane at y=0 pointing up: sdf = -p.y (Solid below 0, Air above).
+        // Wait, Plane pointing UP (Solid below) is p.y.
+        // We want to be SOLID above y=0? No, we want to be AIR below y=0?
+        // If we want AIR below y=0, we need max(volcanoSdf, -p.y).
+        // If p.y = -10, -p.y = 10 (Positive/Air). max(..., 10) = 10. Air. Correct.
+        
+        return math.max(p.y - terrainHeight, -p.y);
     }
 }

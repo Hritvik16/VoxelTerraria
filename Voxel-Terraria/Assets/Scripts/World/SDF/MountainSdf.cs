@@ -83,6 +83,18 @@ public static class MountainSdf
         // --------------------------------------------------------------------
         // 4. SDF Calculation (Pure Heightmap)
         // --------------------------------------------------------------------
+        // --------------------------------------------------------------------
+        // 4. SDF Calculation (Pure Heightmap)
+        // --------------------------------------------------------------------
+        // Fix: If we are outside the mountain (targetHeight ~ 0), we must return Air (positive).
+        // If we just return p.y, we get a flat floor at y=0.
+        // We want to return a large positive value if we are outside the mountain's influence.
+        
+        if (targetHeight < 0.01f)
+        {
+             return 9999f; // Force Air
+        }
+
         float sdf = p.y - targetHeight;
 
         // --------------------------------------------------------------------

@@ -110,7 +110,10 @@ public static class MountainFeatureAdapter
         float sea = settings.seaLevel;
 
         // Horizontal: safe radius based on MountainSdf reject radius
-        float rejectRadius = math.max(radius, 1f) * 1.25f;
+        // Fix: Increase padding to account for heavy warping (0.35 * radius) and noise.
+        // Was 1.25f, but warp is 0.35, plus stretch (1.4 on one axis).
+        // Let's use a safer margin: 2.0f.
+        float rejectRadius = math.max(radius, 1f) * 2.0f;
         float horizontal   = rejectRadius;
 
         // Vertical: generous envelope to avoid clipping:
