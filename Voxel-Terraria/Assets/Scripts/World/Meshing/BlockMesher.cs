@@ -25,166 +25,255 @@ namespace VoxelTerraria.World.Meshing
             SdfContext ctx,
             ref MeshData meshData)
         {
-            int r = voxelResolution;
-
-            float chunkWorld = voxelSize * cells;
-            float3 chunkOrigin = new float3(
-                coord.x * chunkWorld,
-                coord.y * chunkWorld,
-                coord.z * chunkWorld
-            );
-
-            for (int z = 0; z < cells; z++)
+            // 3 axes: 0=X, 1=Y, 2=Z
+            for (int axis = 0; axis < 3; axis++)
             {
-                for (int y = 0; y < cells; y++)
+                int uAxis = (axis + 1) % 3;
+                int vAxis = (axis + 2) % 3;
+
+                // We'll iterate through the chunk in slices along 'axis'
+                // For each slice, we build a mask of faces.
+                // We need two masks: one for the forward face (+axis) and one for backward (-axis).
+                // Mask size is cells * cells.
+                
+                int sliceSize = cells * cells;
+                var maskPos = new NativeArray<ushort>(sliceSize, Allocator.Temp);
+                var maskNeg = new NativeArray<ushort>(sliceSize, Allocator.Temp);
+
+                // Iterate through all slices
+                for (int i = 0; i < cells; i++)
                 {
-                    for (int x = 0; x < cells; x++)
+                    // 1. Populate masks for this slice
+                    for (int v = 0; v < cells; v++)
                     {
-                        // Skip fully empty cells (no solid corners)
-                        if (!IsCellSolidLocal(x, y, z, cells, r, voxels))
-                            continue;
-
-                        float vx = x * voxelSize;
-                        float vy = y * voxelSize;
-                        float vz = z * voxelSize;
-
-                        float3 basePos = new float3(vx, vy, vz);
-                        float s = voxelSize;
-
-                        // +X face
-                        if (IsCellAir(x + 1, y, z, cells, r, voxels, chunkOrigin, voxelSize, ref ctx))
+                        for (int u = 0; u < cells; u++)
                         {
-                            float3 normal = new float3(1, 0, 0);
+                            // Map (i, u, v) to (x, y, z)
+                            int x = 0, y = 0, z = 0;
+                            
+                            // Axis mapping
+                            if (axis == 0) { x = i; y = u; z = v; }
+                            else if (axis == 1) { x = v; y = i; z = u; }
+                            else { x = u; y = v; z = i; }
 
-                            float3 v0 = basePos + new float3(s, 0, 0);
-                            float3 v1 = basePos + new float3(s, s, 0);
-                            float3 v2 = basePos + new float3(s, s, s);
-                            float3 v3 = basePos + new float3(s, 0, s);
+                            // Check this voxel
+                            bool isSolid = IsCellSolidLocal(x, y, z, cells, voxelResolution, voxels);
+                            if (!isSolid) continue; // If current voxel is empty, it has no faces
 
-                            float3 faceCenterLocal = basePos + new float3(s, 0.5f * s, 0.5f * s);
-                            ushort matId = MaterialForFace(
-                                x, y, z,
-                                cells, r, voxels,
-                                chunkOrigin, faceCenterLocal,
-                                ref ctx
+                            // Calculate world position for SDF checks (needed for IsCellAir)
+                            float chunkWorld = voxelSize * cells;
+                            float3 chunkOrigin = new float3(
+                                coord.x * chunkWorld,
+                                coord.y * chunkWorld,
+                                coord.z * chunkWorld
                             );
 
-                            if (matId != 0)
-                                meshData.AddQuad(v0, v1, v2, v3, normal, matId);
-                        }
+                            // +Axis Face (Forward)
+                            // Face is at (i+1) along axis. Check neighbor at (i+1).
+                            // Neighbor coords:
+                            int nx = x + (axis == 0 ? 1 : 0);
+                            int ny = y + (axis == 1 ? 1 : 0);
+                            int nz = z + (axis == 2 ? 1 : 0);
 
-                        // -X face
-                        if (IsCellAir(x - 1, y, z, cells, r, voxels, chunkOrigin, voxelSize, ref ctx))
-                        {
-                            float3 normal = new float3(-1, 0, 0);
+                            if (IsCellAir(nx, ny, nz, cells, voxelResolution, voxels, chunkOrigin, voxelSize, ref ctx))
+                            {
+                                float3 faceCenterLocal = GetFaceCenterLocal(x, y, z, voxelSize, axis, 1);
+                                maskPos[v * cells + u] = MaterialForFace(x, y, z, cells, voxelResolution, voxels, chunkOrigin, faceCenterLocal, ref ctx);
+                            }
 
-                            float3 v0 = basePos + new float3(0, 0, s);
-                            float3 v1 = basePos + new float3(0, s, s);
-                            float3 v2 = basePos + new float3(0, s, 0);
-                            float3 v3 = basePos + new float3(0, 0, 0);
+                            // -Axis Face (Backward)
+                            // Face is at (i) along axis. Check neighbor at (i-1).
+                            // Neighbor coords:
+                            nx = x - (axis == 0 ? 1 : 0);
+                            ny = y - (axis == 1 ? 1 : 0);
+                            nz = z - (axis == 2 ? 1 : 0);
 
-                            float3 faceCenterLocal = basePos + new float3(0f, 0.5f * s, 0.5f * s);
-                            ushort matId = MaterialForFace(
-                                x, y, z,
-                                cells, r, voxels,
-                                chunkOrigin, faceCenterLocal,
-                                ref ctx
-                            );
-
-                            if (matId != 0)
-                                meshData.AddQuad(v0, v1, v2, v3, normal, matId);
-                        }
-
-                        // +Y face
-                        if (IsCellAir(x, y + 1, z, cells, r, voxels, chunkOrigin, voxelSize, ref ctx))
-                        {
-                            float3 normal = new float3(0, 1, 0);
-
-                            float3 v0 = basePos + new float3(0, s, 0);
-                            float3 v1 = basePos + new float3(0, s, s);
-                            float3 v2 = basePos + new float3(s, s, s);
-                            float3 v3 = basePos + new float3(s, s, 0);
-
-                            float3 faceCenterLocal = basePos + new float3(0.5f * s, s, 0.5f * s);
-                            ushort matId = MaterialForFace(
-                                x, y, z,
-                                cells, r, voxels,
-                                chunkOrigin, faceCenterLocal,
-                                ref ctx
-                            );
-
-                            if (matId != 0)
-                                meshData.AddQuad(v0, v1, v2, v3, normal, matId);
-                        }
-
-                        // -Y face
-                        if (IsCellAir(x, y - 1, z, cells, r, voxels, chunkOrigin, voxelSize, ref ctx))
-                        {
-                            float3 normal = new float3(0, -1, 0);
-
-                            float3 v0 = basePos + new float3(0, 0, s);
-                            float3 v1 = basePos + new float3(0, 0, 0);
-                            float3 v2 = basePos + new float3(s, 0, 0);
-                            float3 v3 = basePos + new float3(s, 0, s);
-
-                            float3 faceCenterLocal = basePos + new float3(0.5f * s, 0f, 0.5f * s);
-                            ushort matId = MaterialForFace(
-                                x, y, z,
-                                cells, r, voxels,
-                                chunkOrigin, faceCenterLocal,
-                                ref ctx
-                            );
-
-                            if (matId != 0)
-                                meshData.AddQuad(v0, v1, v2, v3, normal, matId);
-                        }
-
-                        // +Z face
-                        if (IsCellAir(x, y, z + 1, cells, r, voxels, chunkOrigin, voxelSize, ref ctx))
-                        {
-                            float3 normal = new float3(0, 0, 1);
-
-                            float3 v0 = basePos + new float3(s, 0, s);
-                            float3 v1 = basePos + new float3(s, s, s);
-                            float3 v2 = basePos + new float3(0, s, s);
-                            float3 v3 = basePos + new float3(0, 0, s);
-
-                            float3 faceCenterLocal = basePos + new float3(0.5f * s, 0.5f * s, s);
-                            ushort matId = MaterialForFace(
-                                x, y, z,
-                                cells, r, voxels,
-                                chunkOrigin, faceCenterLocal,
-                                ref ctx
-                            );
-
-                            if (matId != 0)
-                                meshData.AddQuad(v0, v1, v2, v3, normal, matId);
-                        }
-
-                        // -Z face
-                        if (IsCellAir(x, y, z - 1, cells, r, voxels, chunkOrigin, voxelSize, ref ctx))
-                        {
-                            float3 normal = new float3(0, 0, -1);
-
-                            float3 v0 = basePos + new float3(0, 0, 0);
-                            float3 v1 = basePos + new float3(0, s, 0);
-                            float3 v2 = basePos + new float3(s, s, 0);
-                            float3 v3 = basePos + new float3(s, 0, 0);
-
-                            float3 faceCenterLocal = basePos + new float3(0.5f * s, 0.5f * s, 0f);
-                            ushort matId = MaterialForFace(
-                                x, y, z,
-                                cells, r, voxels,
-                                chunkOrigin, faceCenterLocal,
-                                ref ctx
-                            );
-
-                            if (matId != 0)
-                                meshData.AddQuad(v0, v1, v2, v3, normal, matId);
+                            if (IsCellAir(nx, ny, nz, cells, voxelResolution, voxels, chunkOrigin, voxelSize, ref ctx))
+                            {
+                                float3 faceCenterLocal = GetFaceCenterLocal(x, y, z, voxelSize, axis, -1);
+                                maskNeg[v * cells + u] = MaterialForFace(x, y, z, cells, voxelResolution, voxels, chunkOrigin, faceCenterLocal, ref ctx);
+                            }
                         }
                     }
+
+                    // 2. Greedy Mesh the masks
+                    GreedyMeshPlane(maskPos, cells, axis, uAxis, vAxis, i, 1, voxelSize, ref meshData);
+                    GreedyMeshPlane(maskNeg, cells, axis, uAxis, vAxis, i, -1, voxelSize, ref meshData);
+
+                    // Clear masks for next slice
+                    // Since we are in Burst, a simple loop is vectorized and very fast.
+                    for (int k = 0; k < sliceSize; k++)
+                    {
+                        maskPos[k] = 0;
+                        maskNeg[k] = 0;
+                    }
+                }
+
+                maskPos.Dispose();
+                maskNeg.Dispose();
+            }
+        }
+
+        // Helper to get face center for material calculation
+        private static float3 GetFaceCenterLocal(int x, int y, int z, float s, int axis, int dir)
+        {
+            float3 center = new float3(x + 0.5f, y + 0.5f, z + 0.5f) * s;
+            if (axis == 0) center.x += 0.5f * s * dir;
+            if (axis == 1) center.y += 0.5f * s * dir;
+            if (axis == 2) center.z += 0.5f * s * dir;
+            return center;
+        }
+
+        private static void GreedyMeshPlane(
+            NativeArray<ushort> mask,
+            int cells,
+            int axis,
+            int uAxis,
+            int vAxis,
+            int slice,
+            int dir, // +1 or -1
+            float voxelSize,
+            ref MeshData meshData)
+        {
+            for (int v = 0; v < cells; v++)
+            {
+                for (int u = 0; u < cells; u++)
+                {
+                    ushort matId = mask[v * cells + u];
+                    if (matId == 0) continue;
+
+                    // Compute width (u direction)
+                    int width = 1;
+                    while (u + width < cells && mask[v * cells + (u + width)] == matId)
+                    {
+                        width++;
+                    }
+
+                    // Compute height (v direction)
+                    int height = 1;
+                    bool done = false;
+                    while (v + height < cells)
+                    {
+                        for (int k = 0; k < width; k++)
+                        {
+                            if (mask[(v + height) * cells + (u + k)] != matId)
+                            {
+                                done = true;
+                                break;
+                            }
+                        }
+                        if (done) break;
+                        height++;
+                    }
+
+                    // Add Quad
+                    AddGreedyQuad(axis, uAxis, vAxis, slice, u, v, width, height, dir, voxelSize, matId, ref meshData);
+
+                    // Clear mask
+                    for (int h = 0; h < height; h++)
+                    {
+                        for (int w = 0; w < width; w++)
+                        {
+                            mask[(v + h) * cells + (u + w)] = 0;
+                        }
+                    }
+
+                    // Increment u
+                    u += width - 1;
                 }
             }
+        }
+
+        private static void AddGreedyQuad(
+            int axis, int uAxis, int vAxis,
+            int slice, int u, int v,
+            int width, int height,
+            int dir,
+            float s,
+            ushort matId,
+            ref MeshData meshData)
+        {
+            // Construct vertices
+            // We need 4 points.
+            // Start (u, v) in 2D plane.
+            // Extent (width, height).
+            
+            // Coordinates in (axis, uAxis, vAxis) system:
+            // P0: (slice + offset, u, v)
+            // P1: (slice + offset, u + width, v)
+            // P2: (slice + offset, u + width, v + height)
+            // P3: (slice + offset, u, v + height)
+            
+            // Offset: if dir == 1 (+axis), face is at slice + 1 * s? 
+            // Wait, slice index 'i' corresponds to voxel 'i'.
+            // +Face is at (i+1)*s.
+            // -Face is at i*s.
+            
+            float axisPos = (slice + (dir == 1 ? 1 : 0)) * s;
+            
+            float3[] verts = new float3[4];
+            
+            // Local coords on the plane
+            float u0 = u * s;
+            float u1 = (u + width) * s;
+            float v0 = v * s;
+            float v1 = (v + height) * s;
+
+            // Map back to x,y,z
+            // We need to construct 4 vertices.
+            // Order depends on normal direction to ensure CCW winding.
+            // Normal:
+            float3 normal = new float3(0, 0, 0);
+            if (axis == 0) normal.x = dir;
+            if (axis == 1) normal.y = dir;
+            if (axis == 2) normal.z = dir;
+
+            // Quad vertices in plane coordinates (U, V)
+            // 0: (u0, v0), 1: (u1, v0), 2: (u1, v1), 3: (u0, v1)
+            
+            // If dir is positive: 0->1->2->3 is CCW?
+            // Let's check standard axes.
+            // Axis X (0), U=Y (1), V=Z (2). Normal +X.
+            // Verts on YZ plane.
+            // (y, z) -> (y+w, z) -> (y+w, z+h) -> (y, z+h)
+            // Right hand rule: Y cross Z = X. So CCW in YZ matches +X.
+            
+            // If dir is negative: Normal -X.
+            // We need CW in YZ to be CCW facing -X?
+            // -X normal. We look from -X.
+            // Y cross Z = X. So Y->Z is clockwise for -X.
+            // So we need Z->Y or just reverse order.
+            
+            // Let's generate generic points first
+            float3 p0 = MapToWorld(axis, uAxis, vAxis, axisPos, u0, v0);
+            float3 p1 = MapToWorld(axis, uAxis, vAxis, axisPos, u1, v0);
+            float3 p2 = MapToWorld(axis, uAxis, vAxis, axisPos, u1, v1);
+            float3 p3 = MapToWorld(axis, uAxis, vAxis, axisPos, u0, v1);
+
+            if (dir == 1)
+            {
+                // CCW for +Axis
+                meshData.AddQuad(p0, p1, p2, p3, normal, matId);
+            }
+            else
+            {
+                // CCW for -Axis (reverse of +Axis logic)
+                // p0->p3->p2->p1
+                meshData.AddQuad(p0, p3, p2, p1, normal, matId);
+            }
+        }
+
+        private static float3 MapToWorld(int axis, int uAxis, int vAxis, float axisVal, float uVal, float vVal)
+        {
+            float3 p = new float3();
+            // This is slightly tricky because uAxis/vAxis indices are 0,1,2.
+            // We can use array indexing on float3 if we cast to pointer or use indexer if available.
+            // float3 has [int index] in Unity.Mathematics? Yes.
+            
+            p[axis] = axisVal;
+            p[uAxis] = uVal;
+            p[vAxis] = vVal;
+            return p;
         }
 
         /// <summary>
