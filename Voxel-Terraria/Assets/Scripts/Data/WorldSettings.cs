@@ -8,10 +8,10 @@ public class WorldSettings : ScriptableObject
 {
     [Header("Voxel & Chunk Settings")]
     [Tooltip("Size of one voxel in world units (meters). Smaller = more detail.")]
-    public float voxelSize = 0.25f;
+    public float voxelSize = 0.1f;
 
     [Tooltip("Number of voxels along one chunk edge (chunk = NxNxN voxels).")]
-    public int chunkSize = 32;
+    public int chunkSize = 64;
 
     [Header("Base Island Shape")]
     [Tooltip("Radius of the island footprint (meters).")]
