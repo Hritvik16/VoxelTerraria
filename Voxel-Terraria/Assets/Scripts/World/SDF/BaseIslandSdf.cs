@@ -127,7 +127,16 @@ public static class BaseIslandSdf
     finalHeight += micro;
 
     // 4. Pure heightfield SDF
-    return p.y - finalHeight;
+    float h = p.y - finalHeight;
+
+    // 5. Apply Footprint Mask
+    // We clip the heightfield to the warped coastline.
+    // warpedDist - R is negative inside, positive outside.
+    // max(footprint, height) ensures that outside the island, the SDF is positive (Air),
+    // creating a slope down into the void/ocean.
+    float raw = warpedDist - R;
+    
+    return math.max(raw, h);
 }
 
     /// <summary>
