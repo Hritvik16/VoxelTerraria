@@ -277,7 +277,9 @@ namespace VoxelTerraria.World.SDF
             if (ws.randomizeFeatures)
             {
                 // Randomize every time
-                masterSeed = (uint)UnityEngine.Random.Range(1, 1000000);
+                // Fix: Use System.DateTime.Now.Ticks to guarantee uniqueness in Editor (Edit Mode)
+                // UnityEngine.Random can be deterministic or "stuck" in ExecuteAlways.
+                masterSeed = (uint)(System.DateTime.Now.Ticks % 1000000000); 
             }
             else
             {
