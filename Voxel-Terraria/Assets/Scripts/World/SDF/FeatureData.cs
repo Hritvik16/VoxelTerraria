@@ -15,6 +15,7 @@ public struct MountainFeatureData
     public float archThreshold;   // Threshold for carving arches
     public float overhangStrength;// Strength of overhang distortion
     public float seed;            // Randomization seed
+    public float seaLevel;        // Sea level for clamping
 }
 
 public struct VolcanoFeatureData

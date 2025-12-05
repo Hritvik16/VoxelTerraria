@@ -90,7 +90,8 @@ public static class MountainFeatureAdapter
             seed            = f.data2.y,
             archThreshold   = f.data2.z,
             
-            overhangStrength = f.data3.x
+            overhangStrength = f.data3.x,
+            seaLevel         = f.data3.y
         };
     }
 

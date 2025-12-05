@@ -26,7 +26,7 @@ public class MountainFeatureEditor : Editor
         }
 
         WorldSettings world = bootstrap.worldSettings;
-        float islandRadius = world.islandRadius;
+        float islandRadius = (bootstrap.baseIsland != null) ? bootstrap.baseIsland.Radius : 0f;
 
         Vector2 center = feature.CenterXZ;
         float radius = feature.Radius;

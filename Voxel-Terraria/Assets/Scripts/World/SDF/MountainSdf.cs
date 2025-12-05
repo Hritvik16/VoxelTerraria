@@ -118,7 +118,21 @@ public static class MountainSdf
             }
         }
 
-        return sdf * 0.7f;
+        // --------------------------------------------------------------------
+        // 6. Clamp to Sea Level
+        // --------------------------------------------------------------------
+        // Ensure the mountain shape does not extend below sea level.
+        // If p.y < seaLevel, we want positive SDF (air/water), not terrain.
+        // We use max(sdf, seaLevel - p.y) to cut it off.
+        
+        float finalSdf = sdf * 0.7f;
+        
+        // Hard cut at sea level (or slightly below to avoid z-fighting if needed)
+        // seaLevel - p.y is positive when we are below sea level.
+        // max(negative_mountain, positive_depth) = positive_depth -> Air/Water
+        finalSdf = math.max(finalSdf, m.seaLevel - p.y);
+
+        return finalSdf;
     }
 
     /// <summary>

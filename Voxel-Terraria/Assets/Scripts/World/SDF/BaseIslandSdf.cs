@@ -81,63 +81,63 @@ public static class BaseIslandSdf
 
 //     }
 
-    public static float Evaluate(float3 p, in SdfContext ctx, float seed)
-{
-    // optional: if you really want everything below sea level to be air
-    // if (p.y < ctx.seaLevel) return 1f;
+    public static float Evaluate(float3 p, float radius, float height, float voxelSize, float seed)
+    {
+        // optional: if you really want everything below sea level to be air
+        // if (p.y < ctx.seaLevel) return 1f;
 
-    float R = ctx.islandRadius;
-    float H = ctx.maxBaseHeight;
+        float R = radius;
+        float H = height;
 
-    float2 xz = p.xz;
+        float2 xz = p.xz;
 
-    // 1. Coastline warp
-    float warpFreq = 2f / R;
-    float warpAmp  = R * 0.35f;
+        // 1. Coastline warp
+        float warpFreq = 2f / R;
+        float warpAmp  = R * 0.35f;
 
-    float2 warpOffset = new float2(
-        NoiseUtils.Noise2D(xz * warpFreq + seed, 1f, 1f),
-        NoiseUtils.Noise2D((xz + 200f) * warpFreq - seed, 1f, 1f)
-    ) * warpAmp;
+        float2 warpOffset = new float2(
+            NoiseUtils.Noise2D(xz * warpFreq + seed, 1f, 1f),
+            NoiseUtils.Noise2D((xz + 200f) * warpFreq - seed, 1f, 1f)
+        ) * warpAmp;
 
-    float warpLen = math.length(warpOffset);
-    float warpMax = R * 0.20f;
-    if (warpLen > warpMax)
-        warpOffset *= warpMax / warpLen;
+        float warpLen = math.length(warpOffset);
+        float warpMax = R * 0.20f;
+        if (warpLen > warpMax)
+            warpOffset *= warpMax / warpLen;
 
-    float2 warpedXZ   = xz + warpOffset;
-    float  warpedDist = math.length(warpedXZ);
+        float2 warpedXZ   = xz + warpOffset;
+        float  warpedDist = math.length(warpedXZ);
 
-    // 2. Dome falloff
-    float t = math.saturate(1f - warpedDist / R);
-    t = t * t * (3f - 2f * t);          // smoothstep
-    float heightFactor = math.pow(t, 1.5f);
-    float finalHeight  = heightFactor * H;
+        // 2. Dome falloff
+        float t = math.saturate(1f - warpedDist / R);
+        t = t * t * (3f - 2f * t);          // smoothstep
+        float heightFactor = math.pow(t, 1.5f);
+        float finalHeight  = heightFactor * H;
 
-    // 3. Micro detail
-    float microFreq = 1f / R;
-    float microAmp  = ctx.voxelSize * 0.15f;
+        // 3. Micro detail
+        float microFreq = 1f / R;
+        float microAmp  = voxelSize * 0.15f;
 
-    float micro = NoiseUtils.Noise2D(
-        p.xz * microFreq + seed * 13.1f,
-        2f,
-        0.5f
-    ) * microAmp * t;
+        float micro = NoiseUtils.Noise2D(
+            p.xz * microFreq + seed * 13.1f,
+            2f,
+            0.5f
+        ) * microAmp * t;
 
-    finalHeight += micro;
+        finalHeight += micro;
 
-    // 4. Pure heightfield SDF
-    float h = p.y - finalHeight;
+        // 4. Pure heightfield SDF
+        float h = p.y - finalHeight;
 
-    // 5. Apply Footprint Mask
-    // We clip the heightfield to the warped coastline.
-    // warpedDist - R is negative inside, positive outside.
-    // max(footprint, height) ensures that outside the island, the SDF is positive (Air),
-    // creating a slope down into the void/ocean.
-    float raw = warpedDist - R;
-    
-    return math.max(raw, h);
-}
+        // 5. Apply Footprint Mask
+        // We clip the heightfield to the warped coastline.
+        // warpedDist - R is negative inside, positive outside.
+        // max(footprint, height) ensures that outside the island, the SDF is positive (Air),
+        // creating a slope down into the void/ocean.
+        float raw = warpedDist - R;
+        
+        return math.max(raw, h);
+    }
 
     /// <summary>
     /// RAW island field for biome / region logic.
@@ -145,9 +145,9 @@ public static class BaseIslandSdf
     /// Negative = inside island footprint, positive = outside.
     /// No height, no micro detail, just the 2D warped boundary.
     /// </summary>
-    public static float EvaluateRaw(float3 p, in SdfContext ctx, float seed)
+    public static float EvaluateRaw(float3 p, float radius, float seed)
     {
-        float R = ctx.islandRadius;
+        float R = radius;
         float2 xz = p.xz;
 
         // Same warp as Evaluate() so footprint matches the actual island shape

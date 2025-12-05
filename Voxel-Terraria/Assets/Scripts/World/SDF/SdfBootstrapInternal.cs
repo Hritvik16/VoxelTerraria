@@ -40,9 +40,6 @@ namespace VoxelTerraria.World.SDF
             ctx.voxelSize     = ws.voxelSize;
             ctx.chunkSize     = ws.chunkSize;
             ctx.seaLevel      = ws.seaLevel;
-            ctx.islandRadius  = ws.islandRadius;   // still used by old BaseIslandSdf
-            ctx.maxBaseHeight = ws.maxBaseHeight;  // ditto
-            ctx.stepHeight    = ws.stepHeight;
 
             //----------------------------------------------------
             // 2. OLD TYPED ARRAYS (still driving actual SDFs)

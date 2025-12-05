@@ -68,17 +68,12 @@ public static class BaseIslandFeatureAdapter
             p.z - centerXZ.y
         );
 
-        // Minimal context for BaseIslandSdf
-        SdfContext ctx = new SdfContext
-        {
-            islandRadius  = f.data0.x,
-            maxBaseHeight = f.data0.y,
-            voxelSize     = 1f,
-            seaLevel      = 0f
-        };
+        float radius    = f.data0.x;
+        float height    = f.data0.y;
+        float voxelSize = 1f; // Default or passed in if needed
+        float seed      = f.data1.y;
 
-        float seed = f.data1.y;
-        return BaseIslandSdf.Evaluate(localP, ctx, seed);
+        return BaseIslandSdf.Evaluate(localP, radius, height, voxelSize, seed);
     }
 
     // --------------------------------------------------------------------
@@ -95,18 +90,10 @@ public static class BaseIslandFeatureAdapter
             p.z - centerXZ.y
         );
 
-        SdfContext ctx = new SdfContext
-        {
-            islandRadius  = f.data0.x,
-            maxBaseHeight = f.data0.y,
-            voxelSize     = 1f,
-            seaLevel      = 0f
-        };
+        float radius = f.data0.x;
+        float seed   = f.data1.y;
         
-        // We need to pass the seed to match the warp!
-        float seed = f.data1.y;
-        
-        return BaseIslandSdf.EvaluateRaw(localP, ctx, seed);
+        return BaseIslandSdf.EvaluateRaw(localP, radius, seed);
     }
 
     // --------------------------------------------------------------------

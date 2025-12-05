@@ -36,6 +36,7 @@ namespace VoxelTerraria.EditorTools
         // Cached references
         // ------------------------------------------------------
         private WorldSettings cachedWorldSettings;
+        private BaseIslandFeature cachedBaseIsland;
         private SdfContext cachedSdfContext;
         private bool hasValidContext;
 
@@ -109,6 +110,7 @@ namespace VoxelTerraria.EditorTools
             // WorldSettings comes from SdfBootstrap (ScriptableObject asset, not a scene component)
             var bootstrap = FindObjectOfType<SdfBootstrap>();
             cachedWorldSettings = bootstrap != null ? bootstrap.worldSettings : null;
+            cachedBaseIsland    = bootstrap != null ? bootstrap.baseIsland : null;
 
             if (cachedWorldSettings == null)
             {
@@ -475,7 +477,7 @@ namespace VoxelTerraria.EditorTools
         renderer.sharedMaterial = TerrainMaterialLibrary.GetMaterials(6)[0]; 
     }
 
-    float radius = settings.islandRadius;
+    float radius = (cachedBaseIsland != null) ? cachedBaseIsland.Radius : 100f;
     float planeScale = radius * 0.1f; // plane is 10x10 units → convert to radius scale
 
     go.transform.localScale = new Vector3(planeScale, 1f, planeScale);

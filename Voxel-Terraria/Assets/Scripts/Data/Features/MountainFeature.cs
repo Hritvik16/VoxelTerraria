@@ -73,8 +73,8 @@ public class MountainFeature : FeatureSO
         // data2: x=warp, y=seed(injected), z=archThreshold
         f.data2 = new float3(warpStrength, 0f, archThreshold);
         
-        // data3: x=overhangStrength
-        f.data3 = new float3(overhangStrength, 0f, 0f);
+        // data3: x=overhangStrength, y=seaLevel
+        f.data3 = new float3(overhangStrength, settings.seaLevel, 0f);
 
         return f;
     }

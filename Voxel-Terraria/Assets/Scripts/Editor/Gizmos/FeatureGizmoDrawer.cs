@@ -18,7 +18,7 @@ public class FeatureGizmoDrawer : Editor
         if (settings == null)
             return;
 
-        float islandRadius = settings.islandRadius;
+        float islandRadius = (bootstrap.baseIsland != null) ? bootstrap.baseIsland.Radius : 0f;
         float seaLevel     = settings.seaLevel;
 
         // ---------------------------------------------------------

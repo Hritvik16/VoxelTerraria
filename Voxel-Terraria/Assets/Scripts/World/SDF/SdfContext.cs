@@ -21,10 +21,7 @@ public struct SdfContext
     // ------------------------------------------------------------
     public float voxelSize;        
     public int chunkSize;          
-    public float seaLevel;         
-    public float islandRadius;     
-    public float maxBaseHeight;    
-    public float stepHeight;       
+    public float seaLevel;       
 
     // ------------------------------------------------------------
     // WORLD EXTENTS (2D XZ)
