@@ -13,7 +13,7 @@ MonoBehaviour:
   m_Name: MountainFeature_Main
   m_EditorClassIdentifier: Assembly-CSharp::MountainFeature
   showGizmos: 1
-  centerXZ: {x: 0, y: 0}
+  centerXZ: {x: 30, y: 30}
   radius: 50
   height: 40
   ridgeFrequency: 3

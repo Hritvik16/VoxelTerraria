@@ -1,5 +1,7 @@
 using System.Collections.Generic;
+using Unity.Burst;
 using Unity.Collections;
+using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 using VoxelTerraria.World.Meshing;
@@ -17,6 +19,10 @@ namespace VoxelTerraria.World.Generation
         public Transform player;
         public float viewDistance = 100f;
         public float destroyDistanceBuffer = 20f; // Extra buffer before destroying chunks
+        
+        [Header("Dynamic Updates")]
+        public float chunkUpdateDistanceThreshold = 10f;
+        public float lodHysteresis = 4.0f;
 
         [Header("Debug")]
         public bool generateOnStart = true;
@@ -26,13 +32,30 @@ namespace VoxelTerraria.World.Generation
         [Range(10f, 1000f)] public float lod1Distance = 60f;
         [Range(10f, 1000f)] public float lod2Distance = 120f;
 
-        // Use a List instead of Queue to allow sorting.
-        // We will sort Descending by distance, so the End of the list is the Closest.
-        // This allows O(1) removal.
-        private List<ChunkCoord3> buildList = new List<ChunkCoord3>();
+        // Use NativeList for Burst compatibility
+        private NativeList<ChunkCoord3> buildList;
         private HashSet<ChunkCoord3> queuedChunks = new HashSet<ChunkCoord3>();
         private Dictionary<ChunkCoord3, GameObject> activeChunks = new Dictionary<ChunkCoord3, GameObject>();
+        private Dictionary<ChunkCoord3, int> activeChunkLods = new Dictionary<ChunkCoord3, int>();
+        
         private ChunkCoord3 lastPlayerChunk = new ChunkCoord3(int.MinValue, int.MinValue, int.MinValue);
+        private Vector3 lastUpdatePos;
+
+        private void OnEnable()
+        {
+            if (!buildList.IsCreated)
+            {
+                buildList = new NativeList<ChunkCoord3>(Allocator.Persistent);
+            }
+        }
+
+        private void OnDisable()
+        {
+            if (buildList.IsCreated)
+            {
+                buildList.Dispose();
+            }
+        }
 
         private void Start()
         {
@@ -41,6 +64,11 @@ namespace VoxelTerraria.World.Generation
                 Debug.LogWarning("[ChunkRebuildSystem] WorldSettings not assigned. Attempting to find...");
                 var bootstrap = FindObjectOfType<SdfBootstrap>();
                 if (bootstrap != null) settings = bootstrap.worldSettings;
+            }
+            
+            if (player != null)
+            {
+                lastUpdatePos = player.position;
             }
         }
 
@@ -58,9 +86,9 @@ namespace VoxelTerraria.World.Generation
 
             // Process list (closest first -> end of list)
             int processed = 0;
-            while (processed < chunksPerFrame && buildList.Count > 0)
+            while (processed < chunksPerFrame && buildList.Length > 0)
             {
-                int index = buildList.Count - 1;
+                int index = buildList.Length - 1;
                 ChunkCoord3 coord = buildList[index];
                 buildList.RemoveAt(index);
                 queuedChunks.Remove(coord);
@@ -80,10 +108,15 @@ namespace VoxelTerraria.World.Generation
             int pz = Mathf.FloorToInt(player.position.z / chunkWorldSize);
             ChunkCoord3 playerChunk = new ChunkCoord3(px, py, pz);
 
-            // Only update if player moved to a new chunk or first run
-            if (playerChunk.x != lastPlayerChunk.x || playerChunk.y != lastPlayerChunk.y || playerChunk.z != lastPlayerChunk.z)
+            // Check if player moved enough to trigger update
+            float sqrDist = Vector3.SqrMagnitude(player.position - lastUpdatePos);
+            bool movedEnough = sqrDist > (chunkUpdateDistanceThreshold * chunkUpdateDistanceThreshold);
+
+            // Only update if player moved to a new chunk OR moved enough distance
+            if (movedEnough || playerChunk.x != lastPlayerChunk.x || playerChunk.y != lastPlayerChunk.y || playerChunk.z != lastPlayerChunk.z)
             {
                 lastPlayerChunk = playerChunk;
+                lastUpdatePos = player.position;
                 RefreshChunks(player.position, chunkWorldSize);
             }
         }
@@ -112,13 +145,16 @@ namespace VoxelTerraria.World.Generation
                     Destroy(obj);
                 }
                 activeChunks.Remove(c);
+                activeChunkLods.Remove(c);
             }
 
             // 2. Cleanup Queued Chunks (Remove far ones)
             // Filter the existing list to keep only those within range
-            List<ChunkCoord3> kept = new List<ChunkCoord3>();
-            foreach (var c in buildList)
+            // NativeList doesn't support RemoveAll easily, so we rebuild it
+            NativeList<ChunkCoord3> kept = new NativeList<ChunkCoord3>(buildList.Length, Allocator.Temp);
+            for (int i = 0; i < buildList.Length; i++)
             {
+                ChunkCoord3 c = buildList[i];
                 Vector3 chunkCenter = GetChunkCenter(c, chunkWorldSize);
                 if (Vector3.SqrMagnitude(chunkCenter - playerPos) <= destroyDistSq)
                 {
@@ -129,13 +165,37 @@ namespace VoxelTerraria.World.Generation
                     queuedChunks.Remove(c);
                 }
             }
-            buildList = kept;
+            buildList.Clear();
+            buildList.AddRange(kept);
+            kept.Dispose();
 
-            // 3. Add new chunks
+            // 3. Add new chunks & Check LOD updates
             int px = Mathf.FloorToInt(playerPos.x / chunkWorldSize);
             int py = Mathf.FloorToInt(playerPos.y / chunkWorldSize);
             int pz = Mathf.FloorToInt(playerPos.z / chunkWorldSize);
 
+            // Check existing active chunks for LOD updates
+            foreach (var kvp in activeChunks)
+            {
+                ChunkCoord3 c = kvp.Key;
+                if (queuedChunks.Contains(c)) continue; // Already queued for update
+
+                Vector3 chunkCenter = GetChunkCenter(c, chunkWorldSize);
+                float dist = Vector3.Distance(chunkCenter, playerPos);
+                
+                // Use hysteresis for LOD calculation
+                // If we are currently at LOD X, we only switch to X+1 if dist > limit + hysteresis
+                // or switch to X-1 if dist < limit - hysteresis
+                int currentLOD = activeChunkLods[c];
+                int targetLOD = GetLodLevelWithHysteresis(dist, currentLOD);
+
+                if (targetLOD != currentLOD)
+                {
+                    EnqueueChunk(c);
+                }
+            }
+
+            // Add new chunks
             for (int x = -radiusChunks; x <= radiusChunks; x++)
             {
                 for (int y = -radiusChunks; y <= radiusChunks; y++)
@@ -152,20 +212,55 @@ namespace VoxelTerraria.World.Generation
 
                         if (Vector3.SqrMagnitude(chunkCenter - playerPos) <= viewDistSq)
                         {
-                            buildList.Add(c);
-                            queuedChunks.Add(c);
+                            EnqueueChunk(c);
                         }
                     }
                 }
             }
 
-            // 4. Sort buildList (Descending distance, so end is closest)
-            buildList.Sort((a, b) => {
-                float distA = Vector3.SqrMagnitude(GetChunkCenter(a, chunkWorldSize) - playerPos);
-                float distB = Vector3.SqrMagnitude(GetChunkCenter(b, chunkWorldSize) - playerPos);
+            // 4. Sort buildList using Burst Job
+            // We sort Descending by distance, so the End of the list is the Closest.
+            if (buildList.Length > 1)
+            {
+                var sortJob = new ChunkSorterJob
+                {
+                    chunks = buildList,
+                    playerPos = playerPos,
+                    chunkWorldSize = chunkWorldSize
+                };
+                sortJob.Schedule().Complete();
+            }
+        }
+
+        [BurstCompile]
+        struct ChunkSorterJob : IJob
+        {
+            public NativeList<ChunkCoord3> chunks;
+            public float3 playerPos;
+            public float chunkWorldSize;
+
+            public void Execute()
+            {
+                chunks.Sort(new ChunkDistComparer { playerPos = playerPos, chunkWorldSize = chunkWorldSize });
+            }
+        }
+
+        struct ChunkDistComparer : IComparer<ChunkCoord3>
+        {
+            public float3 playerPos;
+            public float chunkWorldSize;
+
+            public int Compare(ChunkCoord3 a, ChunkCoord3 b)
+            {
+                float3 centerA = new float3((a.x + 0.5f) * chunkWorldSize, (a.y + 0.5f) * chunkWorldSize, (a.z + 0.5f) * chunkWorldSize);
+                float3 centerB = new float3((b.x + 0.5f) * chunkWorldSize, (b.y + 0.5f) * chunkWorldSize, (b.z + 0.5f) * chunkWorldSize);
+
+                float distA = math.distancesq(centerA, playerPos);
+                float distB = math.distancesq(centerB, playerPos);
+
                 // Descending sort: B compareTo A
                 return distB.CompareTo(distA);
-            });
+            }
         }
 
         private Vector3 GetChunkCenter(ChunkCoord3 c, float chunkWorldSize)
@@ -179,13 +274,10 @@ namespace VoxelTerraria.World.Generation
 
         public void EnqueueChunk(ChunkCoord3 coord)
         {
-            if (!queuedChunks.Contains(coord) && !activeChunks.ContainsKey(coord))
+            if (!queuedChunks.Contains(coord))
             {
                 buildList.Add(coord);
                 queuedChunks.Add(coord);
-                // Note: If manually enqueued, we might want to trigger a sort, 
-                // but for now we rely on the next RefreshChunks or just process it eventually.
-                // If strictly needed, we could sort here, but it might be expensive.
             }
         }
 
@@ -197,13 +289,52 @@ namespace VoxelTerraria.World.Generation
             return 3;
         }
 
+        private int GetLodLevelWithHysteresis(float distance, int currentLOD)
+        {
+            // Calculate thresholds with hysteresis
+            // To go UP a level (0->1), we need to exceed distance + hysteresis
+            // To go DOWN a level (1->0), we need to be below distance - hysteresis
+            
+            float h = lodHysteresis;
+
+            // Check if we should downgrade (increase LOD level)
+            if (currentLOD == 0 && distance > lod0Distance + h) return 1;
+            if (currentLOD == 1 && distance > lod1Distance + h) return 2;
+            if (currentLOD == 2 && distance > lod2Distance + h) return 3;
+
+            // Check if we should upgrade (decrease LOD level)
+            if (currentLOD == 3 && distance < lod2Distance - h) return 2;
+            if (currentLOD == 2 && distance < lod1Distance - h) return 1;
+            if (currentLOD == 1 && distance < lod0Distance - h) return 0;
+
+            // Otherwise keep current
+            // But what if we are way off? e.g. current is 0 but distance is 500?
+            // The above logic only handles adjacent transitions. 
+            // For robustness, if we are far outside the band, snap to the correct one.
+            
+            int baseLOD = GetLodLevel(distance);
+            if (Mathf.Abs(baseLOD - currentLOD) > 1) return baseLOD;
+
+            return currentLOD;
+        }
+
         private void BuildChunk(ChunkCoord3 coord)
         {
             // Calculate LOD
             float chunkWorldSize = settings.chunkSize * settings.voxelSize;
             Vector3 chunkCenter = GetChunkCenter(coord, chunkWorldSize);
             float dist = Vector3.Distance(chunkCenter, player.position);
-            int lodLevel = GetLodLevel(dist);
+            
+            // If we are rebuilding an existing chunk, use hysteresis to be stable
+            int lodLevel;
+            if (activeChunkLods.TryGetValue(coord, out int currentLOD))
+            {
+                lodLevel = GetLodLevelWithHysteresis(dist, currentLOD);
+            }
+            else
+            {
+                lodLevel = GetLodLevel(dist);
+            }
             
             // Scale voxel size UP, scale chunk size DOWN to keep world size constant
             float currentVoxelSize = settings.voxelSize * Mathf.Pow(2, lodLevel);
@@ -224,7 +355,7 @@ namespace VoxelTerraria.World.Generation
                 MeshData meshData = BlockMesher.BuildMesh(chunkData, settings);
 
                 // 4. Apply Mesh
-                ApplyMesh(coord, meshData);
+                ApplyMesh(coord, meshData, lodLevel);
             }
             finally
             {
@@ -233,7 +364,7 @@ namespace VoxelTerraria.World.Generation
             }
         }
 
-        private void ApplyMesh(ChunkCoord3 coord, MeshData meshData)
+        private void ApplyMesh(ChunkCoord3 coord, MeshData meshData, int lodLevel)
         {
             // Create or get GameObject
             GameObject chunkObj;
@@ -253,6 +384,9 @@ namespace VoxelTerraria.World.Generation
                 activeChunks[coord] = chunkObj;
             }
 
+            // Update LOD tracking
+            activeChunkLods[coord] = lodLevel;
+
             // Ensure components
             MeshFilter mf = chunkObj.GetComponent<MeshFilter>();
             if (mf == null) mf = chunkObj.AddComponent<MeshFilter>();
@@ -265,6 +399,7 @@ namespace VoxelTerraria.World.Generation
 
             // Convert MeshData to Unity Mesh
             Mesh mesh = meshData.ToMesh(calculateNormals: false); 
+            mesh.name = $"ChunkMesh_{coord.x}_{coord.y}_{coord.z}_LOD{lodLevel}";
 
             mf.sharedMesh = mesh;
             mc.sharedMesh = mesh;
@@ -281,6 +416,29 @@ namespace VoxelTerraria.World.Generation
                 if (mats.Length > 1 && mats[1] != null)
                     mr.sharedMaterial = mats[1]; // Default to Grass (ID 1)
             }
+        }
+
+        private void OnDrawGizmosSelected()
+        {
+            if (player == null) return;
+
+            Vector3 center = player.position;
+
+            // View Distance
+            Gizmos.color = Color.cyan;
+            Gizmos.DrawWireSphere(center, viewDistance);
+
+            // LOD 0
+            Gizmos.color = Color.green;
+            Gizmos.DrawWireSphere(center, lod0Distance);
+
+            // LOD 1
+            Gizmos.color = Color.yellow;
+            Gizmos.DrawWireSphere(center, lod1Distance);
+
+            // LOD 2
+            Gizmos.color = Color.red;
+            Gizmos.DrawWireSphere(center, lod2Distance);
         }
     }
 }
