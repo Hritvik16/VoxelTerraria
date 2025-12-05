@@ -21,6 +21,11 @@ namespace VoxelTerraria.World.Generation
         [Header("Debug")]
         public bool generateOnStart = true;
         
+        [Header("LOD Settings")]
+        [Range(10f, 1000f)] public float lod0Distance = 30f;
+        [Range(10f, 1000f)] public float lod1Distance = 60f;
+        [Range(10f, 1000f)] public float lod2Distance = 120f;
+
         // Use a List instead of Queue to allow sorting.
         // We will sort Descending by distance, so the End of the list is the Closest.
         // This allows O(1) removal.
@@ -184,10 +189,31 @@ namespace VoxelTerraria.World.Generation
             }
         }
 
+        private int GetLodLevel(float distance)
+        {
+            if (distance < lod0Distance) return 0;
+            if (distance < lod1Distance) return 1;
+            if (distance < lod2Distance) return 2;
+            return 3;
+        }
+
         private void BuildChunk(ChunkCoord3 coord)
         {
+            // Calculate LOD
+            float chunkWorldSize = settings.chunkSize * settings.voxelSize;
+            Vector3 chunkCenter = GetChunkCenter(coord, chunkWorldSize);
+            float dist = Vector3.Distance(chunkCenter, player.position);
+            int lodLevel = GetLodLevel(dist);
+            
+            // Scale voxel size UP, scale chunk size DOWN to keep world size constant
+            float currentVoxelSize = settings.voxelSize * Mathf.Pow(2, lodLevel);
+            int lodChunkSize = settings.chunkSize / (1 << lodLevel);
+            
+            // Ensure we don't go below 1 voxel
+            if (lodChunkSize < 1) lodChunkSize = 1;
+
             // 1. Allocate ChunkData
-            ChunkData chunkData = new ChunkData(coord, settings.chunkSize, Allocator.TempJob);
+            ChunkData chunkData = new ChunkData(coord, lodChunkSize, lodLevel, currentVoxelSize, Allocator.TempJob);
 
             try
             {

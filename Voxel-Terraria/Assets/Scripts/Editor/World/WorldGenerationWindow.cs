@@ -545,7 +545,8 @@ namespace VoxelTerraria.EditorTools
             int chunkSize = settings.chunkSize;
 
             // Allocate temporary ChunkData (TempJob is fine in EditMode as long as we Dispose)
-            ChunkData chunkData = new ChunkData(coord, chunkSize, Allocator.TempJob);
+            // Force LOD 0 for editor generation
+            ChunkData chunkData = new ChunkData(coord, chunkSize, 0, settings.voxelSize, Allocator.TempJob);
 
             try
             {

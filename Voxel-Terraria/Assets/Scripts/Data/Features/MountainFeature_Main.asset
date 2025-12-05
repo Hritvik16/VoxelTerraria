@@ -12,10 +12,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bce74ab04e0c5466ca1f031b8adecbc4, type: 3}
   m_Name: MountainFeature_Main
   m_EditorClassIdentifier: Assembly-CSharp::MountainFeature
-  drawGizmos: 1
-  centerXZ: {x: 18, y: 0}
-  radius: 20
-  height: 45
+  showGizmos: 1
+  centerXZ: {x: 0, y: 0}
+  radius: 50
+  height: 40
   ridgeFrequency: 3
   ridgeAmplitude: 2
   warpStrength: 6

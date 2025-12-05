@@ -16,10 +16,15 @@ namespace VoxelTerraria.World
         public bool isGenerated;
         public bool isDirty;
 
-        public ChunkData(ChunkCoord3 coord3, int chunkSize, Allocator allocator)
+        public int lodLevel;
+        public float currentVoxelSize;
+
+        public ChunkData(ChunkCoord3 coord3, int chunkSize, int lodLevel, float currentVoxelSize, Allocator allocator)
         {
             this.coord3 = coord3;
             this.chunkSize = chunkSize;
+            this.lodLevel = lodLevel;
+            this.currentVoxelSize = currentVoxelSize;
             voxelResolution = chunkSize + 1;
 
             voxels = new NativeArray<Voxel>(
@@ -32,8 +37,8 @@ namespace VoxelTerraria.World
             isDirty = false;
         }
 
-        public ChunkData(ChunkCoord coord, int chunkSize, Allocator allocator)
-            : this(coord.As3(), chunkSize, allocator) {}
+        public ChunkData(ChunkCoord coord, int chunkSize, int lodLevel, float currentVoxelSize, Allocator allocator)
+            : this(coord.As3(), chunkSize, lodLevel, currentVoxelSize, allocator) {}
 
         public void Dispose()
         {

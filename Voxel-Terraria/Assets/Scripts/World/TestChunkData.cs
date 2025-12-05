@@ -12,7 +12,7 @@ public class TestChunkData : MonoBehaviour
         Debug.Log("Testing ChunkData allocation...");
 
         ChunkCoord coord = new ChunkCoord(0, 0);
-        ChunkData chunk = new ChunkData(coord, chunkSize, Allocator.Temp);
+        ChunkData chunk = new ChunkData(coord, chunkSize, 0, 1.0f, Allocator.Temp);
 
         // Write some voxels
         chunk.Set(0, 0, 0, new Voxel(10, 1));

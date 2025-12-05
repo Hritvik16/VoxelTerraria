@@ -52,8 +52,14 @@ namespace VoxelTerraria.World.Generation
             int voxRes = chunkData.voxelResolution;
             ChunkCoord3 coord = chunkData.coord3;
 
-            float voxelSize = settings.voxelSize;
-            float3 origin = WorldCoordUtils.ChunkOriginWorld(coord, settings);
+            float voxelSize = chunkData.currentVoxelSize;
+            // Calculate origin based on current voxel size (LOD scaling)
+            // This treats chunks as independent floating blocks for now.
+            float3 origin = new float3(
+                coord.x * (chunkData.chunkSize * voxelSize),
+                coord.y * (chunkData.chunkSize * voxelSize),
+                coord.z * (chunkData.chunkSize * voxelSize)
+            );
             float chunkExtent = voxRes * voxelSize;
             float3 chunkMin = origin;
             float3 chunkMax = origin + new float3(chunkExtent);

@@ -284,7 +284,7 @@ namespace VoxelTerraria.World.Meshing
         {
             int cells      = chunkData.chunkSize;
             int r          = chunkData.voxelResolution;
-            float voxelSize = settings.voxelSize;
+            float voxelSize = chunkData.currentVoxelSize;
 
             MeshData meshData = new MeshData(cells * cells * cells, 8);
 
