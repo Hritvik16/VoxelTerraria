@@ -1,0 +1,126 @@
+#pragma kernel GenerateChunk
+
+struct SVONode { uint childIndex; uint material; };
+struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD; uint pad1; uint pad2; };
+
+struct ChunkJobData {
+    float4 worldPos;   
+    int mapIndex;      
+    int lodStep;       
+    float layerScale;
+    float pad1;        
+};
+
+RWStructuredBuffer<SVONode> _SVOPool;
+RWStructuredBuffer<ChunkData> _ChunkMap;
+StructuredBuffer<ChunkJobData> _JobQueue; 
+
+int _ChunkSize;
+int _JobCount;
+int _PoolSize;
+
+float2 hash22(float2 p) {
+    p = float2(dot(p, float2(127.1, 311.7)), dot(p, float2(269.5, 183.3)));
+    return -1.0 + 2.0 * frac(sin(p) * 43758.5453123);
+}
+
+uint PackMaterialAndLight(uint matID, uint r, uint g, uint b, uint sun) {
+    return matID | (r << 8) | (g << 12) | (b << 16) | (sun << 20);
+}
+
+float perlinNoise(float2 p) {
+    float2 pi = floor(p);
+    float2 pf = p - pi;
+    float2 w = pf * pf * (3.0 - 2.0 * pf);
+    return lerp(
+        lerp(dot(hash22(pi + float2(0.0, 0.0)), pf - float2(0.0, 0.0)), dot(hash22(pi + float2(1.0, 0.0)), pf - float2(1.0, 0.0)), w.x),
+        lerp(dot(hash22(pi + float2(0.0, 1.0)), pf - float2(0.0, 1.0)), dot(hash22(pi + float2(1.0, 1.0)), pf - float2(1.0, 1.0)), w.x),
+        w.y);
+}
+
+uint PackData(int3 p, int s) { return (s << 15) | (p.z << 10) | (p.y << 5) | p.x; }
+void UnpackData(uint d, out int3 p, out int s) {
+    p.x = d & 0x1F;
+    p.y = (d >> 5) & 0x1F; p.z = (d >> 10) & 0x1F;
+    s = (d >> 15) & 0x3F;
+}
+
+groupshared uint stack_node[32][48];
+groupshared uint stack_data[32][48];
+
+[numthreads(32, 1, 1)]
+void GenerateChunk (uint3 id : SV_DispatchThreadID, uint GI : SV_GroupIndex)
+{
+    if (id.x >= (uint)_JobCount) return;
+    ChunkJobData job = _JobQueue[id.x];
+    uint rootIndex = (uint)job.pad1;
+    uint memoryOffset = 8; 
+
+    int stackPtr = 1;
+    stack_node[GI][0] = rootIndex;
+    stack_data[GI][0] = PackData(int3(0,0,0), 32);
+
+    int chunkMaxY = 0;
+    int chunkMinY = 32;
+
+    while(stackPtr > 0) {
+        stackPtr--;
+        uint currentNode = stack_node[GI][stackPtr];
+        int3 currentPos; int currentSize;
+        UnpackData(stack_data[GI][stackPtr], currentPos, currentSize);
+
+        bool isUniform = true;
+        int firstMaterial = -1;
+        float blockMinY = (job.worldPos.y + currentPos.y) * job.layerScale;
+        float blockMaxY = blockMinY + (currentSize * job.layerScale);
+
+        for(int cx = 0; cx < currentSize && isUniform; cx++) {
+            for(int cz = 0; cz < currentSize && isUniform; cz++) {
+                float2 worldXZ = (job.worldPos.xz + float2(currentPos.x + cx, currentPos.z + cz)) * job.layerScale;
+                float h = (perlinNoise(worldXZ * 0.02) * 0.5 + 0.5) * 25.0; 
+                int columnMaterial = (blockMinY > h) ? 0 : ((blockMaxY <= h) ? 1 : -1);
+                if (columnMaterial == -1) { isUniform = false; break; }
+                if (firstMaterial == -1) firstMaterial = columnMaterial;
+                else if (firstMaterial != columnMaterial) { isUniform = false; break; }
+            }
+        }
+
+        uint safeIndex = currentNode & 134217727;
+        if (isUniform || currentSize <= job.lodStep) {
+            _SVOPool[safeIndex].childIndex = 0;
+            uint m = (!isUniform) ? 1 : ((firstMaterial == -1) ? 0 : (uint)firstMaterial);
+            // Default: Air is unlit until PropagateSunlight hits it
+            _SVOPool[safeIndex].material = PackMaterialAndLight(m, 0, 0, 0, 0);
+            
+            if (m != 0) {
+                int curTop = currentPos.y + currentSize;
+                if (curTop > chunkMaxY) chunkMaxY = curTop;
+                if (currentPos.y < chunkMinY) chunkMinY = currentPos.y;
+            }
+        } else {
+            uint childStart = rootIndex + memoryOffset;
+            memoryOffset += 8;
+            if (memoryOffset >= 8184) {
+                _SVOPool[safeIndex].childIndex = 0;
+                _SVOPool[safeIndex].material = PackMaterialAndLight(1, 0, 0, 0, 0);
+                continue;
+            }
+            _SVOPool[safeIndex].childIndex = childStart;
+            _SVOPool[safeIndex].material = PackMaterialAndLight(0, 0, 0, 0, 0);
+
+            int half = currentSize >> 1; 
+            for(int cz = 0; cz < 2; cz++) 
+                for(int cy = 0; cy < 2; cy++) 
+                    for(int cx = 0; cx < 2; cx++) {
+                        stack_node[GI][stackPtr] = childStart + (cx + cy * 2 + cz * 4);
+                        stack_data[GI][stackPtr] = PackData(currentPos + int3(cx, cy, cz) * half, half);
+                        stackPtr++;
+                    }
+        }
+    }
+    _ChunkMap[job.mapIndex].position = float4(job.worldPos.xyz * job.layerScale, (float)chunkMaxY);
+    _ChunkMap[job.mapIndex].rootNodeIndex = rootIndex;
+    _ChunkMap[job.mapIndex].currentLOD = job.lodStep;
+    _ChunkMap[job.mapIndex].pad1 = (uint)chunkMinY;
+    _ChunkMap[job.mapIndex].pad2 = (uint)chunkMaxY;
+}

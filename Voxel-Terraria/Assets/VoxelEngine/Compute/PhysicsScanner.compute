@@ -1,0 +1,91 @@
+#pragma kernel ScanPhysics
+
+struct SVONode { uint childIndex; uint material; };
+struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD; uint pad1; uint pad2; };
+
+StructuredBuffer<SVONode> _SVOPool;
+StructuredBuffer<ChunkData> _ChunkMap;
+
+int _ChunkCount;
+float4 _ClipmapCenters[8];
+float4 _RenderBounds;
+
+float4 _MinBounds;
+float4 _MaxBounds;
+
+// Index 0: Atomic Counter. Index 1+: Solid Voxel Positions
+RWStructuredBuffer<int4> _SolidVoxels;
+
+uint GetChunkRootIndex(int3 chunkCoord) {
+    int renderDistXZ = (int)_RenderBounds.x;
+    int renderDistY  = (int)_RenderBounds.y;
+    int3 centerChunk = (int3)_ClipmapCenters[0].xyz;
+
+    if(abs(chunkCoord.x - centerChunk.x) > renderDistXZ || 
+       abs(chunkCoord.y - centerChunk.y) > renderDistY || 
+       abs(chunkCoord.z - centerChunk.z) > renderDistXZ) return 0xFFFFFFFF;
+
+    int sideXZ = 2 * renderDistXZ + 1;
+    int sideY = 2 * renderDistY + 1;
+
+    int mx = (int)(((uint)(chunkCoord.x + 400000 * sideXZ)) % (uint)sideXZ);
+    int my = (int)(((uint)(chunkCoord.y + 400000 * sideY)) % (uint)sideY);
+    int mz = (int)(((uint)(chunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
+
+    int cIdx = mx + mz * sideXZ + my * sideXZ * sideXZ; 
+    return _ChunkMap[cIdx].rootNodeIndex;
+}
+
+bool IsSolid(int3 gridPos) {
+    if (gridPos.y < -10) return true; // Safety Bedrock
+
+    int3 chunkCoord = int3(floor((float3)gridPos / 32.0));
+    uint rootIndex = GetChunkRootIndex(chunkCoord);
+    if (rootIndex == 0xFFFFFFFF) return false;
+
+    uint nodeIndex = rootIndex;
+    int size = 32;
+    int3 localPos = int3(((gridPos % 32) + 32) % 32);
+
+    for (int i = 0; i < 6; i++) {
+        SVONode node = _SVOPool[nodeIndex & 134217727];
+        if (node.childIndex == 0) return (node.material & 0xFF) != 0;
+        
+        size >>= 1;
+        int3 childIdx = (localPos >= size) ? 1 : 0;
+        localPos -= childIdx * size;
+        nodeIndex = node.childIndex + (childIdx.x + childIdx.y * 2 + childIdx.z * 4);
+    }
+    return false;
+}
+
+bool IsExposed(int3 pos) {
+    if (!IsSolid(pos)) return false;
+    if (!IsSolid(pos + int3(0,1,0))) return true;
+    if (!IsSolid(pos + int3(0,-1,0))) return true;
+    if (!IsSolid(pos + int3(1,0,0))) return true;
+    if (!IsSolid(pos + int3(-1,0,0))) return true;
+    if (!IsSolid(pos + int3(0,0,1))) return true;
+    if (!IsSolid(pos + int3(0,0,-1))) return true;
+    return false;
+}
+
+[numthreads(8,8,8)]
+void ScanPhysics (uint3 id : SV_DispatchThreadID) {
+    // Safely cast the float4 bounds back to int3
+    int3 minB = (int3)_MinBounds.xyz;
+    int3 maxB = (int3)_MaxBounds.xyz;
+
+    int3 pos = minB + int3(id);
+    if (pos.x > maxB.x || pos.y > maxB.y || pos.z > maxB.z) return;
+
+    if (IsExposed(pos)) {
+        int idx;
+        InterlockedAdd(_SolidVoxels[0].x, 1, idx);
+        
+        // Cap at 1999 to prevent buffer overflow
+        if (idx < 1999) {
+            _SolidVoxels[idx + 1] = int4(pos.x, pos.y, pos.z, 1);
+        }
+    }
+}

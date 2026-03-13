@@ -1,0 +1,87 @@
+#pragma kernel SpreadLight
+#pragma kernel PropagateSunlight
+
+struct SVONode { uint childIndex; uint material; };
+RWStructuredBuffer<SVONode> _SVOPool;
+uint _RootIndex;
+
+// --- BIT-PACKING HELPERS ---
+uint PackMaterialAndLight(uint matID, uint r, uint g, uint b, uint sun) {
+    return matID | (r << 8) | (g << 12) | (b << 16) | (sun << 20);
+}
+
+void UnpackLight(uint data, out uint matID, out uint r, out uint g, out uint b, out uint sun) {
+    matID = data & 0xFF;
+    r = (data >> 8) & 0xF;
+    g = (data >> 12) & 0xF;
+    b = (data >> 16) & 0xF;
+    sun = (data >> 20) & 0xF;
+}
+
+// Safely traverse the SVO to find the exact memory index of a 1x1 voxel
+uint GetLeafNodeIndex(uint rootIndex, int3 localPos) {
+    if (rootIndex == 0xFFFFFFFF) return 0xFFFFFFFF;
+    uint nodeIndex = rootIndex;
+    int size = 32;
+    int3 currentPos = localPos;
+    
+    for (int i = 0; i < 6; i++) {
+        SVONode node = _SVOPool[nodeIndex & 134217727];
+        if (node.childIndex == 0) return nodeIndex; // Reached leaf
+        size >>= 1;
+        int3 childIdx = (currentPos >= size) ? 1 : 0;
+        currentPos -= childIdx * size;
+        nodeIndex = node.childIndex + (childIdx.x + childIdx.y * 2 + childIdx.z * 4);
+    }
+    return nodeIndex;
+}
+
+[numthreads(32, 1, 32)]
+void PropagateSunlight (uint3 id : SV_DispatchThreadID) {
+    if (id.x >= 32 || id.z >= 32) return;
+    uint currentSun = 15; 
+
+    for (int y = 31; y >= 0; y--) {
+        uint nodeIdx = GetLeafNodeIndex(_RootIndex, int3(id.x, y, id.z));
+        if (nodeIdx != 0xFFFFFFFF) {
+            uint data = _SVOPool[nodeIdx & 134217727].material;
+            uint mat, r, g, b, sun;
+            UnpackLight(data, mat, r, g, b, sun);
+
+            if (mat != 0) currentSun = 0; 
+            else _SVOPool[nodeIdx & 134217727].material = PackMaterialAndLight(mat, r, g, b, currentSun);
+        }
+    }
+}
+
+[numthreads(8, 8, 8)]
+void SpreadLight (uint3 id : SV_DispatchThreadID) {
+    if (any(id >= 32)) return;
+
+    // Use a bit-mask check BEFORE traversing the tree for neighbors
+    uint nodeIdx = GetLeafNodeIndex(_RootIndex, id);
+    if (nodeIdx == 0xFFFFFFFF) return;
+
+    uint rawData = _SVOPool[nodeIdx & 134217727].material;
+    // OPTIMIZATION: If the block is already full sun (15), stop immediately.
+    if ((rawData >> 20) == 15) return; 
+
+    uint mat, r, g, b, sun;
+    UnpackLight(rawData, mat, r, g, b, sun);
+    if (mat != 0) return; 
+
+    uint maxSun = sun;
+    int3 offsets[6] = { int3(1,0,0), int3(-1,0,0), int3(0,1,0), int3(0,-1,0), int3(0,0,1), int3(0,0,-1) };
+
+    for (int i = 0; i < 6; i++) {
+        uint neighborIdx = GetLeafNodeIndex(_RootIndex, id + offsets[i]);
+        if (neighborIdx != 0xFFFFFFFF) {
+            uint nSun = (_SVOPool[neighborIdx & 134217727].material >> 20) & 0xF;
+            if (nSun > maxSun) maxSun = nSun;
+        }
+    }
+
+    if (maxSun > sun + 1) {
+        _SVOPool[nodeIdx].material = PackMaterialAndLight(mat, r, g, b, maxSun - 1);
+    }
+}
