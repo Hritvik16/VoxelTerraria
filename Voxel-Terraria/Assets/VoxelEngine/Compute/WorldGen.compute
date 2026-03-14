@@ -85,7 +85,7 @@ void GenerateChunk (uint3 id : SV_DispatchThreadID, uint GI : SV_GroupIndex)
             }
         }
 
-        uint safeIndex = currentNode & 134217727;
+        uint safeIndex = (currentNode < (uint)_PoolSize) ? currentNode : 0; //currentNode & 134217727;
         if (isUniform || currentSize <= job.lodStep) {
             _SVOPool[safeIndex].childIndex = 0;
             uint m = (!isUniform) ? 1 : ((firstMaterial == -1) ? 0 : (uint)firstMaterial);

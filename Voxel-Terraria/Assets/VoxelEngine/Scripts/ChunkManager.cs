@@ -95,6 +95,8 @@ public class ChunkManager : MonoBehaviour
         int sideY = 2 * renderDistanceY + 1;
         chunksPerLayer = sideXZ * sideXZ * sideY;
         totalMapCapacity = chunksPerLayer * 8; 
+        
+        int POOL_SIZE = totalMapCapacity * 8192;
 
         if (!chunkMapArray.IsCreated) {
             chunkMapArray = new NativeArray<ChunkData>(totalMapCapacity, Allocator.Persistent);

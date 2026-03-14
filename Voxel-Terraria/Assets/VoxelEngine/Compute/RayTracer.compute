@@ -4,6 +4,7 @@ RWTexture2D<float4> Result;
 float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
 float4 _CameraForward;
+int _PoolSize;
 
 struct SVONode { uint childIndex; uint material; };
 struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD; uint pad1; uint pad2; };
@@ -89,7 +90,7 @@ uint GetVoxelFromRoot(uint rootIndex, int3 localPos) {
     uint nodeIndex = rootIndex;
     int size = 32;
     for (int i = 0; i < 6; i++) {
-        SVONode node = _SVOPool[nodeIndex & 134217727];
+        SVONode node = _SVOPool[(nodeIndex < (uint)_PoolSize) ? nodeIndex : 0]; //_SVOPool[nodeIndex & 134217727];
         if (node.childIndex == 0) return node.material;
         size >>= 1; 
         int3 childIdx = (localPos >= size) ? 1 : 0;
@@ -106,6 +107,7 @@ bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint 
     int3 rayStep = sign(ray.direction);
     int3 stepDirBounds = max(rayStep, 0);
 
+    // Might need to change the 600 to something higher
     [loop]
     for (int i = 0; i < 600; i++) { 
         raySteps++; 
@@ -126,7 +128,7 @@ bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint 
         uint rootIndex = currentChunk.rootNodeIndex;
 
         if (rootIndex != 0xFFFFFFFF) {
-            SVONode rootNode = _SVOPool[rootIndex & 134217727];
+            SVONode rootNode = _SVOPool[(rootIndex < (uint)_PoolSize) ? rootIndex : 0]; //_SVOPool[rootIndex & 134217727];
 
             if (rootNode.childIndex == 0 && (rootNode.material & 0xFF) == 0) {
                 float3 nextC = (chunkCoord + stepDirBounds) * chunkSize;
@@ -250,32 +252,72 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float s_t; int3 s_mask; uint s_matData; float s_size; float3 s_pos; int s_steps;
         bool inShadow = TraceVoxelRay(shadowRay, 20.0, s_t, s_mask, s_matData, s_size, s_pos, s_steps);
         
-        float faceShade = (normal.y > 0.5) ? 1.0 : (abs(normal.x) > 0.5 ? 0.7 : 0.5);
-        float noise = (hash(finalBlockPos) - 0.5) * 0.18; 
+        // float faceShade = (normal.y > 0.5) ? 1.0 : (abs(normal.x) > 0.5 ? 0.7 : 0.5);
+        // float noise = (hash(finalBlockPos) - 0.5) * 0.18; 
         
-        float ambient = 0.1;
-        float3 voxelLight = float3(r_light, g_light, b_light) + max(sun_light, ambient);
-        float3 baseColor = saturate(matData.albedo.rgb + noise) * faceShade * saturate(voxelLight + 0.05);
+        // float ambient = 0.1;
+        // float3 voxelLight = float3(r_light, g_light, b_light) + max(sun_light, ambient);
+        // float3 baseColor = saturate(matData.albedo.rgb + noise) * faceShade * saturate(voxelLight + 0.05);
 
-        // --- GRID OVERLAY ---
-        float3 localPos = frac(hitWorldPos / finalVoxelSize);
-        float3 distToEdge = min(localPos, 1.0 - localPos) + abs(normal);
-        if (min(min(distToEdge.x, distToEdge.y), distToEdge.z) < 0.015) {
-            float gridVisibility = saturate(1.0 - (t / 80.0)); 
-            baseColor *= lerp(1.0, 0.6, gridVisibility); 
+        // // --- GRID OVERLAY ---
+        // float3 localPos = frac(hitWorldPos / finalVoxelSize);
+        // float3 distToEdge = min(localPos, 1.0 - localPos) + abs(normal);
+        // if (min(min(distToEdge.x, distToEdge.y), distToEdge.z) < 0.015) {
+        //     float gridVisibility = saturate(1.0 - (t / 80.0)); 
+        //     baseColor *= lerp(1.0, 0.6, gridVisibility); 
+        // }
+
+        // if (inShadow) baseColor *= 0.25;
+
+        // float3 halfDir = normalize(_SunDir - ray.direction);
+        // float spec = inShadow ? 0.0 : pow(max(0.0, dot(normal, halfDir)), 64.0) * 0.3; 
+        
+        // float fog = saturate(t / 600.0); 
+        // float3 skyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
+        // float3 colorWithLight = (baseColor + spec);
+        
+        // // float3 punchyColor = (colorWithLight * (2.51 * colorWithLight + 0.03)) / (colorWithLight * (2.43 * colorWithLight + 0.59) + 0.14);
+        // float3 finalColor = lerp(colorWithLight, skyColor, fog);
+
+        float faceShade = (normal.y > 0.5) ? 1.0 : (abs(normal.x) > 0.5 ? 0.7 : 0.5);
+
+        // Create multi-frequency noise for organic patterning
+        float noiseLarge = hash(floor(finalBlockPos * 0.1));
+        float noiseMedium = hash(floor(finalBlockPos * 0.5));
+        float noiseDetail = (hash(finalBlockPos) - 0.5) * 0.08;
+
+        float3 baseColor = matData.albedo.rgb;
+
+        // If the block is green-ish (Grass), apply the Palette Variation
+        if (baseColor.g > baseColor.r && baseColor.g > baseColor.b) {
+            float3 colorLush = baseColor * float3(1.1, 1.1, 0.8);
+            float3 colorOlive = baseColor * float3(0.8, 0.9, 0.6);
+            float3 colorDeep = baseColor * float3(0.5, 0.7, 0.5);
+            
+            float blend1 = smoothstep(0.2, 0.8, noiseLarge);
+            float3 mixColor = lerp(colorLush, colorOlive, blend1);
+            
+            float blend2 = smoothstep(0.3, 0.9, noiseMedium);
+            mixColor = lerp(mixColor, colorDeep, blend2);
+            
+            baseColor = mixColor + noiseDetail;
+        } else {
+            baseColor += noiseDetail; 
         }
 
-        if (inShadow) baseColor *= 0.25;
-
-        float3 halfDir = normalize(_SunDir - ray.direction);
-        float spec = inShadow ? 0.0 : pow(max(0.0, dot(normal, halfDir)), 64.0) * 0.3; 
+        float ambient = 0.2;
         
+        // MULTIPLY sun_light to push it into HDR space (above 1.0)
+        float3 voxelLight = float3(r_light, g_light, b_light) + (sun_light * 2.5) + ambient;
+        
+        // REMOVE saturate() clamps so brightness can exceed 1.0 for Bloom
+        float3 colorWithLight = baseColor * faceShade * voxelLight;
+
         float fog = saturate(t / 600.0); 
         float3 skyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
-        float3 colorWithLight = (baseColor + spec);
-        
-        float3 punchyColor = (colorWithLight * (2.51 * colorWithLight + 0.03)) / (colorWithLight * (2.43 * colorWithLight + 0.59) + 0.14);
-        float3 finalColor = lerp(punchyColor, skyColor, fog);
+
+        // Output raw HDR color
+        float3 finalColor = lerp(colorWithLight, skyColor, fog);
 
         float zDepth = t * dot(ray.direction, _CameraForward.xyz);
         Result[id.xy] = float4(finalColor, zDepth);
