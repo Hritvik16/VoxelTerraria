@@ -51,9 +51,8 @@ int GetLayer(float3 worldPos) {
         float layerScale = _ClipmapCenters[L].w;
         int3 chunkCoord = int3(floor(worldPos / (32.0 * layerScale)));
         int3 centerChunk = (int3)_ClipmapCenters[L].xyz;
-        if (abs(chunkCoord.x - centerChunk.x) <= renderDistXZ && 
-            abs(chunkCoord.y - centerChunk.y) <= renderDistY && 
-            abs(chunkCoord.z - centerChunk.z) <= renderDistXZ) return L;
+        float distXZ = length(float2(chunkCoord.x - centerChunk.x, chunkCoord.z - centerChunk.z));
+        if (distXZ <= renderDistXZ && abs(chunkCoord.y - centerChunk.y) <= renderDistY) return L;
     }
     return _ClipmapLayers;
 }
@@ -64,9 +63,8 @@ ChunkData GetChunkData(int3 chunkCoord, int layer) {
     int renderDistXZ = (int)_RenderBounds.x;
     int renderDistY  = (int)_RenderBounds.y; 
     int3 centerChunk = (int3)_ClipmapCenters[layer].xyz;
-    if(abs(chunkCoord.x - centerChunk.x) > renderDistXZ || 
-       abs(chunkCoord.y - centerChunk.y) > renderDistY || 
-       abs(chunkCoord.z - centerChunk.z) > renderDistXZ) return invalidChunk;
+    float distXZ = length(float2(chunkCoord.x - centerChunk.x, chunkCoord.z - centerChunk.z));
+    if(distXZ > renderDistXZ || abs(chunkCoord.y - centerChunk.y) > renderDistY) return invalidChunk;
     
     int sideXZ = 2 * renderDistXZ + 1;
     int sideY = 2 * renderDistY + 1;
@@ -74,7 +72,13 @@ ChunkData GetChunkData(int3 chunkCoord, int layer) {
     int my = (int)(((uint)(chunkCoord.y + 400000 * sideY)) % (uint)sideY);
     int mz = (int)(((uint)(chunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
     
-    return _ChunkMap[(layer * _ChunkCount) + mx + mz * sideXZ + my * sideXZ * sideXZ];
+    ChunkData cd = _ChunkMap[(layer * _ChunkCount) + mx + mz * sideXZ + my * sideXZ * sideXZ];
+    
+    float3 expectedPos = chunkCoord * 32.0f;
+    // The following validation check prevents stale data flickering during movement.
+    if (abs(cd.position.x - expectedPos.x) > 0.1f || abs(cd.position.y - expectedPos.y) > 0.1f || abs(cd.position.z - expectedPos.z) > 0.1f) return invalidChunk;
+    return cd;
+
 }
 
 void UnpackLight(uint data, out uint matID, out float r, out float g, out float b, out float sun) {
@@ -86,11 +90,13 @@ void UnpackLight(uint data, out uint matID, out float r, out float g, out float 
 }
 
 uint GetVoxelFromRoot(uint rootIndex, int3 localPos) {
-    if (rootIndex == 0xFFFFFFFF) return 0;
+    if (rootIndex == 0xFFFFFFFF || rootIndex >= (uint)_PoolSize) return 0;
     uint nodeIndex = rootIndex;
     int size = 32;
     for (int i = 0; i < 6; i++) {
-        SVONode node = _SVOPool[(nodeIndex < (uint)_PoolSize) ? nodeIndex : 0]; //_SVOPool[nodeIndex & 134217727];
+        if (nodeIndex >= (uint)_PoolSize) return 0;
+        if (nodeIndex >= (uint)_PoolSize) return 0;
+        SVONode node = _SVOPool[nodeIndex];
         if (node.childIndex == 0) return node.material;
         size >>= 1; 
         int3 childIdx = (localPos >= size) ? 1 : 0;
@@ -103,9 +109,16 @@ uint GetVoxelFromRoot(uint rootIndex, int3 localPos) {
 bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint hitMatID_Data, out float finalVoxelSize, out float3 finalBlockPos, out int raySteps) {
     bool hit = false;
     hitMatID_Data = 0; mask = 0; t = 0; finalVoxelSize = 1.0f; finalBlockPos = 0; raySteps = 0;
-    float3 invDir = 1.0f / (ray.direction + 1e-7f);
-    int3 rayStep = sign(ray.direction);
-    int3 stepDirBounds = max(rayStep, 0);
+    // THE FIX: The DDA Infinity Trap.
+        // Prevent exactly zero directions without EVER flipping the mathematical sign of the ray.
+        float3 safeDir = ray.direction;
+        if (abs(safeDir.x) < 1e-6f) safeDir.x = (safeDir.x < 0.0f ? -1e-6f : 1e-6f);
+        if (abs(safeDir.y) < 1e-6f) safeDir.y = (safeDir.y < 0.0f ? -1e-6f : 1e-6f);
+        if (abs(safeDir.z) < 1e-6f) safeDir.z = (safeDir.z < 0.0f ? -1e-6f : 1e-6f);
+
+        float3 invDir = 1.0f / safeDir;
+        int3 rayStep = sign(safeDir);
+        int3 stepDirBounds = max(rayStep, 0);
 
     // Might need to change the 600 to something higher
     [loop]
@@ -114,7 +127,17 @@ bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint 
         if (t > maxDist) break;
         float3 currentPos = ray.origin + ray.direction * t;
 
-        if (currentPos.y > 35.0f && ray.direction.y > 0.0f) break;
+        // Aggressive horizon culling to prevent Ray Runaway
+        if (currentPos.y > 30.0f && ray.direction.y > -0.05f) break;
+        // DYNAMIC BOUNDS CULLING: Kill the ray instantly if it exits the maximum generated volume.
+        // int maxL = _ClipmapLayers - 1;
+        // float maxScale = _ClipmapCenters[maxL].w;
+        // float maxRadiusXZ = _RenderBounds.x * 32.0f * maxScale;
+        // float maxRadiusY = _RenderBounds.y * 32.0f * maxScale; 
+        // float3 globalCenter = _ClipmapCenters[maxL].xyz * 32.0f * maxScale;
+        
+        // float distFromCenterXZ = length(float2(currentPos.x - globalCenter.x, currentPos.z - globalCenter.z));
+        // if (distFromCenterXZ > maxRadiusXZ || abs(currentPos.y - globalCenter.y) > maxRadiusY) break;
 
         int layer = GetLayer(currentPos);
         if (layer >= _ClipmapLayers) break;
@@ -301,7 +324,13 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         // REMOVE saturate() clamps so brightness can exceed 1.0 for Bloom
         float3 colorWithLight = baseColor * faceShade * voxelLight;
 
-        float fog = saturate(t / 600.0); 
+        // DYNAMIC FOG: Calculates atmosphere thickness based on your exact Inspector bounds
+        int maxL = _ClipmapLayers - 1;
+        float maxWorldDist = _RenderBounds.x * 32.0f * _ClipmapCenters[maxL].w;
+        
+        // Fog starts at 40% of your maximum view distance and reaches maximum density at the edge
+        float fogStart = maxWorldDist * 0.4f; 
+        float fog = saturate((t - fogStart) / (maxWorldDist - fogStart));
         float3 skyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
 
         // Output raw HDR color

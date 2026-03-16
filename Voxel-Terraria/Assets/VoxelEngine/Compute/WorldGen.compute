@@ -54,7 +54,8 @@ void GenerateChunk (uint3 id : SV_DispatchThreadID, uint GI : SV_GroupIndex)
     if (id.x >= (uint)_JobCount) return;
     ChunkJobData job = _JobQueue[id.x];
     uint rootIndex = (uint)job.pad1;
-    uint memoryOffset = 8; 
+    uint maxMemory = (uint)job.worldPos.w;
+    uint memoryOffset = 8;
 
     int stackPtr = 1;
     stack_node[GI][0] = rootIndex;
@@ -100,7 +101,7 @@ void GenerateChunk (uint3 id : SV_DispatchThreadID, uint GI : SV_GroupIndex)
         } else {
             uint childStart = rootIndex + memoryOffset;
             memoryOffset += 8;
-            if (memoryOffset >= 8184) {
+            if (memoryOffset >= maxMemory - 8) {
                 _SVOPool[safeIndex].childIndex = 0;
                 _SVOPool[safeIndex].material = PackMaterialAndLight(1, 0, 0, 0, 0);
                 continue;
@@ -118,7 +119,8 @@ void GenerateChunk (uint3 id : SV_DispatchThreadID, uint GI : SV_GroupIndex)
                     }
         }
     }
-    _ChunkMap[job.mapIndex].position = float4(job.worldPos.xyz * job.layerScale, (float)chunkMaxY);
+    // THE FIX: Write back the exact unscaled position so the RayTracer validation check passes.
+    _ChunkMap[job.mapIndex].position = float4(job.worldPos.xyz, (float)chunkMaxY);
     _ChunkMap[job.mapIndex].rootNodeIndex = rootIndex;
     _ChunkMap[job.mapIndex].currentLOD = job.lodStep;
     _ChunkMap[job.mapIndex].pad1 = (uint)chunkMinY;

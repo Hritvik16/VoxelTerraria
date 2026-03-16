@@ -10,9 +10,9 @@ public class ChunkManager : MonoBehaviour
     [Header("Clipmap Architecture")]
     public int chunkSize = 32;
     public float voxelScale = 0.1f;
-    [Range(1, 8)] public int clipmapLayers = 8;
-    public int renderDistanceXZ = 6; 
-    public int renderDistanceY = 4;  
+    [Range(1, 3)] public int clipmapLayers = 3;
+    public int renderDistanceXZ = 18; // 39x39x19 bounds = ~28,899 chunks (Tier 0 is ~60m)
+    public int renderDistanceY = 9;
 
     [Header("Performance")]
     public int maxConcurrentJobs = 800; 
@@ -51,7 +51,7 @@ public class ChunkManager : MonoBehaviour
 
     // private NativeArray<SVONode> masterNodePool;
     
-    private const int POOL_SIZE = 67108864; 
+    private const int POOL_SIZE = 671088512; 
 
     private ComputeBuffer svoPoolBuffer, chunkMapBuffer, jobQueueBuffer; 
 
@@ -94,9 +94,13 @@ public class ChunkManager : MonoBehaviour
         int sideXZ = 2 * renderDistanceXZ + 1;
         int sideY = 2 * renderDistanceY + 1;
         chunksPerLayer = sideXZ * sideXZ * sideY;
-        totalMapCapacity = chunksPerLayer * 8; 
+        totalMapCapacity = chunksPerLayer * clipmapLayers; 
         
-        int POOL_SIZE = totalMapCapacity * 8192;
+        // Stratified Static Pool: Balanced for 60m radius on M1 8GB
+        int tier0Size = chunksPerLayer * 8192;
+        int tier1Size = chunksPerLayer * 2048; // Increased from 1024 to allow full LOD 1 surface detail
+        int tier2Size = chunksPerLayer * 256;  // Reduced from 512 as Tier 2 (far distance) only needs basic shapes
+        int POOL_SIZE = tier0Size + tier1Size + tier2Size;
 
         if (!chunkMapArray.IsCreated) {
             chunkMapArray = new NativeArray<ChunkData>(totalMapCapacity, Allocator.Persistent);
@@ -200,11 +204,16 @@ public class ChunkManager : MonoBehaviour
 
         for (int i = 0; i < scanOffsets.Length; i++) {
             Vector3Int coord = center + scanOffsets[i];
-            int idx = GetMapIndex(layer, coord);
             
-            float expectedX = coord.x * chunkSize * layerScale;
-            float expectedY = coord.y * chunkSize * layerScale;
-            float expectedZ = coord.z * chunkSize * layerScale;
+            // THE FIX: Cylindrical culling AT THE SOURCE. 
+            // If it's a corner, we skip it before it permanently corrupts the target coordinate array.
+            float distXZ = Vector2.Distance(new Vector2(coord.x, coord.z), new Vector2(center.x, center.z));
+            if (distXZ > renderDistanceXZ || Mathf.Abs(coord.y - center.y) > renderDistanceY) continue;
+
+            int idx = GetMapIndex(layer, coord);
+            float expectedX = coord.x * chunkSize;
+            float expectedY = coord.y * chunkSize;
+            float expectedZ = coord.z * chunkSize;
             
             Vector4 currentPos = chunkMapArray[idx].position;
 
@@ -238,25 +247,34 @@ public class ChunkManager : MonoBehaviour
                     if (chunkTargetCoordArray[idx] != lc.coord) continue;
 
                     Vector3Int center = primaryAnchorChunks[lc.layer];
-                    if (Mathf.Abs(lc.coord.x - center.x) > renderDistanceXZ || 
-                        Mathf.Abs(lc.coord.y - center.y) > renderDistanceY || 
-                        Mathf.Abs(lc.coord.z - center.z) > renderDistanceXZ) {
-                        continue; 
-                    }
+                    // The buggy distance check here was removed. Culling is now safely handled upstream.
 
                     float layerScale = voxelScale * (1 << lc.layer);
-                    uint safeRootIndex = (uint)(idx * 8192) + 8;
+                    
+                    uint safeRootIndex = 8;
+                    int chunkIndexInLayer = idx % chunksPerLayer;
+                    if (lc.layer == 0) {
+                        safeRootIndex = (uint)(chunkIndexInLayer * 8192) + 8;
+                    } else if (lc.layer == 1) {
+                        safeRootIndex = (uint)(chunksPerLayer * 8192) + (uint)(chunkIndexInLayer * 2048) + 8;
+                    } else if (lc.layer == 2) {
+                        safeRootIndex = (uint)(chunksPerLayer * 8192) + (uint)(chunksPerLayer * 2048) + (uint)(chunkIndexInLayer * 256) + 8;
+                    }
+
+                    int siloCap = (lc.layer == 0) ? 8192 : (lc.layer == 1) ? 2048 : 256;
+                    int targetLod = (lc.layer == 0) ? 1 : (lc.layer == 1) ? 2 : 4; 
 
                     jobDataArray[dispatchesThisFrame] = new ChunkJobData {
-                        worldPos = new Vector4(lc.coord.x * chunkSize, lc.coord.y * chunkSize, lc.coord.z * chunkSize, 0),
+                        worldPos = new Vector4(lc.coord.x * chunkSize, lc.coord.y * chunkSize, lc.coord.z * chunkSize, siloCap),
                         mapIndex = idx,
-                        lodStep = 1,
+                        lodStep = targetLod,
                         layerScale = layerScale,
                         pad1 = safeRootIndex 
                     };
 
                     ChunkData cd = chunkMapArray[idx];
-                    cd.position = new Vector4(lc.coord.x * chunkSize * layerScale, lc.coord.y * chunkSize * layerScale, lc.coord.z * chunkSize * layerScale, 0);
+                    // THE FIX: Invalidate the position. WorldGen will write the true position only AFTER generation is complete.
+                    cd.position = new Vector4(-99999f, -99999f, -99999f, 0f);
                     cd.rootNodeIndex = safeRootIndex; 
                     chunkMapArray[idx] = cd;
 
@@ -290,8 +308,8 @@ public class ChunkManager : MonoBehaviour
                 voxelLightingShader.SetBuffer(lightKernel, "_SVOPool", svoPoolBuffer);
                 voxelLightingShader.Dispatch(lightKernel, 1, 1, 1); 
 
-                // Only spread light for the highest detail layer (Layer 0)
-                int layer = (int)(rootIdx / (chunksPerLayer * 8192));
+                // THE FIX: Use floating point division to avoid integer truncation errors on M1
+                int layer = Mathf.FloorToInt((float)rootIdx / (chunksPerLayer * 8192f));
                 if (layer == 0) {
                     voxelLightingShader.SetBuffer(spreadKernel, "_SVOPool", svoPoolBuffer);
                     voxelLightingShader.Dispatch(spreadKernel, 4, 4, 4); 

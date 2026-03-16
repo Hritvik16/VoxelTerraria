@@ -22,18 +22,39 @@ public class PlayerMovement : MonoBehaviour
     private float lastSpacePressTime;
     private float verticalRotation = 0f;
 
+    [Header("Camera Auto-Attach")]
+    public Vector3 eyeLevelOffset = new Vector3(0, 0.6f, 0);
+
     void Awake()
     {
         rb = GetComponent<Rigidbody>();
-        if (cameraTransform == null)
+        
+        // Find the camera automatically if it is floating loose in the scene
+        if (cameraTransform == null && Camera.main != null)
         {
-            cameraTransform = GetComponentInChildren<Camera>()?.transform;
+            cameraTransform = Camera.main.transform;
         }
+
+        // Force the camera to become a child of the player and snap to eye level
+        if (cameraTransform != null && cameraTransform.parent != this.transform)
+        {
+            cameraTransform.SetParent(this.transform);
+            cameraTransform.localPosition = eyeLevelOffset;
+            cameraTransform.localRotation = Quaternion.identity;
+        }
+    }
+
+    void Start()
+    {
+        // CRITICAL: Locks the mouse to the game window and hides it. 
+        // This stops OS cursor acceleration from corrupting the delta values.
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
     }
 
     void Update()
     {
-        // HandleMouseLook();
+        HandleMouseLook(); // THE FIX: Run rotation before the camera updates
         HandleGravityToggle();
         
         // Use Keyboard.current for direct polling (Simple script approach)
@@ -45,11 +66,7 @@ public class PlayerMovement : MonoBehaviour
             }
         }
     }
-    // Add LateUpdate for perfectly smooth camera tracking
-    void LateUpdate()
-    {
-        HandleMouseLook();
-    }
+    // Removed LateUpdate completely from this script
 
     void FixedUpdate()
     {
@@ -126,20 +143,22 @@ public class PlayerMovement : MonoBehaviour
     {
         if (Mouse.current == null) return;
 
-        Vector2 mouseDelta = Mouse.current.delta.ReadValue();
+        // THE FIX: Multiply the raw pixel delta by a base sensitivity scale (0.05f).
+        // This scales a 1-pixel movement down to 0.05 degrees, allowing continuous, sub-pixel-feeling rotation.
+        Vector2 mouseDelta = Mouse.current.delta.ReadValue() * 0.5f;
+        
         float mouseX = mouseDelta.x * lookSensitivity;
         float mouseY = mouseDelta.y * lookSensitivity;
 
-        // Yaw (Horizontal)
+        // Yaw (Horizontal) - Rotates the entire player body
         transform.Rotate(Vector3.up * mouseX);
 
-        // Pitch (Vertical)
+        // Pitch (Vertical) - Tilts ONLY the camera's local X axis
         verticalRotation -= mouseY;
         verticalRotation = Mathf.Clamp(verticalRotation, -90f, 90f);
         if (cameraTransform != null)
         {
-            // Since camera is now detached, we set its rotation relative to the player's yaw
-            cameraTransform.rotation = transform.rotation * Quaternion.Euler(verticalRotation, 0, 0);
+            cameraTransform.localRotation = Quaternion.Euler(verticalRotation, 0, 0);
         }
     }
 

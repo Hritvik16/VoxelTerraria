@@ -65,7 +65,7 @@ class RayTracingPass : ScriptableRenderPass
         TextureDesc texDesc = new TextureDesc(rw, rh);
         texDesc.format = GraphicsFormat.R16G16B16A16_SFloat;
         texDesc.enableRandomWrite = true;
-        texDesc.filterMode = FilterMode.Point; // Standard sharp pixels
+        texDesc.filterMode = FilterMode.Bilinear; // Standard sharp pixels
         
         TextureHandle computeOutput = renderGraph.CreateTexture(texDesc);
 
