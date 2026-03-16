@@ -234,6 +234,19 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float3 normal = float3(mask) * -sign(ray.direction);
         float3 hitWorldPos = ray.origin + ray.direction * t;
         
+        int layer = GetLayer(hitWorldPos);
+        float3 chunkCoord = floor(hitWorldPos / (32.0 * finalVoxelSize));
+        float bandXZ = max(0.0, max(abs(chunkCoord.x - _ClipmapCenters[layer].x), abs(chunkCoord.z - _ClipmapCenters[layer].z)) - (_RenderBounds.x - 1.5)) / 1.5;
+        float bandY = max(0.0, abs(chunkCoord.y - _ClipmapCenters[layer].y) - (_RenderBounds.y - 1.5)) / 1.5;
+        float dissolveBand = saturate(max(bandXZ, bandY));
+
+        // Mathematically derive the LOD 1 equivalent normal by offsetting from the 2x2x2 parent cluster center
+        float3 lod1Center = floor(finalBlockPos / 2.0) * 2.0 + 1.0;
+        float3 lod1Normal = normalize(normal + (finalBlockPos - lod1Center + 0.5) * 0.5);
+        
+        // Smoothly bend the normal as it approaches the chunk boundary
+        normal = normalize(lerp(normal, lod1Normal, dissolveBand));
+        
         uint mat; float r_light, g_light, b_light, sun_light;
         UnpackLight(hitMatID_Data, mat, r_light, g_light, b_light, sun_light);
         VoxelMaterial matData = _MaterialPalette[mat];
@@ -251,35 +264,10 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         
         float s_t; int3 s_mask; uint s_matData; float s_size; float3 s_pos; int s_steps;
         bool inShadow = TraceVoxelRay(shadowRay, 20.0, s_t, s_mask, s_matData, s_size, s_pos, s_steps);
-        
-        // float faceShade = (normal.y > 0.5) ? 1.0 : (abs(normal.x) > 0.5 ? 0.7 : 0.5);
-        // float noise = (hash(finalBlockPos) - 0.5) * 0.18; 
-        
-        // float ambient = 0.1;
-        // float3 voxelLight = float3(r_light, g_light, b_light) + max(sun_light, ambient);
-        // float3 baseColor = saturate(matData.albedo.rgb + noise) * faceShade * saturate(voxelLight + 0.05);
 
-        // // --- GRID OVERLAY ---
-        // float3 localPos = frac(hitWorldPos / finalVoxelSize);
-        // float3 distToEdge = min(localPos, 1.0 - localPos) + abs(normal);
-        // if (min(min(distToEdge.x, distToEdge.y), distToEdge.z) < 0.015) {
-        //     float gridVisibility = saturate(1.0 - (t / 80.0)); 
-        //     baseColor *= lerp(1.0, 0.6, gridVisibility); 
-        // }
-
-        // if (inShadow) baseColor *= 0.25;
-
-        // float3 halfDir = normalize(_SunDir - ray.direction);
-        // float spec = inShadow ? 0.0 : pow(max(0.0, dot(normal, halfDir)), 64.0) * 0.3; 
-        
-        // float fog = saturate(t / 600.0); 
-        // float3 skyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
-        // float3 colorWithLight = (baseColor + spec);
-        
-        // // float3 punchyColor = (colorWithLight * (2.51 * colorWithLight + 0.03)) / (colorWithLight * (2.43 * colorWithLight + 0.59) + 0.14);
-        // float3 finalColor = lerp(colorWithLight, skyColor, fog);
-
-        float faceShade = (normal.y > 0.5) ? 1.0 : (abs(normal.x) > 0.5 ? 0.7 : 0.5);
+        // Smooth lighting dot products to respect the interpolated LOD normals without snapping
+        float faceShade = saturate(dot(normal, float3(0, 1, 0))) * 0.5 + 
+                          saturate(abs(dot(normal, float3(1, 0, 0)))) * 0.2 + 0.5;
 
         // Create multi-frequency noise for organic patterning
         float noiseLarge = hash(floor(finalBlockPos * 0.1));
