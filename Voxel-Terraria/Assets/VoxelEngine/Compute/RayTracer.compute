@@ -81,12 +81,13 @@ ChunkData GetChunkData(int3 chunkCoord, int layer) {
 
 }
 
-void UnpackLight(uint data, out uint matID, out float r, out float g, out float b, out float sun) {
+void UnpackLight(uint data, out uint matID, out float r, out float g, out float b, out float sun, out uint ao) {
     matID = data & 0xFF;
     r = ((data >> 8) & 0xF) / 15.0f;
     g = ((data >> 12) & 0xF) / 15.0f;
     b = ((data >> 16) & 0xF) / 15.0f;
     sun = ((data >> 20) & 0xF) / 15.0f;
+    ao = (data >> 24) & 0xFF;
 }
 
 uint GetVoxelFromRoot(uint rootIndex, int3 localPos) {
@@ -122,7 +123,7 @@ bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint 
 
     // Might need to change the 600 to something higher
     [loop]
-    for (int i = 0; i < 600; i++) { 
+    for (int i = 0; i < 200; i++) { 
         raySteps++; 
         if (t > maxDist) break;
         float3 currentPos = ray.origin + ray.direction * t;
@@ -270,8 +271,8 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         // Smoothly bend the normal as it approaches the chunk boundary
         normal = normalize(lerp(normal, lod1Normal, dissolveBand));
         
-        uint mat; float r_light, g_light, b_light, sun_light;
-        UnpackLight(hitMatID_Data, mat, r_light, g_light, b_light, sun_light);
+        uint mat; float r_light, g_light, b_light, sun_light; uint bakedAO_mask;
+        UnpackLight(hitMatID_Data, mat, r_light, g_light, b_light, sun_light, bakedAO_mask);
         VoxelMaterial matData = _MaterialPalette[mat];
         
         if (_DebugViewMode == 1) { Result[id.xy] = float4(lerp(float3(0,0,1), float3(1,0,0), saturate((float)steps / 150.0)), 1); return; }
@@ -280,49 +281,104 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         if (_DebugViewMode == 4) { Result[id.xy] = float4(matData.albedo.rgb, 1); return; }
         if (_DebugViewMode == 5) { Result[id.xy] = float4((float3(r_light, g_light, b_light) + sun_light) / 1.5, 1); return; }
 
-        // --- ORIGINAL STABLE RENDER ---
-        Ray shadowRay;
-        shadowRay.origin = (finalBlockPos + normal) * finalVoxelSize + (finalVoxelSize * 0.5f); 
-        shadowRay.direction = _SunDir;
-        
-        float s_t; int3 s_mask; uint s_matData; float s_size; float3 s_pos; int s_steps;
-        bool inShadow = TraceVoxelRay(shadowRay, 20.0, s_t, s_mask, s_matData, s_size, s_pos, s_steps);
+        // (Deleted the expensive, unused shadowRay trace here)
 
-        // Smooth lighting dot products to respect the interpolated LOD normals without snapping
-        float faceShade = saturate(dot(normal, float3(0, 1, 0))) * 0.5 + 
-                          saturate(abs(dot(normal, float3(1, 0, 0)))) * 0.2 + 0.5;
+        // --- MOIRE FIX 2: Geometric & Texture Mipmapping ---
+        float distanceFade = saturate(1.0 - (t - 80.0) / 80.0);
 
-        // Create multi-frequency noise for organic patterning
+        // 1. Smooth the Shading (The Terracing Fix)
+        float3 lightingNormal = normalize(normal + float3(0, 0.65, 0));
+        float rawFaceShade = saturate(dot(lightingNormal, float3(0, 1, 0))) * 0.5 + 
+                             saturate(abs(dot(lightingNormal, float3(1, 0, 0)))) * 0.2 + 0.45;
+        float faceShade = lerp(0.85, rawFaceShade, distanceFade);
+
+        // 2. Smooth the Texture Noise
         float noiseLarge = hash(floor(finalBlockPos * 0.1));
         float noiseMedium = hash(floor(finalBlockPos * 0.5));
-        float noiseDetail = (hash(finalBlockPos) - 0.5) * 0.08;
+        float noiseDetail = (hash(finalBlockPos) - 0.5) * 0.08 * distanceFade; 
 
         float3 baseColor = matData.albedo.rgb;
-
-        // If the block is green-ish (Grass), apply the Palette Variation
         if (baseColor.g > baseColor.r && baseColor.g > baseColor.b) {
             float3 colorLush = baseColor * float3(1.1, 1.1, 0.8);
             float3 colorOlive = baseColor * float3(0.8, 0.9, 0.6);
             float3 colorDeep = baseColor * float3(0.5, 0.7, 0.5);
             
-            float blend1 = smoothstep(0.2, 0.8, noiseLarge);
+            float blend1 = lerp(0.5, smoothstep(0.2, 0.8, noiseLarge), distanceFade);
             float3 mixColor = lerp(colorLush, colorOlive, blend1);
             
-            float blend2 = smoothstep(0.3, 0.9, noiseMedium);
+            float blend2 = lerp(0.5, smoothstep(0.3, 0.9, noiseMedium), distanceFade);
             mixColor = lerp(mixColor, colorDeep, blend2);
             
             baseColor = mixColor + noiseDetail;
         } else {
-            baseColor += noiseDetail; 
+            baseColor += noiseDetail;
         }
 
+        // --- TRUE 3D VOXEL AMBIENT OCCLUSION ---
+        float3 localHitPos = frac((ray.origin + ray.direction * t) / finalVoxelSize);
+        float2 faceUV;
+        float c00 = 0, c10 = 0, c01 = 0, c11 = 0;
+        
+        // Extract the 8 baked neighbor corners
+        bool b0 = (bakedAO_mask & 1) != 0;   // -X, -Y, -Z
+        bool b1 = (bakedAO_mask & 2) != 0;   // +X, -Y, -Z
+        bool b2 = (bakedAO_mask & 4) != 0;   // -X, +Y, -Z
+        bool b3 = (bakedAO_mask & 8) != 0;   // +X, +Y, -Z
+        bool b4 = (bakedAO_mask & 16) != 0;  // -X, -Y, +Z
+        bool b5 = (bakedAO_mask & 32) != 0;  // +X, -Y, +Z
+        bool b6 = (bakedAO_mask & 64) != 0;  // -X, +Y, +Z
+        bool b7 = (bakedAO_mask & 128) != 0; // +X, +Y, +Z
+
+        // Map the correct 4 corners depending on the face we hit
+        if (mask.x > 0) {
+            faceUV = localHitPos.yz;
+            if (ray.direction.x < 0) { 
+                c00 = b1 ? 1.0 : 0.0; c10 = b3 ? 1.0 : 0.0; c01 = b5 ? 1.0 : 0.0; c11 = b7 ? 1.0 : 0.0; 
+            } else { 
+                c00 = b0 ? 1.0 : 0.0; c10 = b2 ? 1.0 : 0.0; c01 = b4 ? 1.0 : 0.0; c11 = b6 ? 1.0 : 0.0; 
+            }
+        } else if (mask.y > 0) {
+            faceUV = localHitPos.xz;
+            if (ray.direction.y < 0) { 
+                c00 = b2 ? 1.0 : 0.0; c10 = b3 ? 1.0 : 0.0; c01 = b6 ? 1.0 : 0.0; c11 = b7 ? 1.0 : 0.0; 
+            } else { 
+                c00 = b0 ? 1.0 : 0.0; c10 = b1 ? 1.0 : 0.0; c01 = b4 ? 1.0 : 0.0; c11 = b5 ? 1.0 : 0.0; 
+            }
+        } else {
+            faceUV = localHitPos.xy;
+            if (ray.direction.z < 0) { 
+                c00 = b4 ? 1.0 : 0.0; c10 = b5 ? 1.0 : 0.0; c01 = b6 ? 1.0 : 0.0; c11 = b7 ? 1.0 : 0.0; 
+            } else { 
+                c00 = b0 ? 1.0 : 0.0; c10 = b1 ? 1.0 : 0.0; c01 = b2 ? 1.0 : 0.0; c11 = b3 ? 1.0 : 0.0; 
+            }
+        }
+
+        // Sub-voxel bilinear interpolation
+        float bottomAO = lerp(c00, c10, faceUV.x);
+        float topAO = lerp(c01, c11, faceUV.x);
+        float finalAO = lerp(bottomAO, topAO, faceUV.y);
+
+        float rawVao = 1.0 - (finalAO * 0.6);
+        float vao = lerp(saturate(rawVao), 1.0, distanceFade);
+        
+        // --- TRUE DIRECTIONAL SUN SHADOWS ---
+        Ray shadowRay;
+        // Push the ray slightly off the block's surface using its normal so it doesn't shadow itself
+        shadowRay.origin = (ray.origin + ray.direction * t) + (normal * finalVoxelSize * 0.1); 
+        shadowRay.direction = _SunDir;
+        
+        float s_t = 0; int3 s_mask = 0; uint s_mat = 0; 
+        float s_size = 1.0; float3 s_pos = 0; int s_steps = 0;
+        
+        // Trace for only 8.0 units (~16 meters). This completely eliminates GPU thread divergence and stutter.
+        bool inShadow = TraceVoxelRay(shadowRay, 8.0, s_t, s_mask, s_mat, s_size, s_pos, s_steps);
+        // Soften the shadow slightly so it doesn't look like pitch black ink
+        float sunExposure = inShadow ? 0.25 : 1.0;
+        
         float ambient = 0.2;
-        
-        // MULTIPLY sun_light to push it into HDR space (above 1.0)
-        float3 voxelLight = float3(r_light, g_light, b_light) + (sun_light * 2.5) + ambient;
-        
-        // REMOVE saturate() clamps so brightness can exceed 1.0 for Bloom
-        float3 colorWithLight = baseColor * faceShade * voxelLight;
+        // Multiply the chunk's ambient sun value by our new real-time directional shadow
+        float3 voxelLight = float3(r_light, g_light, b_light) + (sun_light * 2.5 * sunExposure) + ambient;
+        float3 colorWithLight = baseColor * faceShade * voxelLight * vao;
 
         // DYNAMIC FOG: Calculates atmosphere thickness based on your exact Inspector bounds
         int maxL = _ClipmapLayers - 1;
@@ -330,7 +386,8 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         
         // Fog starts at 40% of your maximum view distance and reaches maximum density at the edge
         float fogStart = maxWorldDist * 0.4f; 
-        float fog = saturate((t - fogStart) / (maxWorldDist - fogStart));
+        // float fog = saturate((t - fogStart) / (maxWorldDist - fogStart));
+        float fog = 1.0 - exp(-pow(t * 0.008, 2.0));
         float3 skyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
 
         // Output raw HDR color

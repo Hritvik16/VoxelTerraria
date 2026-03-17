@@ -9,7 +9,7 @@ public class ChunkManager : MonoBehaviour
 {
     [Header("Clipmap Architecture")]
     public int chunkSize = 32;
-    public float voxelScale = 0.1f;
+    public float voxelScale = 0.2f;
     [Range(1, 3)] public int clipmapLayers = 3;
     public int renderDistanceXZ = 18; // 39x39x19 bounds = ~28,899 chunks (Tier 0 is ~60m)
     public int renderDistanceY = 9;
@@ -313,6 +313,11 @@ public class ChunkManager : MonoBehaviour
                 if (layer == 0) {
                     voxelLightingShader.SetBuffer(spreadKernel, "_SVOPool", svoPoolBuffer);
                     voxelLightingShader.Dispatch(spreadKernel, 4, 4, 4); 
+                    
+                    int aoKernel = voxelLightingShader.FindKernel("BakeAO");
+                    voxelLightingShader.SetBuffer(aoKernel, "_SVOPool", svoPoolBuffer);
+                    voxelLightingShader.SetInt("_RootIndex", (int)rootIdx);
+                    voxelLightingShader.Dispatch(aoKernel, 4, 4, 4);
                 }
             }
         }

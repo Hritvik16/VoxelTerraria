@@ -1,21 +1,29 @@
 #pragma kernel SpreadLight
 #pragma kernel PropagateSunlight
+#pragma kernel BakeAO
 
 struct SVONode { uint childIndex; uint material; };
 RWStructuredBuffer<SVONode> _SVOPool;
 uint _RootIndex;
 
 // --- BIT-PACKING HELPERS ---
-uint PackMaterialAndLight(uint matID, uint r, uint g, uint b, uint sun) {
-    return matID | (r << 8) | (g << 12) | (b << 16) | (sun << 20);
+// Bits 0-7: Material ID
+// Bits 8-11: R Light
+// Bits 12-15: G Light
+// Bits 16-19: B Light
+// Bits 20-23: Sun Light
+// Bits 24-31: Baked Ambient Occlusion (8 corners)
+uint PackMaterialAndLight(uint matID, uint r, uint g, uint b, uint sun, uint ao) {
+    return matID | (r << 8) | (g << 12) | (b << 16) | (sun << 20) | (ao << 24);
 }
 
-void UnpackLight(uint data, out uint matID, out uint r, out uint g, out uint b, out uint sun) {
+void UnpackLight(uint data, out uint matID, out uint r, out uint g, out uint b, out uint sun, out uint ao) {
     matID = data & 0xFF;
     r = (data >> 8) & 0xF;
     g = (data >> 12) & 0xF;
     b = (data >> 16) & 0xF;
     sun = (data >> 20) & 0xF;
+    ao = (data >> 24) & 0xFF;
 }
 
 // Safely traverse the SVO to find the exact memory index of a 1x1 voxel
@@ -24,7 +32,6 @@ uint GetLeafNodeIndex(uint rootIndex, int3 localPos) {
     uint nodeIndex = rootIndex;
     int size = 32;
     int3 currentPos = localPos;
-    
     for (int i = 0; i < 6; i++) {
         SVONode node = _SVOPool[nodeIndex & 134217727];
         if (node.childIndex == 0) return nodeIndex; // Reached leaf
@@ -36,6 +43,14 @@ uint GetLeafNodeIndex(uint rootIndex, int3 localPos) {
     return nodeIndex;
 }
 
+// Helper for the BakeAO kernel
+bool IsSolid(int3 localPos) {
+    if (any(localPos < 0) || any(localPos > 31)) return false; // Default to air outside the chunk to save performance
+    uint nodeIdx = GetLeafNodeIndex(_RootIndex, localPos);
+    if (nodeIdx == 0xFFFFFFFF) return false;
+    return (_SVOPool[nodeIdx & 134217727].material & 0xFF) != 0;
+}
+
 [numthreads(32, 1, 32)]
 void PropagateSunlight (uint3 id : SV_DispatchThreadID) {
     if (id.x >= 32 || id.z >= 32) return;
@@ -45,11 +60,12 @@ void PropagateSunlight (uint3 id : SV_DispatchThreadID) {
         uint nodeIdx = GetLeafNodeIndex(_RootIndex, int3(id.x, y, id.z));
         if (nodeIdx != 0xFFFFFFFF) {
             uint data = _SVOPool[nodeIdx & 134217727].material;
-            uint mat, r, g, b, sun;
-            UnpackLight(data, mat, r, g, b, sun);
+            uint mat, r, g, b, sun, ao;
+            UnpackLight(data, mat, r, g, b, sun, ao);
 
-            if (mat != 0) currentSun = 0; 
-            else _SVOPool[nodeIdx & 134217727].material = PackMaterialAndLight(mat, r, g, b, currentSun);
+            // Sun stops propagating downwards if it hits a solid block
+            if (mat != 0) currentSun = 0;
+            else _SVOPool[nodeIdx & 134217727].material = PackMaterialAndLight(mat, r, g, b, currentSun, ao);
         }
     }
 }
@@ -58,30 +74,64 @@ void PropagateSunlight (uint3 id : SV_DispatchThreadID) {
 void SpreadLight (uint3 id : SV_DispatchThreadID) {
     if (any(id >= 32)) return;
 
-    // Use a bit-mask check BEFORE traversing the tree for neighbors
+    // Loop 14 times (max light distance) to allow light to bleed into caves and under overhangs
+    for (int step = 0; step < 14; step++) {
+        uint nodeIdx = GetLeafNodeIndex(_RootIndex, id);
+        if (nodeIdx == 0xFFFFFFFF) return;
+
+        uint rawData = _SVOPool[nodeIdx & 134217727].material;
+        uint mat, r, g, b, sun, ao;
+        UnpackLight(rawData, mat, r, g, b, sun, ao);
+
+        // Light doesn't bleed through solid blocks, and 15 is already max
+        if (mat != 0 || sun == 15) continue; 
+
+        uint maxSun = sun;
+        int3 offsets[6] = { int3(1,0,0), int3(-1,0,0), int3(0,1,0), int3(0,-1,0), int3(0,0,1), int3(0,0,-1) };
+
+        for (int i = 0; i < 6; i++) {
+            int3 neighborPos = id + offsets[i];
+            if (any(neighborPos < 0) || any(neighborPos > 31)) continue;
+
+            uint neighborIdx = GetLeafNodeIndex(_RootIndex, neighborPos);
+            if (neighborIdx != 0xFFFFFFFF) {
+                uint nSun = (_SVOPool[neighborIdx & 134217727].material >> 20) & 0xF;
+                if (nSun > maxSun) maxSun = nSun;
+            }
+        }
+
+        // Light loses 1 intensity per block of distance
+        if (maxSun > sun + 1) {
+            _SVOPool[nodeIdx & 134217727].material = PackMaterialAndLight(mat, r, g, b, maxSun - 1, ao);
+        }
+    }
+}
+
+[numthreads(8, 8, 8)]
+void BakeAO (uint3 id : SV_DispatchThreadID) {
+    if (any(id >= 32)) return;
     uint nodeIdx = GetLeafNodeIndex(_RootIndex, id);
     if (nodeIdx == 0xFFFFFFFF) return;
 
     uint rawData = _SVOPool[nodeIdx & 134217727].material;
-    // OPTIMIZATION: If the block is already full sun (15), stop immediately.
-    if ((rawData >> 20) == 15) return; 
+    uint mat, r, g, b, sun, ao;
+    UnpackLight(rawData, mat, r, g, b, sun, ao);
 
-    uint mat, r, g, b, sun;
-    UnpackLight(rawData, mat, r, g, b, sun);
-    if (mat != 0) return; 
+    // We bake AO directly into the solid blocks so the raytracer reads it instantly on hit
+    if (mat == 0) return; 
 
-    uint maxSun = sun;
-    int3 offsets[6] = { int3(1,0,0), int3(-1,0,0), int3(0,1,0), int3(0,-1,0), int3(0,0,1), int3(0,0,-1) };
+    uint bakedAO = 0;
+    
+    // Check the 8 diagonal corners for solid neighbors. 
+    // 1 bit per corner = 8 bits total.
+    if (IsSolid(id + int3(-1, -1, -1))) bakedAO |= 1;
+    if (IsSolid(id + int3( 1, -1, -1))) bakedAO |= 2;
+    if (IsSolid(id + int3(-1,  1, -1))) bakedAO |= 4;
+    if (IsSolid(id + int3( 1,  1, -1))) bakedAO |= 8;
+    if (IsSolid(id + int3(-1, -1,  1))) bakedAO |= 16;
+    if (IsSolid(id + int3( 1, -1,  1))) bakedAO |= 32;
+    if (IsSolid(id + int3(-1,  1,  1))) bakedAO |= 64;
+    if (IsSolid(id + int3( 1,  1,  1))) bakedAO |= 128;
 
-    for (int i = 0; i < 6; i++) {
-        uint neighborIdx = GetLeafNodeIndex(_RootIndex, id + offsets[i]);
-        if (neighborIdx != 0xFFFFFFFF) {
-            uint nSun = (_SVOPool[neighborIdx & 134217727].material >> 20) & 0xF;
-            if (nSun > maxSun) maxSun = nSun;
-        }
-    }
-
-    if (maxSun > sun + 1) {
-        _SVOPool[nodeIdx].material = PackMaterialAndLight(mat, r, g, b, maxSun - 1);
-    }
+    _SVOPool[nodeIdx & 134217727].material = PackMaterialAndLight(mat, r, g, b, sun, bakedAO);
 }

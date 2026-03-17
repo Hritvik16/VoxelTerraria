@@ -25,13 +25,14 @@ public class VoxelPhysicsManager : MonoBehaviour
 
     void Start()
     {
-        for (int i = 0; i < 1500; i++)
+        for (int i = 0; i < 2000; i++) 
         {
             GameObject go = Instantiate(colliderPrefab, transform);
-            go.SetActive(false);
+            // Park them far away initially and leave them ON forever
+            go.transform.position = new Vector3(0, -99999f, 0); 
+            go.SetActive(true); 
             colliderPool.Add(go);
         }
-        // Allocating a tiny 32KB buffer instead of 500MB
         solidVoxelsBuffer = new ComputeBuffer(2000, sizeof(int) * 4);
     }
 
@@ -72,7 +73,12 @@ public class VoxelPhysicsManager : MonoBehaviour
     {
         isScanning = true;
         
-        solidVoxelsBuffer.SetData(resetData, 0, 0, 1);
+        // solidVoxelsBuffer.SetData(resetData, 0, 0, 1); <-- DELETE THIS
+
+        // Dispatch a lightning-fast GPU clear instead
+        int clearKernel = physicsScanner.FindKernel("ClearCounter");
+        physicsScanner.SetBuffer(clearKernel, "_SolidVoxels", solidVoxelsBuffer);
+        physicsScanner.Dispatch(clearKernel, 1, 1, 1);
 
         int kernel = physicsScanner.FindKernel("ScanPhysics");
         chunkManager.BindPhysicsData(physicsScanner, kernel);
@@ -93,35 +99,29 @@ public class VoxelPhysicsManager : MonoBehaviour
 
         // Non-blocking tiny readback
         AsyncGPUReadback.Request(solidVoxelsBuffer, (request) => {
-            // ... (The rest of your readback remains perfectly the same) ...
             if (request.hasError || !Application.isPlaying) { isScanning = false; return; }
 
-            // Read the int4 data as a flat integer array
             var rawData = request.GetData<int>();
             int count = rawData[0]; 
             int limit = Mathf.Min(count, 1999);
-
-            for (int i = 0; i < poolIndex; i++) colliderPool[i].SetActive(false);
-            poolIndex = 0;
-
             float scale = chunkManager.voxelScale;
 
-            // Spawn the simple colliders directly from the GPU coordinates
+            // 1. Park all unused colliders far below the map
+            for (int i = limit; i < colliderPool.Count; i++) {
+                colliderPool[i].transform.position = new Vector3(0, -99999f, 0);
+            }
+
+            // 2. Move the needed colliders into place
             for (int i = 0; i < limit; i++)
             {
-                if (poolIndex >= colliderPool.Count) break;
-
                 int dataIndex = (i + 1) * 4;
-                int x = rawData[dataIndex];
-                int y = rawData[dataIndex + 1];
-                int z = rawData[dataIndex + 2];
+                Vector3 spawnPos = new Vector3(rawData[dataIndex], rawData[dataIndex + 1], rawData[dataIndex + 2]) * scale + (Vector3.one * scale * 0.5f);
 
-                Vector3 spawnPos = new Vector3(x, y, z) * scale + (Vector3.one * scale * 0.5f);
-
-                GameObject col = colliderPool[poolIndex++];
-                col.transform.position = spawnPos;
-                col.transform.localScale = Vector3.one * scale;
-                col.SetActive(true);
+                // Only update the transform if it actually moved to save CPU cycles
+                if (colliderPool[i].transform.position != spawnPos) {
+                    colliderPool[i].transform.position = spawnPos;
+                    colliderPool[i].transform.localScale = Vector3.one * scale;
+                }
             }
 
             isScanning = false;

@@ -1,4 +1,5 @@
 #pragma kernel ScanPhysics
+#pragma kernel ClearCounter
 
 struct SVONode { uint childIndex; uint material; };
 struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD; uint pad1; uint pad2; };
@@ -15,6 +16,13 @@ float4 _MaxBounds;
 
 // Index 0: Atomic Counter. Index 1+: Solid Voxel Positions
 RWStructuredBuffer<int4> _SolidVoxels;
+
+
+
+[numthreads(1,1,1)]
+void ClearCounter (uint3 id : SV_DispatchThreadID) {
+    _SolidVoxels[0] = int4(0,0,0,0);
+}
 
 uint GetChunkRootIndex(int3 chunkCoord) {
     int renderDistXZ = (int)_RenderBounds.x;

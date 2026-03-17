@@ -94,7 +94,9 @@ class RayTracingPass : ScriptableRenderPass
                 cmd.SetComputeMatrixParam(data.computeShader, "_CameraInverseProjection", data.camera.projectionMatrix.inverse);
                 cmd.SetComputeVectorParam(data.computeShader, "_CameraForward", data.camera.transform.forward);
                 
-                Vector4 sunDir = new Vector4(0.5f, 1f, 0.2f, 0f).normalized; 
+                Light sunLight = RenderSettings.sun;
+                Vector3 dir = sunLight != null ? -sunLight.transform.forward : new Vector3(0.5f, 1f, 0.2f);
+                Vector4 sunDir = new Vector4(dir.x, dir.y, dir.z, 0f).normalized; 
                 cmd.SetComputeVectorParam(data.computeShader, "_SunDir", sunDir);
                 cmd.SetComputeIntParam(data.computeShader, "_DebugViewMode", Shader.GetGlobalInt("_DebugViewMode"));
 

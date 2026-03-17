@@ -38,6 +38,19 @@ float perlinNoise(float2 p) {
         w.y);
 }
 
+float fbm(float2 p) {
+    float total = 0.0;
+    float amplitude = 1.0;
+    float frequency = 1.0;
+    // Layer 4 octaves of noise for micro-details
+    for (int i = 0; i < 4; i++) {
+        total += perlinNoise(p * frequency) * amplitude;
+        frequency *= 2.0;    // Zoom in for the next layer
+        amplitude *= 0.4;    // Reduce impact to keep main hills dominant
+    }
+    return total;
+}
+
 uint PackData(int3 p, int s) { return (s << 15) | (p.z << 10) | (p.y << 5) | p.x; }
 void UnpackData(uint d, out int3 p, out int s) {
     p.x = d & 0x1F;
@@ -78,7 +91,8 @@ void GenerateChunk (uint3 id : SV_DispatchThreadID, uint GI : SV_GroupIndex)
         for(int cx = 0; cx < currentSize && isUniform; cx++) {
             for(int cz = 0; cz < currentSize && isUniform; cz++) {
                 float2 worldXZ = (job.worldPos.xz + float2(currentPos.x + cx, currentPos.z + cz)) * job.layerScale;
-                float h = (perlinNoise(worldXZ * 0.02) * 0.5 + 0.5) * 25.0; 
+                // Evaluate fBm noise instead of single perlin sample
+                float h = (fbm(worldXZ * 0.02) * 0.5 + 0.5) * 25.0; 
                 int columnMaterial = (blockMinY > h) ? 0 : ((blockMaxY <= h) ? 1 : -1);
                 if (columnMaterial == -1) { isUniform = false; break; }
                 if (firstMaterial == -1) firstMaterial = columnMaterial;
