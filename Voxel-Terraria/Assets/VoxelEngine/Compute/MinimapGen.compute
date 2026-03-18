@@ -1,0 +1,28 @@
+#pragma kernel GenerateMinimap
+
+RWTexture2D<float4> Result;
+float _Zoom;
+float2 _Offset;
+
+#include "TerrainMath.hlsl"
+
+// 2. Map Generation Kernel
+[numthreads(8,8,1)]
+void GenerateMinimap (uint3 id : SV_DispatchThreadID)
+{
+    uint width, height;
+    Result.GetDimensions(width, height);
+
+    // Map pixel coordinates to -1 to 1 UV space, apply zoom and pan offset
+    float2 uv = (float2(id.xy) / float2(width, height)) * 2.0 - 1.0;
+    
+    // Scale UV out to world space (multiply by 1.2 to leave a border for the ocean to be visible)
+    float2 worldXZ = (uv * _WorldRadiusXZ * 1.2 * _Zoom) + _Offset;
+
+    // Output Colors (Matching your Palette)
+    if (IsInsideIsland(worldXZ)) {
+        Result[id.xy] = float4(1.0, 0.98, 0.0, 1.0); // Sand (Material 4)
+    } else {
+        Result[id.xy] = float4(0.0, 0.2, 0.6, 1.0); // Ocean Water
+    }
+}
