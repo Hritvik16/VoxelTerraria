@@ -15,6 +15,9 @@ public class PlayerMovement : MonoBehaviour
     
     public Transform cameraTransform;
 
+    [Header("Interaction")]
+    private LineRenderer wireframe;
+
     [Header("Gravity Toggle")]
     public float doubleTapTimeThreshold = 0.3f;
     
@@ -46,10 +49,22 @@ public class PlayerMovement : MonoBehaviour
 
     void Start()
     {
-        // CRITICAL: Locks the mouse to the game window and hides it. 
-        // This stops OS cursor acceleration from corrupting the delta values.
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible = false;
+
+        // --- BUILD THE VOXEL WIREFRAME ---
+        GameObject wfObj = new GameObject("Voxel Wireframe");
+        wfObj.transform.SetParent(this.transform);
+        wireframe = wfObj.AddComponent<LineRenderer>();
+        wireframe.positionCount = 16;
+        wireframe.startWidth = 0.008f; // Nice thin crisp line
+        wireframe.endWidth = 0.008f;
+        // Use an unlit material so it acts like a true UI overlay
+        wireframe.material = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+        wireframe.material.color = Color.black; 
+        wireframe.useWorldSpace = true;
+        wireframe.loop = false;
+        wireframe.enabled = false;
     }
 
     void Update()
@@ -64,6 +79,52 @@ public class PlayerMovement : MonoBehaviour
             {
                 FlyUp();
             }
+        }
+
+        // --- HIGHLIGHT & MINE ---
+        if (ChunkManager.Instance != null && ChunkManager.Instance.crosshairData[3] == 1) {
+            
+            // 1. Draw the Wireframe Border
+            if (wireframe != null) {
+                wireframe.enabled = true;
+                float scale = ChunkManager.Instance.voxelScale;
+                Vector3 gridPos = new Vector3(ChunkManager.Instance.crosshairData[0], ChunkManager.Instance.crosshairData[1], ChunkManager.Instance.crosshairData[2]);
+                Vector3 center = (gridPos * scale) + (Vector3.one * scale * 0.5f);
+                
+                float h = (scale * 1.02f) * 0.5f; // Slightly larger than voxel to prevent Z-fighting
+                Vector3 p0 = center + new Vector3(-h, -h, -h); Vector3 p1 = center + new Vector3(h, -h, -h);
+                Vector3 p2 = center + new Vector3(h, h, -h);   Vector3 p3 = center + new Vector3(-h, h, -h);
+                Vector3 p4 = center + new Vector3(-h, -h, h);  Vector3 p5 = center + new Vector3(h, -h, h);
+                Vector3 p6 = center + new Vector3(h, h, h);    Vector3 p7 = center + new Vector3(-h, h, h);
+
+                wireframe.SetPositions(new Vector3[] { p0, p1, p2, p3, p0, p4, p5, p6, p7, p4, p5, p1, p2, p6, p7, p3 });
+            }
+
+            // 2. Click to Interact!
+            if (Mouse.current != null) {
+                Vector3Int exactGridPos = new Vector3Int(
+                    ChunkManager.Instance.crosshairData[0], 
+                    ChunkManager.Instance.crosshairData[1], 
+                    ChunkManager.Instance.crosshairData[2]
+                );
+
+                // LEFT CLICK = Break with a massive 3x3x3 Pickaxe Brush
+                if (Mouse.current.leftButton.wasPressedThisFrame) {
+                    ChunkManager.Instance.EditVoxel(exactGridPos, 0, 1); // Material 0 (Air), Brush 1 (3x3x3)
+                }
+                
+                // RIGHT CLICK = Place a single block on the geometric face normal!
+                if (Mouse.current.rightButton.wasPressedThisFrame) {
+                    Vector3Int faceNormal = new Vector3Int(
+                        ChunkManager.Instance.crosshairData[4], 
+                        ChunkManager.Instance.crosshairData[5], 
+                        ChunkManager.Instance.crosshairData[6]
+                    );
+                    ChunkManager.Instance.EditVoxel(exactGridPos + faceNormal, 2, 0); // Material 2, Brush 0 (Single Block)
+                }
+            }
+        } else if (wireframe != null) {
+            wireframe.enabled = false;
         }
     }
     // Removed LateUpdate completely from this script
@@ -145,7 +206,7 @@ public class PlayerMovement : MonoBehaviour
 
         // THE FIX: Multiply the raw pixel delta by a base sensitivity scale (0.05f).
         // This scales a 1-pixel movement down to 0.05 degrees, allowing continuous, sub-pixel-feeling rotation.
-        Vector2 mouseDelta = Mouse.current.delta.ReadValue() * 0.5f;
+        Vector2 mouseDelta = Mouse.current.delta.ReadValue() * 0.2f;
         
         float mouseX = mouseDelta.x * lookSensitivity;
         float mouseY = mouseDelta.y * lookSensitivity;
@@ -194,5 +255,16 @@ public class PlayerMovement : MonoBehaviour
         }
         
         Debug.Log("Gravity Toggled: " + (rb.useGravity ? "On" : "Off"));
+    }
+
+    // THE FIX: Draw a permanent targeting reticle in the center of the screen
+    void OnGUI() {
+        GUIStyle style = new GUIStyle();
+        style.normal.textColor = Color.white;
+        style.fontSize = 24;
+        style.alignment = TextAnchor.MiddleCenter;
+        
+        // Draw a simple '+' in the exact dead center of your monitor
+        GUI.Label(new Rect(Screen.width / 2f - 10, Screen.height / 2f - 10, 20, 20), "+", style);
     }
 }

@@ -26,10 +26,11 @@ public class ChunkManager : MonoBehaviour
     // DATA STRUCTURES
     public struct SVONode { public uint childIndex; public uint material; }
     public struct ChunkData {
-        public Vector4 position;
+        public Vector4 position;    // Note: position.w already holds chunkMaxY from WorldGen!
         public uint rootNodeIndex;
         public int currentLOD;
-        public uint pad1, pad2;
+        public uint packedState;    // Bit 0: isDense flag. Bits 8-15: chunkMinY (HDDA optimization).
+        public uint densePoolIndex; // Pointer to the chunk's 1D array in _DenseChunkPool
     }
     public struct ChunkJobData {
         public Vector4 worldPos;
@@ -54,6 +55,15 @@ public class ChunkManager : MonoBehaviour
     private const int POOL_SIZE = 671088512; 
 
     private ComputeBuffer svoPoolBuffer, chunkMapBuffer, jobQueueBuffer; 
+    
+    // --- DENSE POOL VARIABLES ---
+    private ComputeBuffer denseChunkPoolBuffer;
+    public const int MAX_DENSE_CHUNKS = 400; 
+    
+    [HideInInspector] public ComputeBuffer crosshairBuffer;
+    [HideInInspector] public int[] crosshairData = new int[8]; // MUST be 8 to prevent the NativeArray crash!
+    public const int VOXELS_PER_CHUNK = 32768; // 32 * 32 * 32
+    private Queue<uint> freeDenseIndices = new Queue<uint>(); // Tracks our 400 available memory slots
 
     private Vector3Int[] primaryAnchorChunks = new Vector3Int[8];
     private Vector4[] shaderCenterChunks = new Vector4[8]; 
@@ -91,6 +101,10 @@ public class ChunkManager : MonoBehaviour
     void OnEnable() {
         // if (!masterNodePool.IsCreated) masterNodePool = new NativeArray<SVONode>(POOL_SIZE, Allocator.Persistent);
         Instance = this;
+        
+        // THE FIX: Forcefully correct the array size in case Unity loaded a stale length of 4 from the saved Scene YAML
+        if (crosshairData == null || crosshairData.Length != 8) crosshairData = new int[8];
+        
         int sideXZ = 2 * renderDistanceXZ + 1;
         int sideY = 2 * renderDistanceY + 1;
         chunksPerLayer = sideXZ * sideXZ * sideY;
@@ -136,6 +150,23 @@ public class ChunkManager : MonoBehaviour
             Shader.SetGlobalBuffer("_SVOPool", svoPoolBuffer);
         }
         if (jobQueueBuffer == null) jobQueueBuffer = new ComputeBuffer(maxConcurrentJobs, 32);
+
+        // THE FIX: Forcefully destroy the old buffer if it survived a script recompile!
+        if (crosshairBuffer != null && crosshairBuffer.count != 2) {
+            crosshairBuffer.Release();
+            crosshairBuffer = null;
+        }
+        if (crosshairBuffer == null) crosshairBuffer = new ComputeBuffer(2, 16); // 8 ints total
+
+        if (denseChunkPoolBuffer == null) {
+            // Allocates exactly 52.4 MB of unified memory for the active interaction zone
+            denseChunkPoolBuffer = new ComputeBuffer(MAX_DENSE_CHUNKS * VOXELS_PER_CHUNK, sizeof(uint));
+            Shader.SetGlobalBuffer("_DenseChunkPool", denseChunkPoolBuffer);
+            
+            // Fill our allocator queue with all 400 available indices
+            freeDenseIndices.Clear();
+            for (uint i = 0; i < MAX_DENSE_CHUNKS; i++) freeDenseIndices.Enqueue(i);
+        }
 
         if (chunkMapBuffer == null) {
             chunkMapBuffer = new ComputeBuffer(totalMapCapacity, 32);
@@ -188,6 +219,14 @@ public class ChunkManager : MonoBehaviour
         }
 
         DispatchJobs();
+
+        // Safely pull the center pixel target from the GPU without stalling the pipeline
+        if (crosshairBuffer != null) {
+            AsyncGPUReadback.Request(crosshairBuffer, (req) => {
+                if (req.hasError || !Application.isPlaying) return;
+                req.GetData<int>().CopyTo(crosshairData);
+            });
+        }
 
         bool allQueuesEmpty = true;
         for (int i = 0; i < clipmapLayers; i++) if (generationQueues[i].Count > 0) allQueuesEmpty = false;
@@ -337,6 +376,11 @@ public class ChunkManager : MonoBehaviour
 
     public void BindPhysicsData(ComputeShader cs, int kernel) {
         if (svoPoolBuffer == null || chunkMapBuffer == null) return;
+        if (crosshairBuffer != null) cs.SetBuffer(kernel, "_CrosshairTarget", crosshairBuffer);
+        
+        // --- THE CRITICAL FIX: PLUG IN THE DENSE POOL ---
+        if (denseChunkPoolBuffer != null) cs.SetBuffer(kernel, "_DenseChunkPool", denseChunkPoolBuffer);
+        
         cs.SetBuffer(kernel, "_SVOPool", svoPoolBuffer);
         cs.SetBuffer(kernel, "_ChunkMap", chunkMapBuffer);
         cs.SetVectorArray("_ClipmapCenters", shaderCenterChunks);
@@ -355,6 +399,80 @@ public class ChunkManager : MonoBehaviour
         Shader.SetGlobalInt("_ChunkCount", chunksPerLayer);
     }
 
+   // --- PHASE 2: INTERACTION & DECOMPRESSION ---
+    public void EditVoxel(Vector3Int globalVoxelPos, uint newMaterial, int brushSize = 0) {
+        // 1. Find the chunk that owns this voxel using exact integer math
+        Vector3Int chunkCoord = new Vector3Int(
+            Mathf.FloorToInt((float)globalVoxelPos.x / 32f),
+            Mathf.FloorToInt((float)globalVoxelPos.y / 32f),
+            Mathf.FloorToInt((float)globalVoxelPos.z / 32f)
+        );
+        int idx = GetMapIndex(0, chunkCoord);
+        
+        // Safety bounds check
+        if (idx < 0 || idx >= totalMapCapacity || chunkTargetCoordArray[idx] != chunkCoord) {
+            UnityEngine.Debug.LogWarning($"Edit failed: Chunk boundary mismatch. Expected {chunkCoord}, got {chunkTargetCoordArray[idx]}");
+            return;
+        }
+
+        // THE FIX: Fetch the TRUE data from the GPU! Our C# cache has a stale position (-99999)
+        // which causes the RayTracer to instantly cull the chunk if we push it back.
+        ChunkData[] gpuData = new ChunkData[1];
+        chunkMapBuffer.GetData(gpuData, 0, idx, 1);
+        ChunkData cd = gpuData[0];
+
+        uint denseIndex = 0;
+        bool isDense = (cd.packedState & 1) == 1;
+
+        // 2. Decompress SVO to Dense Array if it hasn't been already
+        if (isDense) {
+            denseIndex = cd.densePoolIndex;
+        } else {
+            if (freeDenseIndices.Count == 0) {
+                UnityEngine.Debug.LogWarning("Dense Pool Full! Need Garbage Collection.");
+                return; // Memory safety limit hit
+            }
+            denseIndex = freeDenseIndices.Dequeue();
+            
+            // Dispatch the GPU to unzip the SVO directly into the flat array
+            int decompressKernel = worldGenShader.FindKernel("DecompressSVOToDense");
+            worldGenShader.SetBuffer(decompressKernel, "_SVOPool", svoPoolBuffer);
+            worldGenShader.SetBuffer(decompressKernel, "_DenseChunkPool", denseChunkPoolBuffer);
+            worldGenShader.SetInt("_TargetRootIndex", (int)cd.rootNodeIndex);
+            worldGenShader.SetInt("_TargetDenseIndex", (int)denseIndex);
+            
+            // THE FIX: Metal drops GlobalInts outside the render loop. We MUST pass the pool size explicitly!
+            worldGenShader.SetInt("_PoolSize", svoPoolBuffer.count); 
+            
+            worldGenShader.Dispatch(decompressKernel, 4, 4, 4); // 4x4x4 groups of 8x8x8 threads = 32x32x32 voxels
+
+            // Update the chunk map to flag it as Dense and point it to the new array index
+            cd.packedState |= 1; 
+            cd.densePoolIndex = denseIndex;
+            gpuData[0] = cd;
+            
+            // Instantly push the pristine GPU data back with the new Dense flag
+            chunkMapBuffer.SetData(gpuData, 0, idx, 1);
+        }
+
+        // 3. Edit the specific voxel inside the Dense Array
+        int localX = globalVoxelPos.x & 31;
+        int localY = globalVoxelPos.y & 31;
+        int localZ = globalVoxelPos.z & 31;
+
+        int editKernel = worldGenShader.FindKernel("EditDenseVoxel");
+        worldGenShader.SetBuffer(editKernel, "_DenseChunkPool", denseChunkPoolBuffer);
+        worldGenShader.SetInt("_TargetDenseIndex", (int)denseIndex);
+        
+        // Explicitly pass an integer array to completely prevent Metal float/int mangling
+        worldGenShader.SetInts("_EditLocalPos", new int[] { localX, localY, localZ }); 
+        worldGenShader.SetInt("_NewMaterialData", (int)newMaterial);
+        worldGenShader.SetInt("_BrushSize", brushSize);
+        
+        // Dispatch a single thread to instantly overwrite the integer in memory
+        worldGenShader.Dispatch(editKernel, 1, 1, 1); 
+    }
+
     void OnDisable() {
         // CRITICAL: Check if created before disposing to prevent secondary errors
         // if (masterNodePool.IsCreated) masterNodePool.Dispose();
@@ -365,12 +483,15 @@ public class ChunkManager : MonoBehaviour
         svoPoolBuffer?.Release(); 
         chunkMapBuffer?.Release(); 
         jobQueueBuffer?.Release();
-        materialBuffer?.Release(); // Added this to clear the palette leak
+        materialBuffer?.Release(); 
+        denseChunkPoolBuffer?.Release(); 
+        crosshairBuffer?.Release();
         
         svoPoolBuffer = null;
         chunkMapBuffer = null;
         jobQueueBuffer = null;
         materialBuffer = null;
+        denseChunkPoolBuffer = null;
     }
 
     void OnGUI() {

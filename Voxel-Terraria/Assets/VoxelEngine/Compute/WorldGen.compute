@@ -1,7 +1,10 @@
 #pragma kernel GenerateChunk
+#pragma kernel DecompressSVOToDense
+#pragma kernel EditDenseVoxel
 
 struct SVONode { uint childIndex; uint material; };
-struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD; uint pad1; uint pad2; };
+struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD;
+uint packedState; uint densePoolIndex; };
 
 struct ChunkJobData {
     float4 worldPos;   
@@ -14,10 +17,17 @@ struct ChunkJobData {
 RWStructuredBuffer<SVONode> _SVOPool;
 RWStructuredBuffer<ChunkData> _ChunkMap;
 StructuredBuffer<ChunkJobData> _JobQueue; 
+RWStructuredBuffer<uint> _DenseChunkPool; // NEW: Write access to the dense pool
 
 int _ChunkSize;
 int _JobCount;
 int _PoolSize;
+
+uint _TargetRootIndex;
+uint _TargetDenseIndex;
+int3 _EditLocalPos;    // Converted to exact int3 to prevent Metal float corruption
+uint _NewMaterialData;
+int _BrushSize;        // Allows us to carve out larger holes instantly
 
 float2 hash22(float2 p) {
     p = float2(dot(p, float2(127.1, 311.7)), dot(p, float2(269.5, 183.3)));
@@ -26,6 +36,24 @@ float2 hash22(float2 p) {
 
 uint PackMaterialAndLight(uint matID, uint r, uint g, uint b, uint sun) {
     return matID | (r << 8) | (g << 12) | (b << 16) | (sun << 20);
+}
+
+// --- SVO TRAVERSAL HELPER ---
+uint GetVoxelFromRoot(uint rootIndex, int3 localPos) {
+    if (rootIndex == 0xFFFFFFFF || rootIndex >= (uint)_PoolSize) return 0;
+    uint nodeIndex = rootIndex;
+    int size = 32;
+    for (int i = 0; i < 6; i++) {
+        if (nodeIndex >= (uint)_PoolSize) return 0;
+        SVONode node = _SVOPool[nodeIndex];
+        if (node.childIndex == 0) return node.material;
+        size >>= 1;
+        int3 childIdx = (localPos >= size) ? 1 : 0;
+        localPos -= childIdx * size;
+        nodeIndex = node.childIndex + (childIdx.x + childIdx.y * 2 + childIdx.z * 4);
+    }
+    // THE FIX: Return the actual material of the final leaf node, not Air (0)!
+    return _SVOPool[nodeIndex].material; 
 }
 
 float perlinNoise(float2 p) {
@@ -137,6 +165,41 @@ void GenerateChunk (uint3 id : SV_DispatchThreadID, uint GI : SV_GroupIndex)
     _ChunkMap[job.mapIndex].position = float4(job.worldPos.xyz, (float)chunkMaxY);
     _ChunkMap[job.mapIndex].rootNodeIndex = rootIndex;
     _ChunkMap[job.mapIndex].currentLOD = job.lodStep;
-    _ChunkMap[job.mapIndex].pad1 = (uint)chunkMinY;
-    _ChunkMap[job.mapIndex].pad2 = (uint)chunkMaxY;
+    // Pack chunkMinY into the state, leaving bit 0 as 0 (isDense = false)
+    _ChunkMap[job.mapIndex].packedState = ((uint)chunkMinY << 8);
+    _ChunkMap[job.mapIndex].densePoolIndex = 0;
+}
+
+// --- PHASE 2: DENSE ARRAY KERNELS ---
+
+[numthreads(8,8,8)]
+void DecompressSVOToDense(uint3 id : SV_DispatchThreadID) {
+    if (any(id >= 32)) return;
+    
+    // Read the perfectly compressed data from the SVO tree
+    uint mat = GetVoxelFromRoot(_TargetRootIndex, id);
+    
+    // O(1) Math: Write it directly into the 1D flat dense array
+    uint flatIdx = id.x + (id.y << 5) + (id.z << 10);
+    _DenseChunkPool[_TargetDenseIndex * 32768 + flatIdx] = mat;
+}
+
+[numthreads(1,1,1)]
+void EditDenseVoxel(uint3 id : SV_DispatchThreadID) {
+    int3 center = _EditLocalPos;
+    
+    // O(1) Array overwrite loop. If _BrushSize is 0, it edits exactly 1 block.
+    for (int x = -_BrushSize; x <= _BrushSize; x++) {
+        for (int y = -_BrushSize; y <= _BrushSize; y++) {
+            for (int z = -_BrushSize; z <= _BrushSize; z++) {
+                int3 p = center + int3(x, y, z);
+                
+                // Safely prevent the brush from writing outside this chunk's 32x32x32 memory bounds
+                if (p.x >= 0 && p.x < 32 && p.y >= 0 && p.y < 32 && p.z >= 0 && p.z < 32) {
+                    uint flatIdx = p.x + (p.y << 5) + (p.z << 10);
+                    _DenseChunkPool[_TargetDenseIndex * 32768 + flatIdx] = _NewMaterialData;
+                }
+            }
+        }
+    }
 }

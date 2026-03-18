@@ -1,15 +1,18 @@
 #pragma kernel CSMain
 
 RWTexture2D<float4> Result;
+// [0] = Hit Position & Status. [1] = Geometric Face Normal
+RWStructuredBuffer<int4> _CrosshairTarget;
 float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
 float4 _CameraForward;
 int _PoolSize;
 
 struct SVONode { uint childIndex; uint material; };
-struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD; uint pad1; uint pad2; };
+struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD; uint packedState; uint densePoolIndex; };
 
 StructuredBuffer<SVONode> _SVOPool;
+StructuredBuffer<uint> _DenseChunkPool;
 StructuredBuffer<ChunkData> _ChunkMap;
 int _ChunkCount;
 float4 _ClipmapCenters[8];
@@ -58,8 +61,15 @@ int GetLayer(float3 worldPos) {
 }
 
 ChunkData GetChunkData(int3 chunkCoord, int layer) {
+    // EXPLICIT ZERO-INITIALIZATION: Metal will refuse to compile the kernel 
+    // if it detects we might return an uninitialized 'packedState'.
     ChunkData invalidChunk;
+    invalidChunk.position = float4(0, 0, 0, 0);
     invalidChunk.rootNodeIndex = 0xFFFFFFFF;
+    invalidChunk.currentLOD = 0;
+    invalidChunk.packedState = 0;
+    invalidChunk.densePoolIndex = 0;
+    
     int renderDistXZ = (int)_RenderBounds.x;
     int renderDistY  = (int)_RenderBounds.y; 
     int3 centerChunk = (int3)_ClipmapCenters[layer].xyz;
@@ -107,38 +117,161 @@ uint GetVoxelFromRoot(uint rootIndex, int3 localPos) {
     return 0;
 }
 
+// bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint hitMatID_Data, out float finalVoxelSize, out float3 finalBlockPos, out int raySteps) {
+//     bool hit = false;
+//     hitMatID_Data = 0; mask = 0; t = 0; finalVoxelSize = 1.0f; finalBlockPos = 0; raySteps = 0;
+//     // THE FIX: The DDA Infinity Trap.
+//         // Prevent exactly zero directions without EVER flipping the mathematical sign of the ray.
+//         float3 safeDir = ray.direction;
+//         if (abs(safeDir.x) < 1e-6f) safeDir.x = (safeDir.x < 0.0f ? -1e-6f : 1e-6f);
+//         if (abs(safeDir.y) < 1e-6f) safeDir.y = (safeDir.y < 0.0f ? -1e-6f : 1e-6f);
+//         if (abs(safeDir.z) < 1e-6f) safeDir.z = (safeDir.z < 0.0f ? -1e-6f : 1e-6f);
+
+//         float3 invDir = 1.0f / safeDir;
+//         int3 rayStep = sign(safeDir);
+//         int3 stepDirBounds = max(rayStep, 0);
+
+//     // Might need to change the 600 to something higher
+//     [loop]
+//     for (int i = 0; i < 200; i++) { 
+//         raySteps++; 
+//         if (t > maxDist) break;
+//         float3 currentPos = ray.origin + ray.direction * t;
+
+//         // Aggressive horizon culling to prevent Ray Runaway
+//         if (currentPos.y > 30.0f && ray.direction.y > -0.05f) break;
+//         // DYNAMIC BOUNDS CULLING: Kill the ray instantly if it exits the maximum generated volume.
+//         // int maxL = _ClipmapLayers - 1;
+//         // float maxScale = _ClipmapCenters[maxL].w;
+//         // float maxRadiusXZ = _RenderBounds.x * 32.0f * maxScale;
+//         // float maxRadiusY = _RenderBounds.y * 32.0f * maxScale; 
+//         // float3 globalCenter = _ClipmapCenters[maxL].xyz * 32.0f * maxScale;
+        
+//         // float distFromCenterXZ = length(float2(currentPos.x - globalCenter.x, currentPos.z - globalCenter.z));
+//         // if (distFromCenterXZ > maxRadiusXZ || abs(currentPos.y - globalCenter.y) > maxRadiusY) break;
+
+//         int layer = GetLayer(currentPos);
+//         if (layer >= _ClipmapLayers) break;
+
+//         float voxelSize = _ClipmapCenters[layer].w;
+//         float chunkSize = 32.0f * voxelSize;
+//         int3 mapPos = int3(floor(currentPos / voxelSize));
+//         int3 chunkCoord = mapPos >> 5;
+
+//         ChunkData currentChunk = GetChunkData(chunkCoord, layer);
+//         uint rootIndex = currentChunk.rootNodeIndex;
+
+//         if (rootIndex != 0xFFFFFFFF) {
+//             SVONode rootNode = _SVOPool[(rootIndex < (uint)_PoolSize) ? rootIndex : 0]; //_SVOPool[rootIndex & 134217727];
+
+//             if (rootNode.childIndex == 0 && (rootNode.material & 0xFF) == 0) {
+//                 float3 nextC = (chunkCoord + stepDirBounds) * chunkSize;
+//                 float3 tMaxC = (nextC - ray.origin) * invDir;
+//                 float tNext = min(min(tMaxC.x, tMaxC.y), tMaxC.z);
+//                 mask = (tNext == tMaxC.x) ? int3(1,0,0) : ((tNext == tMaxC.y) ? int3(0,1,0) : int3(0,0,1));
+//                 t = max(t, tNext + (voxelSize * 0.05f));
+//                 continue;
+//             }
+
+//             if (rootNode.childIndex == 0 && (rootNode.material & 0xFF) != 0) {
+//                 hit = true; hitMatID_Data = rootNode.material; finalVoxelSize = voxelSize;
+//                 float3 chunkMin = chunkCoord * chunkSize;
+//                 float3 chunkMax = chunkMin + chunkSize;
+//                 float3 t0 = (chunkMin - ray.origin) * invDir;
+//                 float3 t1 = (chunkMax - ray.origin) * invDir;
+//                 float3 tMinBox = min(t0, t1);
+//                 float tEnter = max(max(tMinBox.x, tMinBox.y), tMinBox.z);
+
+//                 t = max(t, tEnter);
+//                 finalBlockPos = floor((ray.origin + ray.direction * t) / voxelSize);
+//                 mask = (tEnter == tMinBox.x) ? int3(1,0,0) : ((tEnter == tMinBox.y) ? int3(0,1,0) : int3(0,0,1));
+//                 break;
+//             }
+
+//             // --- UNPACK STATE & PRESERVE HDDA Y-BOUNDS CULLING ---
+//             uint isDense = currentChunk.packedState & 1;
+//             uint chunkMinY = (currentChunk.packedState >> 8) & 0xFF;
+//             uint chunkMaxY = (uint)currentChunk.position.w;
+
+//             // Dense chunks use full 32 bounds (to allow editing air), SVOs use tight vertical bounds to skip empty sky/air
+//             float minY = (isDense == 1) ? 0.0f : (float)chunkMinY;
+//             float maxY = (isDense == 1) ? 32.0f : (float)chunkMaxY;
+
+//             float3 absoluteBoxMin = (chunkCoord * 32.0f + float3(0.0f, minY, 0.0f)) * voxelSize;
+//             float3 absoluteBoxMax = (chunkCoord * 32.0f + float3(32.0f, maxY, 32.0f)) * voxelSize;
+//             float3 tb0 = (absoluteBoxMin - ray.origin) * invDir;
+//             float3 tb1 = (absoluteBoxMax - ray.origin) * invDir;
+//             float3 tMinB = min(tb0, tb1);
+//             float3 tMaxB = max(tb0, tb1);
+//             float tEnterB = max(max(tMinB.x, tMinB.y), tMinB.z);
+//             float tExitB = min(min(tMaxB.x, tMaxB.y), tMaxB.z);
+
+//             if (tEnterB > tExitB || tExitB < t) {
+//                 float3 nextC = (chunkCoord + stepDirBounds) * chunkSize;
+//                 float3 tMaxC = (nextC - ray.origin) * invDir;
+//                 float tNext = min(min(tMaxC.x, tMaxC.y), tMaxC.z);
+//                 mask = (tNext == tMaxC.x) ? int3(1,0,0) : ((tNext == tMaxC.y) ? int3(0,1,0) : int3(0,0,1));
+//                 t = max(t, tNext + (voxelSize * 0.05f));
+//                 continue;
+//             }
+
+//             if (tEnterB > t) {
+//                 t = tEnterB + (voxelSize * 0.001f);
+//                 float3 jumpPos = ray.origin + ray.direction * t;
+//                 mapPos = int3(floor(jumpPos / voxelSize));
+//                 mask = (tEnterB == tMinB.x) ? int3(1,0,0) : ((tEnterB == tMinB.y) ? int3(0,1,0) : int3(0,0,1));
+//             }
+
+//             float3 tDelta = abs(voxelSize * invDir);
+//             float3 tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
+            
+//             [loop]
+//             for (int v = 0; v < 128; v++) { 
+//                 int3 vLocal = mapPos - (chunkCoord << 5);
+//                 if (any(vLocal < 0) || any(vLocal > 31)) break;
+                
+//                 uint matData = GetVoxelFromRoot(rootIndex, vLocal);
+//                 if ((matData & 0xFF) > 0) { hit = true; hitMatID_Data = matData; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break; }
+                
+//                 if (tMaxV.x < tMaxV.y) {
+//                     if (tMaxV.x < tMaxV.z) { t = tMaxV.x; tMaxV.x += tDelta.x; mapPos.x += rayStep.x; mask = int3(1,0,0); }
+//                     else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
+//                 } else {
+//                     if (tMaxV.y < tMaxV.z) { t = tMaxV.y; tMaxV.y += tDelta.y; mapPos.y += rayStep.y; mask = int3(0,1,0); }
+//                     else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
+//                 }
+//             }
+//         }
+//         if (hit) break;
+        
+//         float3 nextC = (chunkCoord + stepDirBounds) * chunkSize;
+//         float3 tMaxC = (nextC - ray.origin) * invDir;
+//         float tNext = min(min(tMaxC.x, tMaxC.y), tMaxC.z);
+//         mask = (tNext == tMaxC.x) ? int3(1,0,0) : ((tNext == tMaxC.y) ? int3(0,1,0) : int3(0,0,1));
+//         t = max(t, tNext + (voxelSize * 0.05f));
+//     }
+//     return hit;
+// }
 bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint hitMatID_Data, out float finalVoxelSize, out float3 finalBlockPos, out int raySteps) {
     bool hit = false;
     hitMatID_Data = 0; mask = 0; t = 0; finalVoxelSize = 1.0f; finalBlockPos = 0; raySteps = 0;
-    // THE FIX: The DDA Infinity Trap.
-        // Prevent exactly zero directions without EVER flipping the mathematical sign of the ray.
-        float3 safeDir = ray.direction;
-        if (abs(safeDir.x) < 1e-6f) safeDir.x = (safeDir.x < 0.0f ? -1e-6f : 1e-6f);
-        if (abs(safeDir.y) < 1e-6f) safeDir.y = (safeDir.y < 0.0f ? -1e-6f : 1e-6f);
-        if (abs(safeDir.z) < 1e-6f) safeDir.z = (safeDir.z < 0.0f ? -1e-6f : 1e-6f);
 
-        float3 invDir = 1.0f / safeDir;
-        int3 rayStep = sign(safeDir);
-        int3 stepDirBounds = max(rayStep, 0);
+    float3 safeDir = ray.direction;
+    if (abs(safeDir.x) < 1e-6f) safeDir.x = (safeDir.x < 0.0f ? -1e-6f : 1e-6f);
+    if (abs(safeDir.y) < 1e-6f) safeDir.y = (safeDir.y < 0.0f ? -1e-6f : 1e-6f);
+    if (abs(safeDir.z) < 1e-6f) safeDir.z = (safeDir.z < 0.0f ? -1e-6f : 1e-6f);
 
-    // Might need to change the 600 to something higher
+    float3 invDir = 1.0f / safeDir;
+    int3 rayStep = sign(safeDir);
+    int3 stepDirBounds = max(rayStep, 0);
+
     [loop]
     for (int i = 0; i < 200; i++) { 
-        raySteps++; 
+        raySteps++;
         if (t > maxDist) break;
         float3 currentPos = ray.origin + ray.direction * t;
-
-        // Aggressive horizon culling to prevent Ray Runaway
-        if (currentPos.y > 30.0f && ray.direction.y > -0.05f) break;
-        // DYNAMIC BOUNDS CULLING: Kill the ray instantly if it exits the maximum generated volume.
-        // int maxL = _ClipmapLayers - 1;
-        // float maxScale = _ClipmapCenters[maxL].w;
-        // float maxRadiusXZ = _RenderBounds.x * 32.0f * maxScale;
-        // float maxRadiusY = _RenderBounds.y * 32.0f * maxScale; 
-        // float3 globalCenter = _ClipmapCenters[maxL].xyz * 32.0f * maxScale;
         
-        // float distFromCenterXZ = length(float2(currentPos.x - globalCenter.x, currentPos.z - globalCenter.z));
-        // if (distFromCenterXZ > maxRadiusXZ || abs(currentPos.y - globalCenter.y) > maxRadiusY) break;
+        if (currentPos.y > 30.0f && ray.direction.y > -0.05f) break;
 
         int layer = GetLayer(currentPos);
         if (layer >= _ClipmapLayers) break;
@@ -149,37 +282,46 @@ bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint 
         int3 chunkCoord = mapPos >> 5;
 
         ChunkData currentChunk = GetChunkData(chunkCoord, layer);
+        uint isDense = currentChunk.packedState & 1;
         uint rootIndex = currentChunk.rootNodeIndex;
 
-        if (rootIndex != 0xFFFFFFFF) {
-            SVONode rootNode = _SVOPool[(rootIndex < (uint)_PoolSize) ? rootIndex : 0]; //_SVOPool[rootIndex & 134217727];
-
-            if (rootNode.childIndex == 0 && (rootNode.material & 0xFF) == 0) {
-                float3 nextC = (chunkCoord + stepDirBounds) * chunkSize;
-                float3 tMaxC = (nextC - ray.origin) * invDir;
-                float tNext = min(min(tMaxC.x, tMaxC.y), tMaxC.z);
-                mask = (tNext == tMaxC.x) ? int3(1,0,0) : ((tNext == tMaxC.y) ? int3(0,1,0) : int3(0,0,1));
-                t = max(t, tNext + (voxelSize * 0.05f));
-                continue;
+        // THE FIX: Only enter if it's a valid SVO OR an active Dense chunk
+        if (isDense == 1 || rootIndex != 0xFFFFFFFF) {
+            
+            // 1. FAST SVO SKIP (Only run if it's NOT dense!)
+            if (isDense == 0) {
+                SVONode rootNode = _SVOPool[(rootIndex < (uint)_PoolSize) ? rootIndex : 0];
+                if (rootNode.childIndex == 0 && (rootNode.material & 0xFF) == 0) {
+                    float3 nextC = (chunkCoord + stepDirBounds) * chunkSize;
+                    float3 tMaxC = (nextC - ray.origin) * invDir;
+                    float tNext = min(min(tMaxC.x, tMaxC.y), tMaxC.z);
+                    mask = (tNext == tMaxC.x) ? int3(1,0,0) : ((tNext == tMaxC.y) ? int3(0,1,0) : int3(0,0,1));
+                    t = max(t, tNext + (voxelSize * 0.05f));
+                    continue;
+                }
+                if (rootNode.childIndex == 0 && (rootNode.material & 0xFF) != 0) {
+                    hit = true; hitMatID_Data = rootNode.material; finalVoxelSize = voxelSize;
+                    float3 chunkMin = chunkCoord * chunkSize;
+                    float3 chunkMax = chunkMin + chunkSize;
+                    float3 t0 = (chunkMin - ray.origin) * invDir;
+                    float3 t1 = (chunkMax - ray.origin) * invDir;
+                    float3 tMinBox = min(t0, t1);
+                    float tEnter = max(max(tMinBox.x, tMinBox.y), tMinBox.z);
+                    t = max(t, tEnter);
+                    finalBlockPos = floor((ray.origin + ray.direction * t) / voxelSize);
+                    mask = (tEnter == tMinBox.x) ? int3(1,0,0) : ((tEnter == tMinBox.y) ? int3(0,1,0) : int3(0,0,1));
+                    break;
+                }
             }
 
-            if (rootNode.childIndex == 0 && (rootNode.material & 0xFF) != 0) {
-                hit = true; hitMatID_Data = rootNode.material; finalVoxelSize = voxelSize;
-                float3 chunkMin = chunkCoord * chunkSize;
-                float3 chunkMax = chunkMin + chunkSize;
-                float3 t0 = (chunkMin - ray.origin) * invDir;
-                float3 t1 = (chunkMax - ray.origin) * invDir;
-                float3 tMinBox = min(t0, t1);
-                float tEnter = max(max(tMinBox.x, tMinBox.y), tMinBox.z);
+            // 2. BOUNDING BOX
+            uint chunkMinY = (currentChunk.packedState >> 8) & 0xFF;
+            uint chunkMaxY = (uint)currentChunk.position.w;
+            float minY = (isDense == 1) ? 0.0f : (float)chunkMinY;
+            float maxY = (isDense == 1) ? 32.0f : (float)chunkMaxY;
 
-                t = max(t, tEnter);
-                finalBlockPos = floor((ray.origin + ray.direction * t) / voxelSize);
-                mask = (tEnter == tMinBox.x) ? int3(1,0,0) : ((tEnter == tMinBox.y) ? int3(0,1,0) : int3(0,0,1));
-                break;
-            }
-
-            float3 absoluteBoxMin = (chunkCoord * 32.0f + float3(0, (float)currentChunk.pad1, 0)) * voxelSize;
-            float3 absoluteBoxMax = (chunkCoord * 32.0f + float3(32, (float)currentChunk.pad2, 32)) * voxelSize;
+            float3 absoluteBoxMin = (chunkCoord * 32.0f + float3(0.0f, minY, 0.0f)) * voxelSize;
+            float3 absoluteBoxMax = (chunkCoord * 32.0f + float3(32.0f, maxY, 32.0f)) * voxelSize;
             float3 tb0 = (absoluteBoxMin - ray.origin) * invDir;
             float3 tb1 = (absoluteBoxMax - ray.origin) * invDir;
             float3 tMinB = min(tb0, tb1);
@@ -206,25 +348,48 @@ bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint 
             float3 tDelta = abs(voxelSize * invDir);
             float3 tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
             
-            [loop]
-            for (int v = 0; v < 128; v++) { 
-                int3 vLocal = mapPos - (chunkCoord << 5);
-                if (any(vLocal < 0) || any(vLocal > 31)) break;
-                
-                uint matData = GetVoxelFromRoot(rootIndex, vLocal);
-                if ((matData & 0xFF) > 0) { hit = true; hitMatID_Data = matData; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break; }
-                
-                if (tMaxV.x < tMaxV.y) {
-                    if (tMaxV.x < tMaxV.z) { t = tMaxV.x; tMaxV.x += tDelta.x; mapPos.x += rayStep.x; mask = int3(1,0,0); }
-                    else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
-                } else {
-                    if (tMaxV.y < tMaxV.z) { t = tMaxV.y; tMaxV.y += tDelta.y; mapPos.y += rayStep.y; mask = int3(0,1,0); }
-                    else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
+            // 3. THE BRANCH-SAFE DUAL PATH 
+            if (isDense == 1) {
+                uint denseBase = currentChunk.densePoolIndex << 15;
+                [loop]
+                for (int v = 0; v < 128; v++) { 
+                    int3 vLocal = mapPos - (chunkCoord << 5);
+                    if (any(vLocal < 0) || any(vLocal > 31)) break;
+                    
+                    uint flatIdx = vLocal.x + (vLocal.y << 5) + (vLocal.z << 10);
+                    uint matData = _DenseChunkPool[denseBase + flatIdx];
+
+                    if ((matData & 0xFF) > 0) { hit = true; hitMatID_Data = matData; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break; }
+                    
+                    if (tMaxV.x < tMaxV.y) {
+                        if (tMaxV.x < tMaxV.z) { t = tMaxV.x; tMaxV.x += tDelta.x; mapPos.x += rayStep.x; mask = int3(1,0,0); }
+                        else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
+                    } else {
+                        if (tMaxV.y < tMaxV.z) { t = tMaxV.y; tMaxV.y += tDelta.y; mapPos.y += rayStep.y; mask = int3(0,1,0); }
+                        else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
+                    }
+                }
+            } else {
+                [loop]
+                for (int v = 0; v < 128; v++) { 
+                    int3 vLocal = mapPos - (chunkCoord << 5);
+                    if (any(vLocal < 0) || any(vLocal > 31)) break;
+                    
+                    uint matData = GetVoxelFromRoot(rootIndex, vLocal);
+
+                    if ((matData & 0xFF) > 0) { hit = true; hitMatID_Data = matData; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break; }
+                    
+                    if (tMaxV.x < tMaxV.y) {
+                        if (tMaxV.x < tMaxV.z) { t = tMaxV.x; tMaxV.x += tDelta.x; mapPos.x += rayStep.x; mask = int3(1,0,0); }
+                        else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
+                    } else {
+                        if (tMaxV.y < tMaxV.z) { t = tMaxV.y; tMaxV.y += tDelta.y; mapPos.y += rayStep.y; mask = int3(0,1,0); }
+                        else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
+                    }
                 }
             }
         }
         if (hit) break;
-        
         float3 nextC = (chunkCoord + stepDirBounds) * chunkSize;
         float3 tMaxC = (nextC - ray.origin) * invDir;
         float tNext = min(min(tMaxC.x, tMaxC.y), tMaxC.z);
@@ -253,7 +418,22 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     uint hitMatID_Data = 0;
     int steps = 0;
 
-    if (TraceVoxelRay(ray, 800.0, t, mask, hitMatID_Data, finalVoxelSize, finalBlockPos, steps)) {
+    bool hit = TraceVoxelRay(ray, 800.0, t, mask, hitMatID_Data, finalVoxelSize, finalBlockPos, steps);
+
+    // --- GPU CROSSHAIR TARGETER ---
+    if (id.x == width / 2 && id.y == height / 2) {
+        if (hit && t < 50.0) { 
+            _CrosshairTarget[0] = int4((int)finalBlockPos.x, (int)finalBlockPos.y, (int)finalBlockPos.z, 1);
+            // Calculate and pass the exact geometric normal of the face we hit
+            float3 rawNormal = float3(mask) * -sign(ray.direction);
+            _CrosshairTarget[1] = int4((int)rawNormal.x, (int)rawNormal.y, (int)rawNormal.z, 0);
+        } else {
+            _CrosshairTarget[0] = int4(-999, -999, -999, 0); 
+            _CrosshairTarget[1] = int4(0, 0, 0, 0);
+        }
+    }
+
+    if (hit) {
         
         float3 normal = float3(mask) * -sign(ray.direction);
         float3 hitWorldPos = ray.origin + ray.direction * t;
@@ -370,7 +550,8 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float s_t = 0; int3 s_mask = 0; uint s_mat = 0; 
         float s_size = 1.0; float3 s_pos = 0; int s_steps = 0;
         
-        // Trace for only 8.0 units (~16 meters). This completely eliminates GPU thread divergence and stutter.
+       // Trace for only 8.0 units (~16 meters).
+        // This completely eliminates GPU thread divergence and stutter.
         bool inShadow = TraceVoxelRay(shadowRay, 8.0, s_t, s_mask, s_mat, s_size, s_pos, s_steps);
         // Soften the shadow slightly so it doesn't look like pitch black ink
         float sunExposure = inShadow ? 0.25 : 1.0;

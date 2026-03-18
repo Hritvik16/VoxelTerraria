@@ -2,7 +2,8 @@
 #pragma kernel ClearCounter
 
 struct SVONode { uint childIndex; uint material; };
-struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD; uint pad1; uint pad2; };
+struct ChunkData { float4 position; uint rootNodeIndex;
+int currentLOD; uint packedState; uint densePoolIndex; };
 
 StructuredBuffer<SVONode> _SVOPool;
 StructuredBuffer<ChunkData> _ChunkMap;
