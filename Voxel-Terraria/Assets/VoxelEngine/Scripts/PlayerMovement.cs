@@ -26,6 +26,7 @@ public class PlayerMovement : MonoBehaviour
     private int brushSize = 0;
     private int maxBrushSize = 6; // Radius of 6 = 13x13x13 blocks (Reasonable but fun)
     private int brushShape = 0;   // 0 = Cube, 1 = Sphere
+    private uint selectedMaterial = 3; // Default to 3 (Chest) to test entities
     
     [Header("Editor Speed")]
     public float buildCooldown = 0.15f; // Time in seconds between edits (0.15 = ~6 blocks per second)
@@ -93,6 +94,15 @@ public class PlayerMovement : MonoBehaviour
         if (Keyboard.current != null) {
             if (!rb.useGravity && Keyboard.current.spaceKey.isPressed) FlyUp();
             
+            // INTERACT WITH ENTITIES (Chests, Doors, etc.)
+            if (Keyboard.current.eKey.wasPressedThisFrame && ChunkManager.Instance != null && ChunkManager.Instance.crosshairData[3] == 1) {
+                Vector3Int targetPos = new Vector3Int(ChunkManager.Instance.crosshairData[0], ChunkManager.Instance.crosshairData[1], ChunkManager.Instance.crosshairData[2]);
+                
+                if (VoxelEngine.MetadataManager.Instance != null && VoxelEngine.MetadataManager.Instance.TryGetEntity(targetPos, out var entity)) {
+                    entity.OnInteract();
+                }
+            }
+
             // Toggle Edit Mode
             if (Keyboard.current.bKey.wasPressedThisFrame) {
                 isEditMode = !isEditMode;
@@ -105,6 +115,15 @@ public class PlayerMovement : MonoBehaviour
             // Toggle Shape
             if (isEditMode && Keyboard.current.tKey.wasPressedThisFrame) {
                 brushShape = (brushShape == 0) ? 1 : 0;
+            }
+
+            // Material Selection (Keys 1-5)
+            if (isEditMode) {
+                if (Keyboard.current.digit1Key.wasPressedThisFrame) selectedMaterial = 1;
+                if (Keyboard.current.digit2Key.wasPressedThisFrame) selectedMaterial = 2;
+                if (Keyboard.current.digit3Key.wasPressedThisFrame) selectedMaterial = 3; // Chest Entity
+                if (Keyboard.current.digit4Key.wasPressedThisFrame) selectedMaterial = 4;
+                if (Keyboard.current.digit5Key.wasPressedThisFrame) selectedMaterial = 5;
             }
         }
 
@@ -138,12 +157,16 @@ public class PlayerMovement : MonoBehaviour
                         nextBuildTime = Time.time + buildCooldown;
                         
                         if (currentMode == BuildMode.Remove) {
-                            // MINING: Target the exact block the crosshair hit (gridPos) and apply 25 damage per tick.
-                            // With the existing 0.15s cooldown, it will take exactly 4 ticks (0.6 seconds) to break a 100 HP block.
-                            ChunkManager.World.DamageVoxel(gridPos, 25, brushSize, brushShape);
+                            // MINING INTERCEPTION: Check if we are mining a C# entity first
+                            if (brushSize == 0 && VoxelEngine.MetadataManager.Instance != null && VoxelEngine.MetadataManager.Instance.TryGetEntity(gridPos, out var entity)) {
+                                entity.OnDamaged(25);
+                            } else {
+                                // Normal terrain mining on the GPU
+                                ChunkManager.World.DamageVoxel(gridPos, 25, brushSize, brushShape);
+                            }
                         } else {
                             // PLACE: Push outward by (brushSize + 1) so the bottom of the brush rests ON the surface
-                            ChunkManager.World.EditVoxel(gridPos + (normal * (brushSize + 1)), 2, brushSize, brushShape);
+                            ChunkManager.World.EditVoxel(gridPos + (normal * (brushSize + 1)), selectedMaterial, brushSize, brushShape);
                         }
                     }
                 } else {
@@ -299,7 +322,7 @@ public class PlayerMovement : MonoBehaviour
             
             string shapeName = brushShape == 0 ? "Cube" : "Sphere";
             string modeName = currentMode == BuildMode.Remove ? "REMOVE (Red)" : "PLACE (Green)";
-            GUI.Label(new Rect(20, 100, 400, 150), $"--- WORLD EDITOR ---\nToggle Mode: [B]\nToggle Shape: [T] ({shapeName})\nBrush Size: [Scroll] ({brushSize})\nAction: {modeName}", hudStyle);
+            GUI.Label(new Rect(20, 100, 400, 150), $"--- WORLD EDITOR ---\nToggle Mode: [B]\nToggle Shape: [T] ({shapeName})\nBrush Size: [Scroll] ({brushSize})\nMaterial: {selectedMaterial} (Press 1-5)\nAction: {modeName}", hudStyle);
         }
     }
 }

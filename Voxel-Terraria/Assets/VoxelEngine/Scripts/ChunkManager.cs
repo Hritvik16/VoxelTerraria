@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
-
+using VoxelEngine;
 
 using VoxelEngine.Interfaces; // ADD THIS AT THE TOP
 [ExecuteAlways]
@@ -92,6 +92,8 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
     // --- IVOXELWORLD IMPLEMENTATION ---
     public static IVoxelWorld World => Instance; 
     public float VoxelScale => voxelScale;
+    public event System.Action<Vector3Int, uint> OnVoxelChanged;
+    public event System.Action<Vector3Int, Vector3Int> OnAreaDestroyed;
 
     void Awake()
     {
@@ -499,6 +501,11 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
                     worldGenShader.SetInt("_BrushShape", brushShape);
                     
                     worldGenShader.Dispatch(editKernel, 1, 1, 1);
+
+                    // Broadcast that a block changed. If brushSize > 0, we don't spam the event for every block.
+                    if (brushSize == 0) {
+                        OnVoxelChanged?.Invoke(globalVoxelPos, newMaterial);
+                    }
                 }
             }
         }
@@ -513,6 +520,11 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         // 1. Calculate the global bounding box of the damage area
         Vector3Int minGlobal = globalVoxelPos - new Vector3Int(brushSize, brushSize, brushSize);
         Vector3Int maxGlobal = globalVoxelPos + new Vector3Int(brushSize, brushSize, brushSize);
+
+        // Broadcast the explosion zone to any listening logic modules
+        if (brushSize > 0) {
+            OnAreaDestroyed?.Invoke(minGlobal, maxGlobal);
+        }
 
         // 2. Convert to chunk coordinates to see how many chunks are affected
         Vector3Int minChunk = new Vector3Int(
