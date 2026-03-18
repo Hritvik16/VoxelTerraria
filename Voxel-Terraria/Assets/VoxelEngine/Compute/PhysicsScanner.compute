@@ -7,6 +7,7 @@ int currentLOD; uint packedState; uint densePoolIndex; };
 
 StructuredBuffer<SVONode> _SVOPool;
 StructuredBuffer<ChunkData> _ChunkMap;
+StructuredBuffer<uint> _DenseChunkPool; // ADDED: Access to the editable chunks
 
 int _ChunkCount;
 float4 _ClipmapCenters[8];
@@ -25,14 +26,18 @@ void ClearCounter (uint3 id : SV_DispatchThreadID) {
     _SolidVoxels[0] = int4(0,0,0,0);
 }
 
-uint GetChunkRootIndex(int3 chunkCoord) {
+ChunkData GetChunkData(int3 chunkCoord) {
+    ChunkData invalid;
+    invalid.rootNodeIndex = 0xFFFFFFFF;
+    invalid.packedState = 0;
+    
     int renderDistXZ = (int)_RenderBounds.x;
     int renderDistY  = (int)_RenderBounds.y;
     int3 centerChunk = (int3)_ClipmapCenters[0].xyz;
 
     if(abs(chunkCoord.x - centerChunk.x) > renderDistXZ || 
        abs(chunkCoord.y - centerChunk.y) > renderDistY || 
-       abs(chunkCoord.z - centerChunk.z) > renderDistXZ) return 0xFFFFFFFF;
+       abs(chunkCoord.z - centerChunk.z) > renderDistXZ) return invalid;
 
     int sideXZ = 2 * renderDistXZ + 1;
     int sideY = 2 * renderDistY + 1;
@@ -40,21 +45,31 @@ uint GetChunkRootIndex(int3 chunkCoord) {
     int mx = (int)(((uint)(chunkCoord.x + 400000 * sideXZ)) % (uint)sideXZ);
     int my = (int)(((uint)(chunkCoord.y + 400000 * sideY)) % (uint)sideY);
     int mz = (int)(((uint)(chunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
-
     int cIdx = mx + mz * sideXZ + my * sideXZ * sideXZ; 
-    return _ChunkMap[cIdx].rootNodeIndex;
+    return _ChunkMap[cIdx];
 }
 
 bool IsSolid(int3 gridPos) {
     if (gridPos.y < -10) return true; // Safety Bedrock
 
     int3 chunkCoord = int3(floor((float3)gridPos / 32.0));
-    uint rootIndex = GetChunkRootIndex(chunkCoord);
+    ChunkData cd = GetChunkData(chunkCoord);
+    
+    uint isDense = cd.packedState & 1;
+    int3 localPos = int3(((gridPos % 32) + 32) % 32);
+
+    // --- FIX: Read from Dense Pool if chunk was edited! ---
+    if (isDense == 1) {
+        uint flatIdx = localPos.x + (localPos.y << 5) + (localPos.z << 10);
+        uint matData = _DenseChunkPool[(cd.densePoolIndex * 32768) + flatIdx];
+        return (matData & 0xFF) != 0;
+    }
+
+    uint rootIndex = cd.rootNodeIndex;
     if (rootIndex == 0xFFFFFFFF) return false;
 
     uint nodeIndex = rootIndex;
     int size = 32;
-    int3 localPos = int3(((gridPos % 32) + 32) % 32);
 
     for (int i = 0; i < 6; i++) {
         SVONode node = _SVOPool[nodeIndex & 134217727];

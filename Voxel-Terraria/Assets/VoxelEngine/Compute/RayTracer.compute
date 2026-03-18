@@ -21,6 +21,16 @@ float4 _RenderBounds;
 int _DebugViewMode;
 float3 _SunDir;
 
+int _IsEditMode;
+int _EditMode;
+int _BrushSize;
+int _BrushShape;
+float _VoxelScale;
+
+// NEW: The exact block the crosshair is looking at
+float4 _TargetBlock;
+float4 _TargetNormal;
+
 struct Ray { float3 origin; float3 direction; };
 
 struct VoxelMaterial {
@@ -574,6 +584,141 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         // Output raw HDR color
         float3 finalColor = lerp(colorWithLight, skyColor, fog);
 
+        // --- TARGET BLOCK HIGHLIGHT ---
+        // If we hit a block and are in edit mode, check if this pixel belongs to the targeted block
+        if (_IsEditMode == 1 && _TargetBlock.w == 1.0 && hit) {
+            
+            // Validate if the pixel we are currently drawing is part of the crosshair's target block
+            if (abs(finalBlockPos.x - _TargetBlock.x) < 0.1 && 
+                abs(finalBlockPos.y - _TargetBlock.y) < 0.1 && 
+                abs(finalBlockPos.z - _TargetBlock.z) < 0.1) {
+                
+                // Calculate the normal of the face this pixel is on
+                float3 rawNormal = float3(mask) * -sign(ray.direction);
+                
+                // Check if this pixel is on the exact face the crosshair is resting on
+                bool isTargetFace = (abs(rawNormal.x - _TargetNormal.x) < 0.1 && 
+                                     abs(rawNormal.y - _TargetNormal.y) < 0.1 && 
+                                     abs(rawNormal.z - _TargetNormal.z) < 0.1);
+                
+                // 1. Add a subtle emission glow (Gold for the active face, slight white for the rest)
+                finalColor += isTargetFace ? float3(0.3, 0.25, 0.05) : float3(0.08, 0.08, 0.08);
+                
+                // 2. Draw a crisp wireframe around the block
+                float3 localPos = frac((ray.origin + ray.direction * t) / finalVoxelSize);
+                float2 faceUV = mask.x > 0 ? localPos.yz : (mask.y > 0 ? localPos.xz : localPos.xy);
+                
+                // Find distance to the nearest edge (0.0 to 0.5)
+                float edgeDist = min(min(faceUV.x, 1.0 - faceUV.x), min(faceUV.y, 1.0 - faceUV.y));
+                
+                if (edgeDist < 0.04) {
+                    // Bright Yellow/Orange wireframe for the active face, White for the rest
+                    finalColor = isTargetFace ? float3(1.0, 0.8, 0.0) : float3(0.9, 0.9, 0.9);
+                }
+            }
+        }
+
+        // --- GPU HOLOGRAM OVERLAY ---
+        if (_IsEditMode == 1 && _TargetBlock.w == 1.0) {
+            float3 targetGrid = _TargetBlock.xyz;
+            float3 targetNorm = _TargetNormal.xyz;
+            
+            // 1. ALIGN TO SURFACE: Push the center out/in by the brush radius
+            float3 centerGrid = targetGrid;
+            if (_EditMode == 1) {
+                // PLACE: Push out by (BrushSize + 1.0) to sit exactly on the surface block
+                centerGrid += targetNorm * (_BrushSize + 1.0);
+            } else {
+                // REMOVE: Push in by BrushSize to carve perfectly flush
+                centerGrid -= targetNorm * _BrushSize;
+            }
+            
+            // 2. AABB BOUNDING BOX
+            float physicalRadius = (_BrushSize + 0.5) * _VoxelScale;
+            float3 centerWorld = (centerGrid * _VoxelScale) + (_VoxelScale * 0.5);
+            float3 boxMin = centerWorld - physicalRadius;
+            float3 boxMax = centerWorld + physicalRadius;
+            
+            float3 safeDir = ray.direction;
+            if (abs(safeDir.x) < 1e-6) safeDir.x = sign(safeDir.x) * 1e-6;
+            if (abs(safeDir.y) < 1e-6) safeDir.y = sign(safeDir.y) * 1e-6;
+            if (abs(safeDir.z) < 1e-6) safeDir.z = sign(safeDir.z) * 1e-6;
+            
+            float3 invDir = 1.0 / safeDir;
+            float3 t0 = (boxMin - ray.origin) * invDir;
+            float3 t1 = (boxMax - ray.origin) * invDir;
+            float3 tMin = min(t0, t1);
+            float3 tMax = max(t0, t1);
+            float tEnter = max(max(tMin.x, tMin.y), tMin.z);
+            float tExit = min(min(tMax.x, tMax.y), tMax.z);
+            
+            if (tEnter < tExit && tExit > 0) {
+                // We hit the bounding box! Run a Mini-DDA to find the exact voxel wireframe
+                float tStep = max(tEnter, 0.0);
+                
+                // If placing, hide blocks behind the terrain. If removing, X-Ray through it.
+                float maxT = (_EditMode == 1) ? min(tExit, t) : tExit;
+
+                float3 rayPos = ray.origin + ray.direction * tStep;
+                int3 currentGrid = floor(rayPos / _VoxelScale);
+                int3 stepDir = sign(safeDir);
+                float3 tDelta = abs(_VoxelScale * invDir);
+                float3 tMaxV = ((currentGrid + max(stepDir, 0)) * _VoxelScale - ray.origin) * invDir;
+                
+                bool hitHoloVoxel = false;
+                int3 holoMask = 0;
+                float hitT = 0;
+
+                [loop]
+                for (int i = 0; i < 40; i++) { 
+                    if (tStep > maxT) break;
+                    
+                    float3 pLocal = currentGrid - centerGrid;
+                    float dist = 0.0;
+                    
+                    // --- MODULAR SDF SWITCH (Must match WorldGen exactly) ---
+                    switch (_BrushShape) {
+                        case 0: // CUBE
+                            dist = max(abs(pLocal.x), max(abs(pLocal.y), abs(pLocal.z)));
+                            break;
+                        case 1: // SPHERE
+                            dist = length(pLocal);
+                            break;
+                    }
+
+                    if (dist <= _BrushSize + 0.5) {
+                        hitHoloVoxel = true;
+                        hitT = tStep;
+                        break;
+                    }
+                    
+                    // Step to next voxel inside the bounding box
+                    if (tMaxV.x < tMaxV.y) {
+                        if (tMaxV.x < tMaxV.z) { tStep = tMaxV.x; tMaxV.x += tDelta.x; currentGrid.x += stepDir.x; holoMask = int3(1,0,0); }
+                        else { tStep = tMaxV.z; tMaxV.z += tDelta.z; currentGrid.z += stepDir.z; holoMask = int3(0,0,1); }
+                    } else {
+                        if (tMaxV.y < tMaxV.z) { tStep = tMaxV.y; tMaxV.y += tDelta.y; currentGrid.y += stepDir.y; holoMask = int3(0,1,0); }
+                        else { tStep = tMaxV.z; tMaxV.z += tDelta.z; currentGrid.z += stepDir.z; holoMask = int3(0,0,1); }
+                    }
+                }
+                
+                if (hitHoloVoxel) {
+                    float3 holoColor = (_EditMode == 0) ? float3(1.0, 0.1, 0.1) : float3(0.1, 1.0, 0.2);
+                    
+                    // Draw a crisp wireframe over the voxelized shape
+                    float3 hitPosHolo = ray.origin + ray.direction * hitT;
+                    float3 localFacePos = frac(hitPosHolo / _VoxelScale);
+                    float2 uvHolo = holoMask.x > 0 ? localFacePos.yz : (holoMask.y > 0 ? localFacePos.xz : localFacePos.xy);
+                    
+                    float edgeDist = min(min(uvHolo.x, 1.0 - uvHolo.x), min(uvHolo.y, 1.0 - uvHolo.y));
+                    float alpha = (edgeDist < 0.05) ? 0.7 : 0.2; 
+                    
+                    finalColor = lerp(finalColor, holoColor, alpha);
+                }
+            }
+        }
+
+        // Output raw HDR color
         float zDepth = t * dot(ray.direction, _CameraForward.xyz);
         Result[id.xy] = float4(finalColor, zDepth);
     } else {

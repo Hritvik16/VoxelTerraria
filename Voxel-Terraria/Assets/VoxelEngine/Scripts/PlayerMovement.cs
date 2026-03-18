@@ -15,8 +15,24 @@ public class PlayerMovement : MonoBehaviour
     
     public Transform cameraTransform;
 
-    [Header("Interaction")]
-    private LineRenderer wireframe;
+    [Header("World Editor Tool")]
+    public Material removeHologramMat; // Assign an Unlit Red Material in Inspector
+    public Material placeHologramMat;  // Assign an Unlit Green/Blue Material in Inspector
+    
+    private bool isEditMode = false;
+    private enum BuildMode { Remove, Place }
+    private BuildMode currentMode = BuildMode.Remove;
+    
+    private int brushSize = 0;
+    private int maxBrushSize = 6; // Radius of 6 = 13x13x13 blocks (Reasonable but fun)
+    private int brushShape = 0;   // 0 = Cube, 1 = Sphere
+    
+    [Header("Editor Speed")]
+    public float buildCooldown = 0.15f; // Time in seconds between edits (0.15 = ~6 blocks per second)
+    private float nextBuildTime = 0f;
+
+    private Transform previewCube;
+    private Transform previewSphere;
 
     [Header("Gravity Toggle")]
     public float doubleTapTimeThreshold = 0.3f;
@@ -52,79 +68,89 @@ public class PlayerMovement : MonoBehaviour
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible = false;
 
-        // --- BUILD THE VOXEL WIREFRAME ---
-        GameObject wfObj = new GameObject("Voxel Wireframe");
-        wfObj.transform.SetParent(this.transform);
-        wireframe = wfObj.AddComponent<LineRenderer>();
-        wireframe.positionCount = 16;
-        wireframe.startWidth = 0.008f; // Nice thin crisp line
-        wireframe.endWidth = 0.008f;
-        // Use an unlit material so it acts like a true UI overlay
-        wireframe.material = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
-        wireframe.material.color = Color.black; 
-        wireframe.useWorldSpace = true;
-        wireframe.loop = false;
-        wireframe.enabled = false;
+        // --- BUILD THE HOLOGRAM PRIMITIVES ---
+        previewCube = GameObject.CreatePrimitive(PrimitiveType.Cube).transform;
+        Destroy(previewCube.GetComponent<Collider>());
+        previewCube.gameObject.SetActive(false);
+
+        previewSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere).transform;
+        Destroy(previewSphere.GetComponent<Collider>());
+        previewSphere.gameObject.SetActive(false);
     }
 
     void Update()
     {
         HandleMouseLook(); // THE FIX: Run rotation before the camera updates
         HandleGravityToggle();
+        // Send state to the Compute Shader
+        if (ChunkManager.Instance != null) {
+            ChunkManager.Instance.isEditMode = isEditMode;
+            ChunkManager.Instance.editMode = (int)currentMode;
+            ChunkManager.Instance.brushSize = brushSize;
+            ChunkManager.Instance.brushShape = brushShape;
+        }
         
-        // Use Keyboard.current for direct polling (Simple script approach)
-        if (Keyboard.current != null)
-        {
-            if (!rb.useGravity && Keyboard.current.spaceKey.isPressed)
-            {
-                FlyUp();
+        if (Keyboard.current != null) {
+            if (!rb.useGravity && Keyboard.current.spaceKey.isPressed) FlyUp();
+            
+            // Toggle Edit Mode
+            if (Keyboard.current.bKey.wasPressedThisFrame) {
+                isEditMode = !isEditMode;
+                if (!isEditMode) {
+                    previewCube.gameObject.SetActive(false);
+                    previewSphere.gameObject.SetActive(false);
+                }
+            }
+
+            // Toggle Shape
+            if (isEditMode && Keyboard.current.tKey.wasPressedThisFrame) {
+                brushShape = (brushShape == 0) ? 1 : 0;
             }
         }
 
-        // --- HIGHLIGHT & MINE ---
-        if (ChunkManager.Instance != null && ChunkManager.Instance.crosshairData[3] == 1) {
+        // Handle Scroll Wheel for Brush Size
+        if (isEditMode && Mouse.current != null) {
+            float scroll = Mouse.current.scroll.y.ReadValue();
+            if (scroll > 0 && brushSize < maxBrushSize) brushSize++;
+            if (scroll < 0 && brushSize > 0) brushSize--;
+        }
+
+        // --- WORLD EDITOR LOGIC ---
+        if (isEditMode && ChunkManager.Instance != null && ChunkManager.Instance.crosshairData[3] == 1) {
             
-            // 1. Draw the Wireframe Border
-            if (wireframe != null) {
-                wireframe.enabled = true;
-                float scale = ChunkManager.Instance.voxelScale;
-                Vector3 gridPos = new Vector3(ChunkManager.Instance.crosshairData[0], ChunkManager.Instance.crosshairData[1], ChunkManager.Instance.crosshairData[2]);
-                Vector3 center = (gridPos * scale) + (Vector3.one * scale * 0.5f);
-                
-                float h = (scale * 1.02f) * 0.5f; // Slightly larger than voxel to prevent Z-fighting
-                Vector3 p0 = center + new Vector3(-h, -h, -h); Vector3 p1 = center + new Vector3(h, -h, -h);
-                Vector3 p2 = center + new Vector3(h, h, -h);   Vector3 p3 = center + new Vector3(-h, h, -h);
-                Vector3 p4 = center + new Vector3(-h, -h, h);  Vector3 p5 = center + new Vector3(h, -h, h);
-                Vector3 p6 = center + new Vector3(h, h, h);    Vector3 p7 = center + new Vector3(-h, h, h);
+            Vector3Int gridPos = new Vector3Int(ChunkManager.Instance.crosshairData[0], ChunkManager.Instance.crosshairData[1], ChunkManager.Instance.crosshairData[2]);
+            Vector3Int normal = new Vector3Int(ChunkManager.Instance.crosshairData[4], ChunkManager.Instance.crosshairData[5], ChunkManager.Instance.crosshairData[6]);
 
-                wireframe.SetPositions(new Vector3[] { p0, p1, p2, p3, p0, p4, p5, p6, p7, p4, p5, p1, p2, p6, p7, p3 });
-            }
-
-            // 2. Click to Interact!
+            // 1. INPUT STATE MACHINE (Continuous Build)
             if (Mouse.current != null) {
-                Vector3Int exactGridPos = new Vector3Int(
-                    ChunkManager.Instance.crosshairData[0], 
-                    ChunkManager.Instance.crosshairData[1], 
-                    ChunkManager.Instance.crosshairData[2]
-                );
+                bool leftClick = Mouse.current.leftButton.isPressed;
+                bool rightClick = Mouse.current.rightButton.isPressed;
 
-                // LEFT CLICK = Break with a massive 3x3x3 Pickaxe Brush
-                if (Mouse.current.leftButton.wasPressedThisFrame) {
-                    ChunkManager.Instance.EditVoxel(exactGridPos, 0, 1); // Material 0 (Air), Brush 1 (3x3x3)
-                }
-                
-                // RIGHT CLICK = Place a single block on the geometric face normal!
-                if (Mouse.current.rightButton.wasPressedThisFrame) {
-                    Vector3Int faceNormal = new Vector3Int(
-                        ChunkManager.Instance.crosshairData[4], 
-                        ChunkManager.Instance.crosshairData[5], 
-                        ChunkManager.Instance.crosshairData[6]
-                    );
-                    ChunkManager.Instance.EditVoxel(exactGridPos + faceNormal, 2, 0); // Material 2, Brush 0 (Single Block)
+                if (leftClick || rightClick) {
+                    BuildMode intendedMode = leftClick ? BuildMode.Remove : BuildMode.Place;
+                    
+                    // If switching modes, update UI but wait for next frame to build
+                    if (currentMode != intendedMode) {
+                        currentMode = intendedMode;
+                    } 
+                    // Only build if enough time has passed since the last action
+                    else if (Time.time >= nextBuildTime) {
+                        nextBuildTime = Time.time + buildCooldown;
+                        
+                        if (currentMode == BuildMode.Remove) {
+                            // REMOVE: Push inward so the top of the brush is flush with the surface
+                            ChunkManager.Instance.EditVoxel(gridPos - (normal * brushSize), 0, brushSize, brushShape);
+                        } else {
+                            // PLACE: Push outward by (brushSize + 1) so the bottom of the brush rests ON the surface
+                            ChunkManager.Instance.EditVoxel(gridPos + (normal * (brushSize + 1)), 2, brushSize, brushShape);
+                        }
+                    }
+                } else {
+                    // Reset timer when button is released so the next initial click is instant
+                    nextBuildTime = 0f;
                 }
             }
-        } else if (wireframe != null) {
-            wireframe.enabled = false;
+
         }
     }
     // Removed LateUpdate completely from this script
@@ -257,14 +283,22 @@ public class PlayerMovement : MonoBehaviour
         Debug.Log("Gravity Toggled: " + (rb.useGravity ? "On" : "Off"));
     }
 
-    // THE FIX: Draw a permanent targeting reticle in the center of the screen
-    void OnGUI() {
-        GUIStyle style = new GUIStyle();
-        style.normal.textColor = Color.white;
-        style.fontSize = 24;
-        style.alignment = TextAnchor.MiddleCenter;
-        
-        // Draw a simple '+' in the exact dead center of your monitor
-        GUI.Label(new Rect(Screen.width / 2f - 10, Screen.height / 2f - 10, 20, 20), "+", style);
+   void OnGUI() {
+        // GUIStyle crosshairStyle = new GUIStyle();
+        // crosshairStyle.normal.textColor = Color.white;
+        // crosshairStyle.fontSize = 24;
+        // crosshairStyle.alignment = TextAnchor.MiddleCenter;
+        // GUI.Label(new Rect(Screen.width / 2f - 10, Screen.height / 2f - 10, 20, 20), "+", crosshairStyle);
+
+        if (isEditMode) {
+            GUIStyle hudStyle = new GUIStyle();
+            hudStyle.normal.textColor = Color.yellow;
+            hudStyle.fontSize = 18;
+            hudStyle.fontStyle = FontStyle.Bold;
+            
+            string shapeName = brushShape == 0 ? "Cube" : "Sphere";
+            string modeName = currentMode == BuildMode.Remove ? "REMOVE (Red)" : "PLACE (Green)";
+            GUI.Label(new Rect(20, 100, 400, 150), $"--- WORLD EDITOR ---\nToggle Mode: [B]\nToggle Shape: [T] ({shapeName})\nBrush Size: [Scroll] ({brushSize})\nAction: {modeName}", hudStyle);
+        }
     }
 }

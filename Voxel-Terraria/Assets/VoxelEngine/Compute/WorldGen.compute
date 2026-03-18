@@ -25,9 +25,10 @@ int _PoolSize;
 
 uint _TargetRootIndex;
 uint _TargetDenseIndex;
-int3 _EditLocalPos;    // Converted to exact int3 to prevent Metal float corruption
+int3 _EditLocalPos;
 uint _NewMaterialData;
-int _BrushSize;        // Allows us to carve out larger holes instantly
+int _BrushSize;
+int _BrushShape;       // NEW: 0 = Cube, 1 = Sphere
 
 float2 hash22(float2 p) {
     p = float2(dot(p, float2(127.1, 311.7)), dot(p, float2(269.5, 183.3)));
@@ -188,16 +189,47 @@ void DecompressSVOToDense(uint3 id : SV_DispatchThreadID) {
 void EditDenseVoxel(uint3 id : SV_DispatchThreadID) {
     int3 center = _EditLocalPos;
     
-    // O(1) Array overwrite loop. If _BrushSize is 0, it edits exactly 1 block.
     for (int x = -_BrushSize; x <= _BrushSize; x++) {
         for (int y = -_BrushSize; y <= _BrushSize; y++) {
             for (int z = -_BrushSize; z <= _BrushSize; z++) {
-                int3 p = center + int3(x, y, z);
                 
-                // Safely prevent the brush from writing outside this chunk's 32x32x32 memory bounds
+                float3 pLocal = float3(x, y, z);
+                float dist = 0.0;
+                
+                // --- MODULAR SDF SWITCH ---
+                switch (_BrushShape) {
+                    case 0: // CUBE (Chebyshev distance)
+                        dist = max(abs(pLocal.x), max(abs(pLocal.y), abs(pLocal.z)));
+                        break;
+                    case 1: // SPHERE (Euclidean distance)
+                        dist = length(pLocal);
+                        break;
+                    case 2: // CYLINDER Example (Distance on XZ plane)
+                        dist = length(float2(pLocal.x, pLocal.z));
+                        break;
+                }
+
+                // +0.5 softens the integer boundary so shapes render cleanly
+                if (dist > _BrushSize + 0.5) continue; 
+
+                int3 p = center + int3(x, y, z);
                 if (p.x >= 0 && p.x < 32 && p.y >= 0 && p.y < 32 && p.z >= 0 && p.z < 32) {
                     uint flatIdx = p.x + (p.y << 5) + (p.z << 10);
-                    _DenseChunkPool[_TargetDenseIndex * 32768 + flatIdx] = _NewMaterialData;
+                    uint currentIndex = _TargetDenseIndex * 32768 + flatIdx;
+                    
+                    // --- NON-DESTRUCTIVE PLACEMENT & INSTANT LIGHTING ---
+                    if (_NewMaterialData != 0) {
+                        uint existingMat = _DenseChunkPool[currentIndex] & 0xFF;
+                        if (existingMat != 0) continue; 
+                        
+                        // FIX: Inject maximum Sunlight (15) and full Ambient Occlusion (255) 
+                        // so the block doesn't render pitch black.
+                        // Sun = bits 20-23, AO = bits 24-31
+                        _DenseChunkPool[currentIndex] = _NewMaterialData | (15 << 20) | (255 << 24);
+                    } else {
+                        // We are removing. Write pure 0 (Air, 0 light)
+                        _DenseChunkPool[currentIndex] = 0;
+                    }
                 }
             }
         }

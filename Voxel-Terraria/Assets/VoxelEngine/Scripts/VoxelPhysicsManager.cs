@@ -13,7 +13,7 @@ public class VoxelPhysicsManager : MonoBehaviour
     [HideInInspector] public int poolIndex = 0;
 
     public List<VoxelBody> trackedBodies = new List<VoxelBody>(); // Changed from private to public
-    private bool forceRebuild = true; 
+    public bool forceRebuild = true; // Expose to ChunkManager to trigger instant rebuilds
 
     private ComputeBuffer solidVoxelsBuffer;
     private bool isScanning = false;
