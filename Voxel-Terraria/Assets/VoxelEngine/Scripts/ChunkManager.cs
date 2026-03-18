@@ -473,6 +473,7 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
                         int decompressKernel = worldGenShader.FindKernel("DecompressSVOToDense");
                         worldGenShader.SetBuffer(decompressKernel, "_SVOPool", svoPoolBuffer);
                         worldGenShader.SetBuffer(decompressKernel, "_DenseChunkPool", denseChunkPoolBuffer);
+                        worldGenShader.SetBuffer(decompressKernel, "_DenseLogicPool", denseLogicPoolBuffer); // FIX: Ensure logic state is initialized
                         worldGenShader.SetInt("_TargetRootIndex", (int)cd.rootNodeIndex);
                         worldGenShader.SetInt("_TargetDenseIndex", (int)denseIndex);
                         worldGenShader.SetInt("_PoolSize", svoPoolBuffer.count); 
@@ -503,6 +504,85 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         }
         
         // Notify the Physics Manager that the terrain changed so it instantly updates colliders
+        if (VoxelPhysicsManager.Instance != null) {
+            VoxelPhysicsManager.Instance.forceRebuild = true;
+        }
+    }
+
+    public void DamageVoxel(Vector3Int globalVoxelPos, int damageAmount, int brushSize = 0, int brushShape = 0) {
+        // 1. Calculate the global bounding box of the damage area
+        Vector3Int minGlobal = globalVoxelPos - new Vector3Int(brushSize, brushSize, brushSize);
+        Vector3Int maxGlobal = globalVoxelPos + new Vector3Int(brushSize, brushSize, brushSize);
+
+        // 2. Convert to chunk coordinates to see how many chunks are affected
+        Vector3Int minChunk = new Vector3Int(
+            Mathf.FloorToInt(minGlobal.x / 32f),
+            Mathf.FloorToInt(minGlobal.y / 32f),
+            Mathf.FloorToInt(minGlobal.z / 32f)
+        );
+        Vector3Int maxChunk = new Vector3Int(
+            Mathf.FloorToInt(maxGlobal.x / 32f),
+            Mathf.FloorToInt(maxGlobal.y / 32f),
+            Mathf.FloorToInt(maxGlobal.z / 32f)
+        );
+
+        // 3. Loop through every chunk touched by the damage radius
+        for (int cy = minChunk.y; cy <= maxChunk.y; cy++) {
+            for (int cx = minChunk.x; cx <= maxChunk.x; cx++) {
+                for (int cz = minChunk.z; cz <= maxChunk.z; cz++) {
+                    
+                    Vector3Int chunkCoord = new Vector3Int(cx, cy, cz);
+                    int idx = GetMapIndex(0, chunkCoord);
+                    
+                    if (idx < 0 || idx >= totalMapCapacity || chunkTargetCoordArray[idx] != chunkCoord) continue;
+
+                    ChunkData[] gpuData = new ChunkData[1];
+                    chunkMapBuffer.GetData(gpuData, 0, idx, 1);
+                    ChunkData cd = gpuData[0];
+
+                    uint denseIndex = 0;
+                    bool isDense = (cd.packedState & 1) == 1;
+
+                    // JIT Wake-up logic
+                    if (isDense) {
+                        denseIndex = cd.densePoolIndex;
+                    } else {
+                        if (freeDenseIndices.Count == 0) continue;
+                        denseIndex = freeDenseIndices.Dequeue();
+                        
+                        int decompressKernel = worldGenShader.FindKernel("DecompressSVOToDense");
+                        worldGenShader.SetBuffer(decompressKernel, "_SVOPool", svoPoolBuffer);
+                        worldGenShader.SetBuffer(decompressKernel, "_DenseChunkPool", denseChunkPoolBuffer);
+                        worldGenShader.SetBuffer(decompressKernel, "_DenseLogicPool", denseLogicPoolBuffer);
+                        worldGenShader.SetInt("_TargetRootIndex", (int)cd.rootNodeIndex);
+                        worldGenShader.SetInt("_TargetDenseIndex", (int)denseIndex);
+                        worldGenShader.SetInt("_PoolSize", svoPoolBuffer.count); 
+                        worldGenShader.Dispatch(decompressKernel, 4, 4, 4);
+
+                        cd.packedState |= 1; 
+                        cd.densePoolIndex = denseIndex;
+                        gpuData[0] = cd;
+                        chunkMapBuffer.SetData(gpuData, 0, idx, 1);
+                    }
+
+                    int localX = globalVoxelPos.x - (cx * 32);
+                    int localY = globalVoxelPos.y - (cy * 32);
+                    int localZ = globalVoxelPos.z - (cz * 32);
+
+                    int damageKernel = worldGenShader.FindKernel("DamageDenseVoxel");
+                    worldGenShader.SetBuffer(damageKernel, "_DenseChunkPool", denseChunkPoolBuffer);
+                    worldGenShader.SetBuffer(damageKernel, "_DenseLogicPool", denseLogicPoolBuffer);
+                    worldGenShader.SetInt("_TargetDenseIndex", (int)denseIndex);
+                    worldGenShader.SetInts("_EditLocalPos", new int[] { localX, localY, localZ }); 
+                    worldGenShader.SetInt("_DamageAmount", damageAmount);
+                    worldGenShader.SetInt("_BrushSize", brushSize);
+                    worldGenShader.SetInt("_BrushShape", brushShape);
+                    
+                    worldGenShader.Dispatch(damageKernel, 1, 1, 1);
+                }
+            }
+        }
+        
         if (VoxelPhysicsManager.Instance != null) {
             VoxelPhysicsManager.Instance.forceRebuild = true;
         }

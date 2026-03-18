@@ -1,6 +1,7 @@
 #pragma kernel GenerateChunk
 #pragma kernel DecompressSVOToDense
 #pragma kernel EditDenseVoxel
+#pragma kernel DamageDenseVoxel
 
 struct SVONode { uint childIndex; uint material; };
 struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD;
@@ -29,7 +30,9 @@ uint _TargetDenseIndex;
 int3 _EditLocalPos;
 uint _NewMaterialData;
 int _BrushSize;
-int _BrushShape;       // NEW: 0 = Cube, 1 = Sphere
+int _BrushShape;
+
+int _DamageAmount;
 
 float2 hash22(float2 p) {
     p = float2(dot(p, float2(127.1, 311.7)), dot(p, float2(269.5, 183.3)));
@@ -238,6 +241,59 @@ void EditDenseVoxel(uint3 id : SV_DispatchThreadID) {
                         _DenseChunkPool[currentIndex] = 0;
                         // Clear the logic state
                         _DenseLogicPool[currentIndex] = 0;
+                    }
+                }
+            }
+        }
+    }
+}
+
+[numthreads(1,1,1)]
+void DamageDenseVoxel(uint3 id : SV_DispatchThreadID) {
+    int3 center = _EditLocalPos;
+    
+    for (int x = -_BrushSize; x <= _BrushSize; x++) {
+        for (int y = -_BrushSize; y <= _BrushSize; y++) {
+            for (int z = -_BrushSize; z <= _BrushSize; z++) {
+                
+                float3 pLocal = float3(x, y, z);
+                float dist = 0.0;
+                
+                // --- MODULAR SDF SWITCH ---
+                switch (_BrushShape) {
+                    case 0: // CUBE
+                        dist = max(abs(pLocal.x), max(abs(pLocal.y), abs(pLocal.z)));
+                        break;
+                    case 1: // SPHERE
+                        dist = length(pLocal);
+                        break;
+                    case 2: // CYLINDER
+                        dist = length(float2(pLocal.x, pLocal.z));
+                        break;
+                }
+
+                if (dist > _BrushSize + 0.5) continue;
+                
+                int3 p = center + int3(x, y, z);
+                // Ensure we only damage blocks within this specific chunk's bounds
+                if (p.x >= 0 && p.x < 32 && p.y >= 0 && p.y < 32 && p.z >= 0 && p.z < 32) {
+                    uint flatIdx = p.x + (p.y << 5) + (p.z << 10);
+                    uint currentIndex = _TargetDenseIndex * 32768 + flatIdx;
+                    
+                    uint currentMat = _DenseChunkPool[currentIndex] & 0xFF;
+                    if (currentMat == 0) continue; // Cannot damage air
+                    
+                    uint currentLogic = _DenseLogicPool[currentIndex];
+                    int currentHealth = (int)(currentLogic & 0xFF); 
+                    
+                    int newHealth = currentHealth - _DamageAmount;
+                    if (newHealth <= 0) {
+                        // Block is broken!
+                        _DenseChunkPool[currentIndex] = 0; 
+                        _DenseLogicPool[currentIndex] = 0;
+                    } else {
+                        // Update the health bits while preserving the rest of the block's state
+                        _DenseLogicPool[currentIndex] = (currentLogic & 0xFFFFFF00) | (uint)newHealth;
                     }
                 }
             }

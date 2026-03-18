@@ -138,8 +138,9 @@ public class PlayerMovement : MonoBehaviour
                         nextBuildTime = Time.time + buildCooldown;
                         
                         if (currentMode == BuildMode.Remove) {
-                            // REMOVE: Push inward so the top of the brush is flush with the surface
-                            ChunkManager.World.EditVoxel(gridPos - (normal * brushSize), 0, brushSize, brushShape);
+                            // MINING: Target the exact block the crosshair hit (gridPos) and apply 25 damage per tick.
+                            // With the existing 0.15s cooldown, it will take exactly 4 ticks (0.6 seconds) to break a 100 HP block.
+                            ChunkManager.World.DamageVoxel(gridPos, 25, brushSize, brushShape);
                         } else {
                             // PLACE: Push outward by (brushSize + 1) so the bottom of the brush rests ON the surface
                             ChunkManager.World.EditVoxel(gridPos + (normal * (brushSize + 1)), 2, brushSize, brushShape);
