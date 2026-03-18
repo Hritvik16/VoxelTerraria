@@ -139,10 +139,10 @@ public class PlayerMovement : MonoBehaviour
                         
                         if (currentMode == BuildMode.Remove) {
                             // REMOVE: Push inward so the top of the brush is flush with the surface
-                            ChunkManager.Instance.EditVoxel(gridPos - (normal * brushSize), 0, brushSize, brushShape);
+                            ChunkManager.World.EditVoxel(gridPos - (normal * brushSize), 0, brushSize, brushShape);
                         } else {
                             // PLACE: Push outward by (brushSize + 1) so the bottom of the brush rests ON the surface
-                            ChunkManager.Instance.EditVoxel(gridPos + (normal * (brushSize + 1)), 2, brushSize, brushShape);
+                            ChunkManager.World.EditVoxel(gridPos + (normal * (brushSize + 1)), 2, brushSize, brushShape);
                         }
                     }
                 } else {

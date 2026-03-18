@@ -4,8 +4,11 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
+
+using VoxelEngine.Interfaces; // ADD THIS AT THE TOP
 [ExecuteAlways]
-public class ChunkManager : MonoBehaviour
+
+public class ChunkManager : MonoBehaviour, IVoxelWorld
 {
     [Header("Clipmap Architecture")]
     public int chunkSize = 32;
@@ -63,9 +66,10 @@ public class ChunkManager : MonoBehaviour
 
     private ComputeBuffer svoPoolBuffer, chunkMapBuffer, jobQueueBuffer; 
     
-    // --- DENSE POOL VARIABLES ---
-    private ComputeBuffer denseChunkPoolBuffer;
-    public const int MAX_DENSE_CHUNKS = 400; 
+    // --- DENSE POOL VARIABLES (Visual & Logic) ---
+    private ComputeBuffer denseChunkPoolBuffer; // Visuals (Material, Light)
+    private ComputeBuffer denseLogicPoolBuffer; // State (Health, Fluid, Block State)
+    public const int MAX_DENSE_CHUNKS = 400;
     
     [HideInInspector] public ComputeBuffer crosshairBuffer;
     [HideInInspector] public int[] crosshairData = new int[8]; // MUST be 8 to prevent the NativeArray crash!
@@ -84,6 +88,10 @@ public class ChunkManager : MonoBehaviour
     private ComputeBuffer materialBuffer;
 
     public static ChunkManager Instance; // THE FIX: Define the Instance
+    
+    // --- IVOXELWORLD IMPLEMENTATION ---
+    public static IVoxelWorld World => Instance; 
+    public float VoxelScale => voxelScale;
 
     void Awake()
     {
@@ -166,11 +174,15 @@ public class ChunkManager : MonoBehaviour
         if (crosshairBuffer == null) crosshairBuffer = new ComputeBuffer(2, 16); // 8 ints total
 
         if (denseChunkPoolBuffer == null) {
-            // Allocates exactly 52.4 MB of unified memory for the active interaction zone
+            // Allocates exactly 52.4 MB of unified memory for visual data
             denseChunkPoolBuffer = new ComputeBuffer(MAX_DENSE_CHUNKS * VOXELS_PER_CHUNK, sizeof(uint));
             Shader.SetGlobalBuffer("_DenseChunkPool", denseChunkPoolBuffer);
+
+            // Allocates exactly 52.4 MB of unified memory for logic data (JIT Wake-up shadow pool)
+            denseLogicPoolBuffer = new ComputeBuffer(MAX_DENSE_CHUNKS * VOXELS_PER_CHUNK, sizeof(uint));
+            Shader.SetGlobalBuffer("_DenseLogicPool", denseLogicPoolBuffer);
             
-            // Fill our allocator queue with all 400 available indices
+            // Fill our allocator queue with all 400 available memory slots
             freeDenseIndices.Clear();
             for (uint i = 0; i < MAX_DENSE_CHUNKS; i++) freeDenseIndices.Enqueue(i);
         }
@@ -385,8 +397,9 @@ public class ChunkManager : MonoBehaviour
         if (svoPoolBuffer == null || chunkMapBuffer == null) return;
         if (crosshairBuffer != null) cs.SetBuffer(kernel, "_CrosshairTarget", crosshairBuffer);
         
-        // --- THE CRITICAL FIX: PLUG IN THE DENSE POOL ---
+        // --- THE CRITICAL FIX: PLUG IN THE DENSE POOLS ---
         if (denseChunkPoolBuffer != null) cs.SetBuffer(kernel, "_DenseChunkPool", denseChunkPoolBuffer);
+        if (denseLogicPoolBuffer != null) cs.SetBuffer(kernel, "_DenseLogicPool", denseLogicPoolBuffer);
         
         cs.SetBuffer(kernel, "_SVOPool", svoPoolBuffer);
         cs.SetBuffer(kernel, "_ChunkMap", chunkMapBuffer);
@@ -506,6 +519,7 @@ public class ChunkManager : MonoBehaviour
         jobQueueBuffer?.Release();
         materialBuffer?.Release(); 
         denseChunkPoolBuffer?.Release(); 
+        denseLogicPoolBuffer?.Release();
         crosshairBuffer?.Release();
         
         svoPoolBuffer = null;
@@ -513,6 +527,7 @@ public class ChunkManager : MonoBehaviour
         jobQueueBuffer = null;
         materialBuffer = null;
         denseChunkPoolBuffer = null;
+        denseLogicPoolBuffer = null;
     }
 
     void OnGUI() {

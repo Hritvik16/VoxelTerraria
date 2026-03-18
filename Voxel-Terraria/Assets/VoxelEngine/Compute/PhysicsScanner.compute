@@ -7,7 +7,8 @@ int currentLOD; uint packedState; uint densePoolIndex; };
 
 StructuredBuffer<SVONode> _SVOPool;
 StructuredBuffer<ChunkData> _ChunkMap;
-StructuredBuffer<uint> _DenseChunkPool; // ADDED: Access to the editable chunks
+StructuredBuffer<uint> _DenseChunkPool;
+StructuredBuffer<uint> _DenseLogicPool; // NEW: Prepared for logic-based collision queries
 
 int _ChunkCount;
 float4 _ClipmapCenters[8];

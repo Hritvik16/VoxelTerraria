@@ -46,7 +46,7 @@ public class VoxelPhysicsManager : MonoBehaviour
     void Update()
     {
         if (chunkManager == null || physicsScanner == null || isScanning) return;
-        float scale = chunkManager.voxelScale;
+        float scale = ChunkManager.World.VoxelScale;
 
         bool needsUpdate = forceRebuild;
 
@@ -104,7 +104,7 @@ public class VoxelPhysicsManager : MonoBehaviour
             var rawData = request.GetData<int>();
             int count = rawData[0]; 
             int limit = Mathf.Min(count, 1999);
-            float scale = chunkManager.voxelScale;
+            float scale = ChunkManager.World.VoxelScale;
 
             // 1. Park all unused colliders far below the map
             for (int i = limit; i < colliderPool.Count; i++) {
