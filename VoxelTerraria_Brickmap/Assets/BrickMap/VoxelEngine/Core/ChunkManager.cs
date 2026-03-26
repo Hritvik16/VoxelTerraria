@@ -116,8 +116,7 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
     private ComputeBuffer denseChunkPoolBuffer;
     
     // NEW: CPU Backing Arrays for Burst Jobs
-    // FIX: Safely pushed back to 14k because we deleted the Logic pools!
-    public const int MAX_DENSE_CHUNKS = 14000; 
+    [HideInInspector] public int dynamicMaxChunks; 
     public NativeArray<uint> cpuDenseChunkPool;
     public NativeArray<uint> cpuMacroMaskPool; 
 
@@ -214,6 +213,9 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         chunksPerLayer = sideXZ * sideXZ * sideY;
         totalMapCapacity = chunksPerLayer * clipmapLayers; 
         
+        // NEW: Dynamic Memory Ceiling (Total active chunks + 20% buffer)
+        dynamicMaxChunks = Mathf.CeilToInt(totalMapCapacity * 1.2f);
+        
         // Stratified Static Pool: Balanced for 60m radius on M1 8GB
         int tier0Size = chunksPerLayer * 38000; // FIX: Padded to 38,000 to fix the off-by-8 floating gap bug!
         int tier1Size = chunksPerLayer * 8192;  // FIX: High quality LOD 1
@@ -238,7 +240,10 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
             for (int x = -renderDistanceXZ; x <= renderDistanceXZ; x++) {
                 for (int z = -renderDistanceXZ; z <= renderDistanceXZ; z++) {
                     Vector3Int off = new Vector3Int(x, y, z);
-                    float dXZ = Vector2.Distance(new Vector2(x, z), Vector2.zero);
+                    
+                    // THE FIX: Chebyshev (Square) Distance instead of Euclidean (Circle)
+                    int dXZ = Mathf.Max(Mathf.Abs(x), Mathf.Abs(z));
+                    
                     if (dXZ <= renderDistanceXZ) offsets.Add(off);
                 }
             }
@@ -259,7 +264,7 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
                 chunkMapBuffers[i].SetData(chunkMapArray);
                 tempChunkUploadBuffers[i] = new ComputeBuffer(totalVoxelCapacity, sizeof(uint));
                 jobQueueBuffers[i] = new ComputeBuffer(maxConcurrentJobs, 48);
-                macroMaskPoolBuffers[i] = new ComputeBuffer(MAX_DENSE_CHUNKS * 16, sizeof(uint)); 
+                macroMaskPoolBuffers[i] = new ComputeBuffer(dynamicMaxChunks * 16, sizeof(uint)); 
             }
             preallocatedChunkUpload = new uint[totalVoxelCapacity];
         }
@@ -272,12 +277,9 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         if (crosshairBuffer == null) crosshairBuffer = new ComputeBuffer(2, 16);
 
         if (denseChunkPoolBuffer == null) {
-            // FIX: Removed 4 Gigabytes of Logic RAM!
-            // denseChunkPoolBuffer = new ComputeBuffer(MAX_DENSE_CHUNKS * VOXELS_PER_CHUNK, sizeof(uint));
-            denseChunkPoolBuffer = new ComputeBuffer(MAX_DENSE_CHUNKS * UINTS_PER_CHUNK, sizeof(uint));
-            // cpuDenseChunkPool = new NativeArray<uint>(MAX_DENSE_CHUNKS * VOXELS_PER_CHUNK, Allocator.Persistent);
-            cpuDenseChunkPool = new NativeArray<uint>(MAX_DENSE_CHUNKS * UINTS_PER_CHUNK, Allocator.Persistent);
-            cpuMacroMaskPool = new NativeArray<uint>(MAX_DENSE_CHUNKS * 16, Allocator.Persistent); 
+            denseChunkPoolBuffer = new ComputeBuffer(dynamicMaxChunks * UINTS_PER_CHUNK, sizeof(uint));
+            cpuDenseChunkPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_CHUNK, Allocator.Persistent);
+            cpuMacroMaskPool = new NativeArray<uint>(dynamicMaxChunks * 16, Allocator.Persistent); 
             
             if (!persistentJobDataArray.IsCreated) persistentJobDataArray = new NativeArray<ChunkJobData>(maxConcurrentJobs, Allocator.Persistent);
             if (!persistentFeatureArray.IsCreated) persistentFeatureArray = new NativeArray<VoxelEngine.World.FeatureAnchor>(5000, Allocator.Persistent);
@@ -290,7 +292,10 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
             Shader.SetGlobalBuffer("_MacroMaskPool", macroMaskPoolBuffers[0]); 
             
             freeDenseIndices.Clear();
-            for (uint i = 0; i < MAX_DENSE_CHUNKS; i++) freeDenseIndices.Enqueue(i);
+            for (uint i = 0; i < dynamicMaxChunks; i++) freeDenseIndices.Enqueue(i);
+            
+            float vramMB = (dynamicMaxChunks * UINTS_PER_CHUNK * 4.0f) / (1024f * 1024f);
+            UnityEngine.Debug.Log($"[ChunkManager] Allocated {dynamicMaxChunks} chunks dynamically. Est. VRAM: {vramMB:F2} MB");
         }
 
         if (macroGridBuffer == null) {
@@ -330,18 +335,19 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         activeRadXZ = Mathf.Min(activeRadXZ, renderDistanceXZ);
         activeRadY = Mathf.Min(activeRadY, renderDistanceY);
 
-        int activeRadXZSq = activeRadXZ * activeRadXZ;
+        // int activeRadXZSq = activeRadXZ * activeRadXZ;
 
         for (int i = 0; i < scanOffsets.Length; i++) {
             Vector3Int coord = center + scanOffsets[i];
             
             // FIX: Zero-Allocation Distance Math! 
             // Removed Vector2() allocations to prevent hidden CPU stuttering.
-            float dx = coord.x - center.x;
-            float dz = coord.z - center.z;
-            float distXZSq = (dx * dx) + (dz * dz);
+            // THE FIX: Zero-Allocation Square Culling Math!
+            int dx = Mathf.Abs(coord.x - center.x);
+            int dz = Mathf.Abs(coord.z - center.z);
+            int distXZ = Mathf.Max(dx, dz);
             
-            bool isInsideActiveRadius = (distXZSq <= activeRadXZSq) && (Mathf.Abs(coord.y - center.y) <= activeRadY);
+            bool isInsideActiveRadius = (distXZ <= activeRadXZ) && (Mathf.Abs(coord.y - center.y) <= activeRadY);
             
             int idx = GetMapIndex(layer, coord);
             
@@ -817,6 +823,11 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         }
         if (cpuDenseChunkPool.IsCreated) cpuDenseChunkPool.Dispose();
         if (cpuMacroMaskPool.IsCreated) cpuMacroMaskPool.Dispose(); 
+
+        if (persistentJobDataArray.IsCreated) persistentJobDataArray.Dispose();
+        if (persistentFeatureArray.IsCreated) persistentFeatureArray.Dispose();
+        if (persistentCavernArray.IsCreated) persistentCavernArray.Dispose();
+        if (persistentTunnelArray.IsCreated) persistentTunnelArray.Dispose();
         
         macroGridBuffer?.Release();
         deltaMapBuffer?.Release();

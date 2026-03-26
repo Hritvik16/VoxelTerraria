@@ -767,6 +767,7 @@ MonoBehaviour:
   brushShape: 0
   enableAntFarmSlice: 0
   chunkTargetCoordArray: []
+  dynamicMaxChunks: 0
   crosshairData: 0000000000000000000000000000000000000000000000000000000000000000
   globalPalette: {fileID: 11400000, guid: 34120963095ef485ea302ce770ace049, type: 2}
 --- !u!114 &1394159924
