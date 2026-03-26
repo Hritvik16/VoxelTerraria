@@ -1,0 +1,49 @@
+#pragma kernel BakeNoise3D
+
+int _WorldSeed;
+RWTexture3D<float> _Noise3D;
+
+// --- 3D NOISE FUNDAMENTALS (Wrapped for Seamless Tiling) ---
+float3 hash33(float3 p) {
+    p = fmod(abs(p), 256.0); // THE FIX: Perfect 256 seamless looping wrap!
+    p += frac(float3(_WorldSeed * 0.134, _WorldSeed * 0.811, _WorldSeed * 0.521));
+    p = float3( dot(p, float3(127.1, 311.7, 74.7)),
+                dot(p, float3(269.5, 183.3, 246.1)),
+                dot(p, float3(113.5, 271.9, 124.6)));
+    return -1.0 + 2.0 * frac(sin(p) * 43758.5453123);
+}
+
+float perlin3D(float3 p) {
+    float3 pi = floor(p);
+    float3 pf = p - pi;
+    float3 w = pf * pf * (3.0 - 2.0 * pf);
+    
+    // Wrap the integer coordinates
+    float3 pi000 = fmod(abs(pi + float3(0,0,0)), 256.0); float3 pi100 = fmod(abs(pi + float3(1,0,0)), 256.0);
+    float3 pi010 = fmod(abs(pi + float3(0,1,0)), 256.0); float3 pi110 = fmod(abs(pi + float3(1,1,0)), 256.0);
+    float3 pi001 = fmod(abs(pi + float3(0,0,1)), 256.0); float3 pi101 = fmod(abs(pi + float3(1,0,1)), 256.0);
+    float3 pi011 = fmod(abs(pi + float3(0,1,1)), 256.0); float3 pi111 = fmod(abs(pi + float3(1,1,1)), 256.0);
+
+    float3 u000 = hash33(pi000); float3 u100 = hash33(pi100);
+    float3 u010 = hash33(pi010); float3 u110 = hash33(pi110);
+    float3 u001 = hash33(pi001); float3 u101 = hash33(pi101);
+    float3 u011 = hash33(pi011); float3 u111 = hash33(pi111);
+
+    float d000 = dot(u000, pf - float3(0,0,0)); float d100 = dot(u100, pf - float3(1,0,0));
+    float d010 = dot(u010, pf - float3(0,1,0)); float d110 = dot(u110, pf - float3(1,1,0));
+    float d001 = dot(u001, pf - float3(0,0,1)); float d101 = dot(u101, pf - float3(1,0,1));
+    float d011 = dot(u011, pf - float3(0,1,1)); float d111 = dot(u111, pf - float3(1,1,1));
+
+    float rx0 = lerp(d000, d100, w.x); float rx1 = lerp(d010, d110, w.x);
+    float rx2 = lerp(d001, d101, w.x); float rx3 = lerp(d011, d111, w.x);
+    float ry0 = lerp(rx0, rx1, w.y); float ry1 = lerp(rx2, rx3, w.y);
+    return lerp(ry0, ry1, w.z);
+}
+
+[numthreads(8,8,8)]
+void BakeNoise3D (uint3 id : SV_DispatchThreadID)
+{
+    // Write out the base 1x frequency multiplier noise
+    float n = perlin3D(float3(id.x, id.y, id.z));
+    _Noise3D[id] = n;
+}

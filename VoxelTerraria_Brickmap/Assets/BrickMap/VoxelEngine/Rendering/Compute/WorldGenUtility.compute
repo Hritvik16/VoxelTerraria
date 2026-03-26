@@ -1,0 +1,225 @@
+#pragma kernel EditDenseVoxel
+#pragma kernel DamageDenseVoxel
+#pragma kernel ClearJobState
+#pragma kernel CommitUploadBuffers // NEW KERNEL
+#pragma multi_compile _ DUAL_STATE_1BIT
+
+struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD; uint packedState; uint densePoolIndex; };
+
+struct ChunkJobData {
+    float4 worldPos;   
+    int mapIndex;      
+    int lodStep;       
+    float layerScale;
+    uint pad1;
+    int editStartIndex; 
+    int editCount;      
+    int pad2;           
+    int pad3;           
+};
+
+struct VoxelEdit {
+    int flatIndex;
+    uint material;
+};
+
+StructuredBuffer<VoxelEdit> _DeltaMapBuffer;
+RWStructuredBuffer<ChunkData> _ChunkMap;
+StructuredBuffer<ChunkJobData> _JobQueue; 
+RWStructuredBuffer<uint> _DenseChunkPool;
+RWStructuredBuffer<uint> _DenseLogicPool;
+
+int _ChunkSize;
+int _JobCount;
+int _PoolSize;
+
+uint _TargetRootIndex;
+uint _TargetDenseIndex;
+int3 _EditLocalPos;
+uint _NewMaterialData;
+int _BrushSize;
+int _BrushShape;
+int _DamageAmount;
+
+#include "TerrainMath.hlsl"
+
+[numthreads(1,1,1)]
+void EditDenseVoxel(uint3 id : SV_DispatchThreadID) {
+    int3 center = _EditLocalPos;
+    for (int x = -_BrushSize; x <= _BrushSize; x++) {
+        for (int y = -_BrushSize; y <= _BrushSize; y++) {
+            for (int z = -_BrushSize; z <= _BrushSize; z++) {
+                float3 pLocal = float3(x, y, z);
+                float dist = 0.0;
+                switch (_BrushShape) {
+                    case 0: dist = max(abs(pLocal.x), max(abs(pLocal.y), abs(pLocal.z))); break;
+                    case 1: dist = length(pLocal); break;
+                    case 2: dist = length(float2(pLocal.x, pLocal.z)); break;
+                }
+                if (dist > _BrushSize + 0.5) continue; 
+                int3 p = center + int3(x, y, z);
+                if (p.x >= 0 && p.x < 32 && p.y >= 0 && p.y < 32 && p.z >= 0 && p.z < 32) {
+                    uint flatIdx = p.x + (p.y << 5) + (p.z << 10);
+                    uint currentIndex = _TargetDenseIndex * 32768 + flatIdx;
+                    if (_NewMaterialData != 0) {
+                        uint existingMat = _DenseChunkPool[currentIndex] & 0xFF;
+                        if (existingMat != 0) continue; 
+                        _DenseChunkPool[currentIndex] = _NewMaterialData | (15 << 20) | (255 << 24);
+                        _DenseLogicPool[currentIndex] = 100;
+                    } else {
+                        _DenseChunkPool[currentIndex] = 0;
+                        _DenseLogicPool[currentIndex] = 0;
+                    }
+                }
+            }
+        }
+    }
+}
+
+[numthreads(1,1,1)]
+void DamageDenseVoxel(uint3 id : SV_DispatchThreadID) {
+    int3 center = _EditLocalPos;
+    for (int x = -_BrushSize; x <= _BrushSize; x++) {
+        for (int y = -_BrushSize; y <= _BrushSize; y++) {
+            for (int z = -_BrushSize; z <= _BrushSize; z++) {
+                float3 pLocal = float3(x, y, z);
+                float dist = 0.0;
+                switch (_BrushShape) {
+                    case 0: dist = max(abs(pLocal.x), max(abs(pLocal.y), abs(pLocal.z))); break;
+                    case 1: dist = length(pLocal); break;
+                    case 2: dist = length(float2(pLocal.x, pLocal.z)); break;
+                }
+                if (dist > _BrushSize + 0.5) continue;
+                int3 p = center + int3(x, y, z);
+                if (p.x >= 0 && p.x < 32 && p.y >= 0 && p.y < 32 && p.z >= 0 && p.z < 32) {
+                    uint flatIdx = p.x + (p.y << 5) + (p.z << 10);
+                    uint currentIndex = _TargetDenseIndex * 32768 + flatIdx;
+                    uint currentMat = _DenseChunkPool[currentIndex] & 0xFF;
+                    if (currentMat == 0) continue; 
+                    uint currentLogic = _DenseLogicPool[currentIndex];
+                    int currentHealth = (int)(currentLogic & 0xFF); 
+                    int newHealth = currentHealth - _DamageAmount;
+                    if (newHealth <= 0) {
+                        _DenseChunkPool[currentIndex] = 0; 
+                        _DenseLogicPool[currentIndex] = 0;
+                    } else {
+                        _DenseLogicPool[currentIndex] = (currentLogic & 0xFFFFFF00) | (uint)newHealth;
+                    }
+                }
+            }
+        }
+    }
+}
+
+RWStructuredBuffer<uint2> _MacroGrid;
+
+[numthreads(1,1,1)]
+void ClearJobState(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= (uint)_JobCount) return;
+    uint mapIndex = _JobQueue[id.x].mapIndex;
+    uint denseIndex = (uint)_JobQueue[id.x].pad2; 
+    
+    _MacroGrid[mapIndex] = uint2(mapIndex + 2, 1); 
+    _ChunkMap[mapIndex].position = float4(_JobQueue[id.x].worldPos.xyz, 32.0);
+    _ChunkMap[mapIndex].packedState = 0; // FIX: Hide from Raytracer until job finishes
+    _ChunkMap[mapIndex].densePoolIndex = denseIndex;
+}
+
+StructuredBuffer<uint> _TempChunkUpload;
+StructuredBuffer<uint> _TempLogicUpload;
+
+[numthreads(256, 1, 1)]
+void CommitUploadBuffers(uint3 id : SV_DispatchThreadID) {
+    
+#if DUAL_STATE_1BIT
+    // --- THE 1-BIT ARCHITECTURE ---
+    uint totalPacked = (uint)_JobCount * 1024u;
+    if (id.x >= totalPacked) return;
+    uint jobIndex = id.x / 1024u;
+    uint flatIdx = id.x % 1024u;
+    uint denseBase = ((uint)_JobQueue[jobIndex].pad2) * 1024u;
+
+    _DenseChunkPool[denseBase + flatIdx] = _TempChunkUpload[id.x];
+
+    if (flatIdx == 0) {
+        uint mapIndex = _JobQueue[jobIndex].mapIndex;
+        uint isSky = _JobQueue[jobIndex].pad3;
+        _ChunkMap[mapIndex].packedState = (isSky == 1) ? 3u : 1u;
+    }
+
+#else
+    // --- THE 32-BIT BRICKMAP ARCHITECTURE ---
+    uint totalVoxels = (uint)_JobCount * 32768u;
+    if (id.x >= totalVoxels) return;
+    uint jobIndex = id.x / 32768u;
+    uint flatIdx = id.x % 32768u;
+    uint denseBase = ((uint)_JobQueue[jobIndex].pad2) * 32768u;
+
+    _DenseChunkPool[denseBase + flatIdx] = _TempChunkUpload[id.x];
+    _DenseLogicPool[denseBase + flatIdx] = _TempLogicUpload[id.x];
+
+    if (flatIdx == 0) {
+        uint mapIndex = _JobQueue[jobIndex].mapIndex;
+        uint isSky = _JobQueue[jobIndex].pad3;
+        _ChunkMap[mapIndex].packedState = (isSky == 1) ? 3u : 1u;
+    }
+#endif
+}
+
+// --- NEW: FAST GPU-SIDE MEMORY COMMIT ---
+// StructuredBuffer<uint> _TempChunkUpload;
+// StructuredBuffer<uint> _TempLogicUpload;
+
+// --- NEW: FAST GPU-SIDE MEMORY COMMIT ---
+// StructuredBuffer<uint> _TempChunkUpload;
+
+// [numthreads(256, 1, 1)]
+// void CommitUploadBuffers(uint3 id : SV_DispatchThreadID) {
+//     // THE FIX: The courier now knows chunks are exactly 1024 uints long!
+//     uint totalPacked = (uint)_JobCount * 1024u;
+//     if (id.x >= totalPacked) return;
+
+//     uint jobIndex = id.x / 1024u;
+//     uint flatIdx = id.x % 1024u;
+    
+//     uint denseIndex = (uint)_JobQueue[jobIndex].pad2;
+//     uint denseBase = denseIndex * 1024u;
+
+//     // Copy the compressed 1-bit data to permanent VRAM
+//     _DenseChunkPool[denseBase + flatIdx] = _TempChunkUpload[id.x];
+
+//     // The exact millisecond the GPU finishes copying the memory, mark it as ready!
+//     if (flatIdx == 0) {
+//         uint mapIndex = _JobQueue[jobIndex].mapIndex;
+//         uint isSky = _JobQueue[jobIndex].pad3;
+        
+//         // The GPU respects the CPU's Empty Sky flag!
+//         _ChunkMap[mapIndex].packedState = (isSky == 1) ? 3u : 1u;
+//     }
+// }
+
+
+// MOST STABLE ONE!!
+// [numthreads(256, 1, 1)]
+// void CommitUploadBuffers(uint3 id : SV_DispatchThreadID) {
+//     uint totalVoxels = (uint)_JobCount * 32768u;
+//     if (id.x >= totalVoxels) return;
+
+//     uint jobIndex = id.x / 32768u;
+//     uint flatIdx = id.x % 32768u;
+
+//     uint denseIndex = (uint)_JobQueue[jobIndex].pad2;
+//     uint denseBase = denseIndex * 32768u;
+
+//     _DenseChunkPool[denseBase + flatIdx] = _TempChunkUpload[id.x];
+//     _DenseLogicPool[denseBase + flatIdx] = _TempLogicUpload[id.x];
+    
+//     // FIX: The exact millisecond the GPU finishes copying the memory, mark it as ready to render!
+//     if (flatIdx == 0) {
+//         uint mapIndex = _JobQueue[jobIndex].mapIndex;
+//         uint isSky = _JobQueue[jobIndex].pad3;
+        
+//         // FIX: The GPU now respects the CPU's Empty Sky flag!
+//         _ChunkMap[mapIndex].packedState = (isSky == 1) ? 3u : 1u; 
+//     }
+// }

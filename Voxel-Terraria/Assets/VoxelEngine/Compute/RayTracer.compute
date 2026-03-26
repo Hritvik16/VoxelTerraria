@@ -124,7 +124,9 @@ uint GetVoxelFromRoot(uint rootIndex, int3 localPos) {
         localPos -= childIdx * size;
         nodeIndex = node.childIndex + (childIdx.x + childIdx.y * 2 + childIdx.z * 4);
     }
-    return 0;
+    
+    // FIX: Actually read the final leaf node from VRAM instead of returning Air!
+    return (nodeIndex < (uint)_PoolSize) ? _SVOPool[nodeIndex].material : 0; 
 }
 
 // bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint hitMatID_Data, out float finalVoxelSize, out float3 finalBlockPos, out int raySteps) {
@@ -281,7 +283,7 @@ bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint 
         if (t > maxDist) break;
         float3 currentPos = ray.origin + ray.direction * t;
         
-        if (currentPos.y > 30.0f && ray.direction.y > -0.05f) break;
+        if (currentPos.y > 250.0f && ray.direction.y > -0.05f) break;
 
         int layer = GetLayer(currentPos);
         if (layer >= _ClipmapLayers) break;
@@ -310,7 +312,8 @@ bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint 
                     continue;
                 }
                 if (rootNode.childIndex == 0 && (rootNode.material & 0xFF) != 0) {
-                    hit = true; hitMatID_Data = rootNode.material; finalVoxelSize = voxelSize;
+                    hit = true; hitMatID_Data = rootNode.material; 
+                    finalVoxelSize = voxelSize * 32.0f; // THE FIX: Report the true compressed 32x32 size!
                     float3 chunkMin = chunkCoord * chunkSize;
                     float3 chunkMax = chunkMin + chunkSize;
                     float3 t0 = (chunkMin - ray.origin) * invDir;
@@ -318,7 +321,7 @@ bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint 
                     float3 tMinBox = min(t0, t1);
                     float tEnter = max(max(tMinBox.x, tMinBox.y), tMinBox.z);
                     t = max(t, tEnter);
-                    finalBlockPos = floor((ray.origin + ray.direction * t) / voxelSize);
+                    finalBlockPos = floor((ray.origin + ray.direction * t) / (voxelSize * 32.0f)); 
                     mask = (tEnter == tMinBox.x) ? int3(1,0,0) : ((tEnter == tMinBox.y) ? int3(0,1,0) : int3(0,0,1));
                     break;
                 }
@@ -358,6 +361,12 @@ bool TraceVoxelRay(Ray ray, float maxDist, out float t, out int3 mask, out uint 
             float3 tDelta = abs(voxelSize * invDir);
             float3 tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
             
+            // THE FIX: DDA Infinity Guard
+            // Prevents divide-by-zero Infinity logic traps when looking parallel to an axis
+            if (abs(ray.direction.x) < 1e-6f) { tMaxV.x = 3.4e38f; tDelta.x = 3.4e38f; }
+            if (abs(ray.direction.y) < 1e-6f) { tMaxV.y = 3.4e38f; tDelta.y = 3.4e38f; }
+            if (abs(ray.direction.z) < 1e-6f) { tMaxV.z = 3.4e38f; tDelta.z = 3.4e38f; }
+
             // 3. THE BRANCH-SAFE DUAL PATH 
             if (isDense == 1) {
                 uint denseBase = currentChunk.densePoolIndex << 15;
@@ -415,8 +424,9 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     uint width, height; Result.GetDimensions(width, height);
     float2 uv = (id.xy + 0.5f) / float2(width, height) * 2.0f - 1.0f;
     Ray ray = CreateCameraRay(uv);
-
-    if (ray.origin.y > 35.0f && ray.direction.y >= 0.0f) {
+    
+    // RAISED TO 250m: Allows the camera to render mountains when flying high
+    if (ray.origin.y > 250.0f && ray.direction.y >= 0.0f) {
         Result[id.xy] = float4(0.6, 0.8, 1.0, 0);
         return;
     }
@@ -449,7 +459,8 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float3 hitWorldPos = ray.origin + ray.direction * t;
         
         int layer = GetLayer(hitWorldPos);
-        float3 chunkCoord = floor(hitWorldPos / (32.0 * finalVoxelSize));
+        float layerScale = _ClipmapCenters[layer].w; // THE FIX: Decouple LOD layer scale from physical voxel size
+        float3 chunkCoord = floor(hitWorldPos / (32.0 * layerScale));
         float bandXZ = max(0.0, max(abs(chunkCoord.x - _ClipmapCenters[layer].x), abs(chunkCoord.z - _ClipmapCenters[layer].z)) - (_RenderBounds.x - 1.5)) / 1.5;
         float bandY = max(0.0, abs(chunkCoord.y - _ClipmapCenters[layer].y) - (_RenderBounds.y - 1.5)) / 1.5;
         float dissolveBand = saturate(max(bandXZ, bandY));
@@ -465,11 +476,21 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         UnpackLight(hitMatID_Data, mat, r_light, g_light, b_light, sun_light, bakedAO_mask);
         VoxelMaterial matData = _MaterialPalette[mat];
         
-        if (_DebugViewMode == 1) { Result[id.xy] = float4(lerp(float3(0,0,1), float3(1,0,0), saturate((float)steps / 150.0)), 1); return; }
+        if (_DebugViewMode == 6) { Result[id.xy] = float4(lerp(float3(0,0,1), float3(1,0,0), saturate((float)steps / 150.0)), 1); return; }
         if (_DebugViewMode == 2) { float d = saturate(t / 200.0); Result[id.xy] = float4(1.0 - d, 1.0 - d, 1.0 - d, 1); return; }
         if (_DebugViewMode == 3) { Result[id.xy] = float4(normal * 0.5 + 0.5, 1); return; }
         if (_DebugViewMode == 4) { Result[id.xy] = float4(matData.albedo.rgb, 1); return; }
         if (_DebugViewMode == 5) { Result[id.xy] = float4((float3(r_light, g_light, b_light) + sun_light) / 1.5, 1); return; }
+        if (_DebugViewMode == 1) { 
+            // SVO Memory Heatmap
+            // finalVoxelSize correlates with node depth. 1.0 = leaf (red), larger = root (green)
+            float compressionFactor = saturate(1.0 - (1.0 / finalVoxelSize)); 
+            float3 svoColor = lerp(float3(1.0, 0.0, 0.0), float3(0.0, 1.0, 0.0), compressionFactor);
+            Result[id.xy] = float4(svoColor, 1); 
+            return; 
+        }
+
+        // (Deleted the expensive, unused shadowRay trace here)
 
         // (Deleted the expensive, unused shadowRay trace here)
 
@@ -577,8 +598,8 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         
         // Fog starts at 40% of your maximum view distance and reaches maximum density at the edge
         float fogStart = maxWorldDist * 0.4f; 
-        // float fog = saturate((t - fogStart) / (maxWorldDist - fogStart));
-        float fog = 1.0 - exp(-pow(t * 0.008, 2.0));
+        float fog = saturate((t - fogStart) / (maxWorldDist - fogStart));
+        // float fog = 1.0 - exp(-pow(t * 0.008, 2.0));
         float3 skyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
 
         // Output raw HDR color
@@ -664,6 +685,12 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                 int3 stepDir = sign(safeDir);
                 float3 tDelta = abs(_VoxelScale * invDir);
                 float3 tMaxV = ((currentGrid + max(stepDir, 0)) * _VoxelScale - ray.origin) * invDir;
+
+                // THE FIX: DDA Infinity Guard
+                // Prevents divide-by-zero Infinity logic traps when looking parallel to an axis
+                if (abs(ray.direction.x) < 1e-6f) { tMaxV.x = 3.4e38f; tDelta.x = 3.4e38f; }
+                if (abs(ray.direction.y) < 1e-6f) { tMaxV.y = 3.4e38f; tDelta.y = 3.4e38f; }
+                if (abs(ray.direction.z) < 1e-6f) { tMaxV.z = 3.4e38f; tDelta.z = 3.4e38f; }
                 
                 bool hitHoloVoxel = false;
                 int3 holoMask = 0;

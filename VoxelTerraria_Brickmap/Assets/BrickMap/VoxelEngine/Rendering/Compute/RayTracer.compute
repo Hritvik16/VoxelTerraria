@@ -1,0 +1,796 @@
+#pragma kernel CSMain
+#pragma multi_compile _ DUAL_STATE_1BIT
+
+RWTexture2D<float4> Result;
+// [0] = Hit Position & Status. [1] = Geometric Face Normal
+RWStructuredBuffer<int4> _CrosshairTarget;
+float4x4 _CameraToWorld;
+float4x4 _CameraInverseProjection;
+float4 _CameraForward;
+int _PoolSize;
+
+struct SVONode { uint childIndex; uint material; };
+struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD; uint packedState; uint densePoolIndex; };
+
+StructuredBuffer<SVONode> _SVOPool;
+StructuredBuffer<uint> _DenseChunkPool;
+StructuredBuffer<uint> _MacroMaskPool; // ADD THIS
+StructuredBuffer<ChunkData> _ChunkMap;
+int _ChunkCount;
+float4 _ClipmapCenters[8];
+int _ClipmapLayers;
+float4 _RenderBounds;
+int _DebugViewMode;
+float3 _SunDir;
+
+int _IsEditMode;
+int _EditMode;
+int _BrushSize;
+int _BrushShape;
+float _VoxelScale;
+
+// NEW: The exact block the crosshair is looking at
+float4 _TargetBlock;
+float4 _TargetNormal;
+
+struct Ray { float3 origin; float3 direction; };
+
+struct VoxelMaterial {
+    float4 albedo;
+    float roughness;
+    float metallic;
+    float emission;
+    float padding;
+};
+
+StructuredBuffer<VoxelMaterial> _MaterialPalette;
+
+float hash(float3 p) {
+    p = frac(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return frac(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+Ray CreateCameraRay(float2 uv) {
+    float3 origin = mul(_CameraToWorld, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz;
+    float3 direction = mul(_CameraInverseProjection, float4(uv, 0.0f, 1.0f)).xyz;
+    direction = mul(_CameraToWorld, float4(direction, 0.0f)).xyz;
+    Ray ray; ray.origin = origin; ray.direction = normalize(direction);
+    return ray;
+}
+
+int GetLayer(float3 worldPos) {
+    int baseRadXZ = (int)_RenderBounds.x;
+    int baseRadY  = (int)_RenderBounds.y;
+    for (int L = 0; L < _ClipmapLayers; L++) {
+        float layerScale = _ClipmapCenters[L].w;
+        int3 chunkCoord = int3(floor(worldPos / (32.0 * layerScale)));
+        int3 centerChunk = (int3)_ClipmapCenters[L].xyz;
+        float distXZ = length(float2(chunkCoord.x - centerChunk.x, chunkCoord.z - centerChunk.z));
+        
+        // --- THE MOUNTAIN CYLINDER CLIPMAP ---
+        int activeRadXZ = 18; int activeRadY = 3;
+        if (L == 1) { activeRadXZ = 12; activeRadY = 4; }
+        else if (L == 2) { activeRadXZ = 8; activeRadY = 5; }
+        activeRadXZ = min(activeRadXZ, baseRadXZ);
+        activeRadY = min(activeRadY, baseRadY);
+
+        // PURE MATH. ZERO VRAM READS.
+        if (distXZ <= activeRadXZ && abs(chunkCoord.y - centerChunk.y) <= activeRadY) {
+            return L; 
+        }
+    }
+    return _ClipmapLayers;
+}
+
+ChunkData GetChunkData(int3 chunkCoord, int layer) {
+    // EXPLICIT ZERO-INITIALIZATION: Metal will refuse to compile the kernel 
+    // if it detects we might return an uninitialized 'packedState'.
+    ChunkData invalidChunk;
+    invalidChunk.position = float4(0, 0, 0, 0);
+    invalidChunk.rootNodeIndex = 0xFFFFFFFF;
+    invalidChunk.currentLOD = 0;
+    invalidChunk.packedState = 0;
+    invalidChunk.densePoolIndex = 0;
+    
+    int baseRadXZ = (int)_RenderBounds.x;
+    int baseRadY  = (int)_RenderBounds.y; 
+    
+    // --- THE MOUNTAIN CYLINDER CLIPMAP ---
+    int activeRadXZ = 18;
+    int activeRadY = 3;
+    if (layer == 1) { activeRadXZ = 12; activeRadY = 4; }
+    else if (layer == 2) { activeRadXZ = 8; activeRadY = 5; }
+    activeRadXZ = min(activeRadXZ, baseRadXZ);
+    activeRadY = min(activeRadY, baseRadY);
+
+    int3 centerChunk = (int3)_ClipmapCenters[layer].xyz;
+    float distXZ = length(float2(chunkCoord.x - centerChunk.x, chunkCoord.z - centerChunk.z));
+    if(distXZ > activeRadXZ || abs(chunkCoord.y - centerChunk.y) > activeRadY) return invalidChunk;
+
+    // Array bounds strictly use the maximum base bounds
+    int sideXZ = 2 * baseRadXZ + 1;
+    int sideY = 2 * baseRadY + 1;
+    int mx = (int)(((uint)(chunkCoord.x + 400000 * sideXZ)) % (uint)sideXZ);
+    int my = (int)(((uint)(chunkCoord.y + 400000 * sideY)) % (uint)sideY);
+    int mz = (int)(((uint)(chunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
+    
+    ChunkData cd = _ChunkMap[(layer * _ChunkCount) + mx + mz * sideXZ + my * sideXZ * sideXZ];
+    
+    float3 expectedPos = chunkCoord * 32.0f;
+    // The following validation check prevents stale data flickering during movement.
+    if (abs(cd.position.x - expectedPos.x) > 0.1f || abs(cd.position.y - expectedPos.y) > 0.1f || abs(cd.position.z - expectedPos.z) > 0.1f) return invalidChunk;
+    return cd;
+
+}
+#if !DUAL_STATE_1BIT
+void UnpackLight(uint data, out uint matID, out float r, out float g, out float b, out float sun, out uint ao) {
+    matID = data & 0xFF;
+    r = ((data >> 8) & 0xF) / 15.0f;
+    g = ((data >> 12) & 0xF) / 15.0f;
+    b = ((data >> 16) & 0xF) / 15.0f;
+    sun = ((data >> 20) & 0xF) / 15.0f;
+    ao = (data >> 24) & 0xFF;
+}
+#endif
+
+uint GetVoxelFromRoot(uint rootIndex, int3 localPos) {
+    if (rootIndex == 0xFFFFFFFF || rootIndex >= (uint)_PoolSize) return 0;
+    uint nodeIndex = rootIndex;
+    int size = 32;
+    for (int i = 0; i < 6; i++) {
+        if (nodeIndex >= (uint)_PoolSize) return 0;
+        if (nodeIndex >= (uint)_PoolSize) return 0;
+        SVONode node = _SVOPool[nodeIndex];
+        if (node.childIndex == 0) return node.material;
+        size >>= 1; 
+        int3 childIdx = (localPos >= size) ? 1 : 0;
+        localPos -= childIdx * size;
+        nodeIndex = node.childIndex + (childIdx.x + childIdx.y * 2 + childIdx.z * 4);
+    }
+    
+    // FIX: Actually read the final leaf node from VRAM instead of returning Air!
+    return (nodeIndex < (uint)_PoolSize) ? _SVOPool[nodeIndex].material : 0; 
+}
+
+
+bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 mask, out uint hitMatID_Data, out float finalVoxelSize, out float3 finalBlockPos, out int raySteps) {
+    hitMatID_Data = 0; mask = 0; t = 0; finalVoxelSize = 1.0f; finalBlockPos = 0; raySteps = 0;
+    
+    float3 safeDir = ray.direction;
+    if (abs(safeDir.x) < 1e-6f) safeDir.x = sign(safeDir.x) * 1e-6f;
+    if (abs(safeDir.y) < 1e-6f) safeDir.y = sign(safeDir.y) * 1e-6f;
+    if (abs(safeDir.z) < 1e-6f) safeDir.z = sign(safeDir.z) * 1e-6f;
+
+    float3 invDir = 1.0f / safeDir;
+    int3 rayStep = sign(safeDir);
+    int3 stepDirBounds = max(rayStep, 0);
+
+    for (int steps = 0; steps < 160; steps++) {
+        raySteps++;
+        if (t > maxDist) break;
+        
+        float3 currentPos = ray.origin + ray.direction * t;
+        if (currentPos.y > 250.0f && ray.direction.y > -0.05f) break;
+
+        int layer = GetLayer(currentPos);
+        if (layer >= _ClipmapLayers) break;
+
+        float voxelSize = _ClipmapCenters[layer].w;
+        float chunkSize = 32.0f * voxelSize;
+        
+        int3 mapPos = int3(floor(currentPos / voxelSize));
+        int3 chunkCoord = mapPos >> 5;
+
+       ChunkData currentChunk = GetChunkData(chunkCoord, layer);
+        uint packed = currentChunk.packedState;
+
+        // --- THE CLIPMAP HOLE FIX ---
+        // If LOD 0 hasn't finished generating yet, seamlessly read from LOD 1 to prevent flashing holes!
+        if (packed == 0 && layer < _ClipmapLayers - 1) {
+            int fLayer = layer + 1;
+            float fVoxelSize = _ClipmapCenters[fLayer].w;
+            int3 fMapPos = int3(floor(currentPos / fVoxelSize));
+            int3 fChunkCoord = fMapPos >> 5;
+            
+            ChunkData fChunk = GetChunkData(fChunkCoord, fLayer);
+            if (fChunk.packedState > 0) {
+                layer = fLayer;
+                voxelSize = fVoxelSize;
+                chunkSize = 32.0f * voxelSize;
+                mapPos = fMapPos;
+                chunkCoord = fChunkCoord;
+                currentChunk = fChunk;
+                packed = currentChunk.packedState;
+            }
+        }
+
+        // 1 = Dense, 3 = Empty
+        uint denseIndex = currentChunk.densePoolIndex;
+        if (packed == 1) {
+            float3 chunkMinPos = chunkCoord * chunkSize;
+            float3 chunkMaxPos = chunkMinPos + chunkSize; // ADD THIS LINE
+            float3 tb0 = (chunkMinPos - ray.origin) * invDir;
+            float3 tb1 = (chunkMaxPos - ray.origin) * invDir;
+            float3 tMaxB = max(tb0, tb1);
+            float tExitB = min(min(tMaxB.x, tMaxB.y), tMaxB.z);
+
+            float3 tDelta = abs(voxelSize * invDir);
+            float3 tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
+            
+            if (abs(ray.direction.x) < 1e-6f) { tMaxV.x = 3.4e38f; tDelta.x = 3.4e38f; }
+            if (abs(ray.direction.y) < 1e-6f) { tMaxV.y = 3.4e38f; tDelta.y = 3.4e38f; }
+            if (abs(ray.direction.z) < 1e-6f) { tMaxV.z = 3.4e38f; tDelta.z = 3.4e38f; }
+
+            uint denseBase = denseIndex << 15;
+            bool hitInside = false;
+
+            int vSteps = isShadow ? 16 : 128;
+            for (int v = 0; v < vSteps; v++) {
+                if (t > tExitB + 0.001f) break;
+                
+                int3 vLocal = mapPos - (chunkCoord << 5);
+                if (any(vLocal < 0) || any(vLocal > 31)) break;
+
+                // --- HIERARCHICAL DDA (The 4x4x4 Leap) ---
+                int sx = vLocal.x >> 2;
+                int sy = vLocal.y >> 2;
+                int sz = vLocal.z >> 2;
+                int subIndex = sx + (sy << 3) + (sz << 6);
+                
+                uint maskVal = _MacroMaskPool[denseIndex * 16 + (subIndex >> 5)];
+                if ((maskVal & (1u << (subIndex & 31))) == 0) {
+                    // This 4x4x4 block is entirely air! Skip it!
+                    float3 subMin = (chunkCoord * 32.0f + float3(sx*4, sy*4, sz*4)) * voxelSize;
+                    float3 subMax = subMin + (4.0f * voxelSize);
+
+                    float3 tb0 = (subMin - ray.origin) * invDir;
+                    float3 tb1 = (subMax - ray.origin) * invDir;
+                    float3 tMaxSub = max(tb0, tb1);
+                    float tExitSub = min(min(tMaxSub.x, tMaxSub.y), tMaxSub.z);
+
+                    // Fast-forward 't' and mapPos to the boundary of the sub-chunk
+                    t = tExitSub + (voxelSize * 0.05f); 
+                    mapPos = int3(floor((ray.origin + ray.direction * t) / voxelSize));
+
+                    // Recalculate grid intersections based on the leap
+                    tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
+                    if (abs(ray.direction.x) < 1e-6f) tMaxV.x = 3.4e38f;
+                    if (abs(ray.direction.y) < 1e-6f) tMaxV.y = 3.4e38f;
+                    if (abs(ray.direction.z) < 1e-6f) tMaxV.z = 3.4e38f;
+                    continue; // Skip the standard voxel checks and immediately loop again
+                }
+
+                // STABLE
+                // // // Standard dense check if the bit is 1
+                // // uint matData = _DenseChunkPool[denseBase + vLocal.x + (vLocal.y << 5) + (vLocal.z << 10)];
+                // // if ((matData & 0xFF) > 0) { hitInside = true; hitMatID_Data = matData; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break; }
+                // // Standard dense check if the bit is 1
+                // int flatIdx = vLocal.x + (vLocal.y << 5) + (vLocal.z << 10);
+                // uint packedBase = denseIndex * 1024; // Was denseIndex << 15
+                // uint matData = _DenseChunkPool[packedBase + (flatIdx >> 5)];
+
+                // 1 BIT TEST
+                // if ((matData & (1u << (flatIdx & 31))) != 0) { 
+                //     hitInside = true; 
+                //     hitMatID_Data = 1; // Just flag it as solid
+                //     finalVoxelSize = voxelSize; 
+                //     finalBlockPos = mapPos; 
+                //     break; 
+                // }
+
+                // --- DYNAMIC DENSE CHECK ---
+                #if DUAL_STATE_1BIT
+                    int flatIdx = vLocal.x + (vLocal.y << 5) + (vLocal.z << 10);
+                    uint packedBase = denseIndex * 1024; 
+                    uint matData = _DenseChunkPool[packedBase + (flatIdx >> 5)];
+                    if ((matData & (1u << (flatIdx & 31))) != 0) { 
+                        hitInside = true; hitMatID_Data = 1; 
+                        finalVoxelSize = voxelSize; finalBlockPos = mapPos; break; 
+                    }
+                #else
+                    uint denseBase = denseIndex << 15;
+                    uint matData = _DenseChunkPool[denseBase + vLocal.x + (vLocal.y << 5) + (vLocal.z << 10)];
+                    if ((matData & 0xFF) > 0) { 
+                        hitInside = true; hitMatID_Data = matData; 
+                        finalVoxelSize = voxelSize; finalBlockPos = mapPos; break; 
+                    }
+                #endif
+                
+                if (tMaxV.x < tMaxV.y) {
+                    if (tMaxV.x < tMaxV.z) { t = tMaxV.x; tMaxV.x += tDelta.x; mapPos.x += rayStep.x; mask = int3(1,0,0); }
+                    else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
+                } else {
+                    if (tMaxV.y < tMaxV.z) { t = tMaxV.y; tMaxV.y += tDelta.y; mapPos.y += rayStep.y; mask = int3(0,1,0); }
+                    else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
+                }
+            }
+            if (hitInside) return true;
+        }
+        
+        float3 nextC = (chunkCoord + stepDirBounds) * chunkSize;
+        float3 tMaxC = (nextC - ray.origin) * invDir;
+        float tNext = min(min(tMaxC.x, tMaxC.y), tMaxC.z);
+        mask = (tNext == tMaxC.x) ? int3(1,0,0) : ((tNext == tMaxC.y) ? int3(0,1,0) : int3(0,0,1));
+        t = max(t, tNext + (voxelSize * 0.05f));
+    }
+    return false;
+}
+
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    uint width, height; Result.GetDimensions(width, height);
+    float2 uv = (id.xy + 0.5f) / float2(width, height) * 2.0f - 1.0f;
+    Ray ray = CreateCameraRay(uv);
+    
+    // RAISED TO 250m: Allows the camera to render mountains when flying high
+    if (ray.origin.y > 250.0f && ray.direction.y >= 0.0f) {
+        Result[id.xy] = float4(0.6, 0.8, 1.0, 0);
+        return;
+    }
+
+    float t = 0;
+    int3 mask = 0;
+    float finalVoxelSize = 1.0f;
+    float3 finalBlockPos = 0;
+    uint hitMatID_Data = 0;
+    int steps = 0;
+    
+    // CULL SKY RAYS: Stop tracing where the FARTHEST LOD layer ends! (Not Layer 0)
+    int maxL = _ClipmapLayers - 1;
+    float maxWorldDist = _RenderBounds.x * 32.0 * _ClipmapCenters[maxL].w; 
+    bool hit = TraceVoxelRay(ray, maxWorldDist, false, t, mask, hitMatID_Data, finalVoxelSize, finalBlockPos, steps);
+
+    // --- GPU CROSSHAIR TARGETER ---
+    if (id.x == width / 2 && id.y == height / 2) {
+        if (hit && t < 50.0) { 
+            _CrosshairTarget[0] = int4((int)finalBlockPos.x, (int)finalBlockPos.y, (int)finalBlockPos.z, 1);
+            // Calculate and pass the exact geometric normal of the face we hit
+            float3 rawNormal = float3(mask) * -sign(ray.direction);
+            _CrosshairTarget[1] = int4((int)rawNormal.x, (int)rawNormal.y, (int)rawNormal.z, 0);
+        } else {
+            _CrosshairTarget[0] = int4(-999, -999, -999, 0); 
+            _CrosshairTarget[1] = int4(0, 0, 0, 0);
+        }
+    }
+
+    if (hit) {
+        
+        float3 normal = float3(mask) * -sign(ray.direction);
+        float3 hitWorldPos = ray.origin + ray.direction * t;
+        
+        int layer = GetLayer(hitWorldPos);
+        float layerScale = _ClipmapCenters[layer].w; // THE FIX: Decouple LOD layer scale from physical voxel size
+        float3 chunkCoord = floor(hitWorldPos / (32.0 * layerScale));
+        float bandXZ = max(0.0, max(abs(chunkCoord.x - _ClipmapCenters[layer].x), abs(chunkCoord.z - _ClipmapCenters[layer].z)) - (_RenderBounds.x - 1.5)) / 1.5;
+        float bandY = max(0.0, abs(chunkCoord.y - _ClipmapCenters[layer].y) - (_RenderBounds.y - 1.5)) / 1.5;
+        float dissolveBand = saturate(max(bandXZ, bandY));
+
+
+        // STABLE VERSION !!
+        // LOD Normal Bending removed for clean voxel aesthetics.
+        
+        // uint mat; float r_light, g_light, b_light, sun_light; uint bakedAO_mask;
+        // UnpackLight(hitMatID_Data, mat, r_light, g_light, b_light, sun_light, bakedAO_mask);
+        // VoxelMaterial matData = _MaterialPalette[mat];
+        
+        // --- TEMPORARY SUNLIGHT INJECTION ---
+        // Fake sunlight hitting the top and sides of blocks until propagation is written
+        // sun_light = saturate(dot(normal, _SunDir.xyz) * 0.8 + 0.2);
+        
+        // if (_DebugViewMode == 1) { 
+        //     // Ray Steps Heatmap
+        //     Result[id.xy] = float4(lerp(float3(0,0,1), float3(1,0,0), saturate((float)steps / 150.0)), 1); 
+        //     return; 
+        // }
+        // if (_DebugViewMode == 2) { float d = saturate(t / 400.0); Result[id.xy] = float4(1.0 - d, 1.0 - d, 1.0 - d, 1); return; }
+        // if (_DebugViewMode == 3) { Result[id.xy] = float4(normal * 0.5 + 0.5, 1); return; }
+        // if (_DebugViewMode == 4) { Result[id.xy] = float4(matData.albedo.rgb, 1); return; }
+        // if (_DebugViewMode == 5) { Result[id.xy] = float4((float3(r_light, g_light, b_light) + sun_light) / 1.5, 1); return; }
+
+        // // (Deleted the expensive, unused shadowRay trace here)
+
+        // // (Deleted the expensive, unused shadowRay trace here)
+
+        // // --- MOIRE FIX 2: Geometric & Texture Mipmapping ---
+        // float distanceFade = saturate(1.0 - (t - 80.0) / 80.0);
+
+        // // 1. Smooth the Shading (The Terracing Fix)
+        // float3 lightingNormal = normalize(normal + float3(0, 0.65, 0));
+        // float rawFaceShade = saturate(dot(lightingNormal, float3(0, 1, 0))) * 0.5 + 
+        //                      saturate(abs(dot(lightingNormal, float3(1, 0, 0)))) * 0.2 + 0.45;
+        // float faceShade = rawFaceShade;
+
+        // // 2. Smooth the Texture Noise
+        // float noiseLarge = hash(floor(finalBlockPos * 0.1));
+        // float noiseMedium = hash(floor(finalBlockPos * 0.5));
+        // float noiseDetail = (hash(finalBlockPos) - 0.5) * 0.08; 
+
+        // float3 baseColor = matData.albedo.rgb;
+        // if (baseColor.g > baseColor.r && baseColor.g > baseColor.b) {
+        //     float3 colorLush = baseColor * float3(1.1, 1.1, 0.8);
+        //     float3 colorOlive = baseColor * float3(0.8, 0.9, 0.6);
+        //     float3 colorDeep = baseColor * float3(0.5, 0.7, 0.5);
+            
+        //     float blend1 = smoothstep(0.2, 0.8, noiseLarge);
+        //     float3 mixColor = lerp(colorLush, colorOlive, blend1);
+            
+        //     float blend2 = smoothstep(0.3, 0.9, noiseMedium);
+        //     mixColor = lerp(mixColor, colorDeep, blend2);
+            
+        //     baseColor = mixColor + noiseDetail;
+        // } else {
+        //     baseColor += noiseDetail;
+        // }
+
+        // // --- TRUE 3D VOXEL AMBIENT OCCLUSION ---
+        // float3 localHitPos = frac((ray.origin + ray.direction * t) / finalVoxelSize);
+        // float2 faceUV;
+        // float c00 = 0, c10 = 0, c01 = 0, c11 = 0;
+        
+        // // Extract the 8 baked neighbor corners
+        // bool b0 = (bakedAO_mask & 1) != 0;   // -X, -Y, -Z
+        // bool b1 = (bakedAO_mask & 2) != 0;   // +X, -Y, -Z
+        // bool b2 = (bakedAO_mask & 4) != 0;   // -X, +Y, -Z
+        // bool b3 = (bakedAO_mask & 8) != 0;   // +X, +Y, -Z
+        // bool b4 = (bakedAO_mask & 16) != 0;  // -X, -Y, +Z
+        // bool b5 = (bakedAO_mask & 32) != 0;  // +X, -Y, +Z
+        // bool b6 = (bakedAO_mask & 64) != 0;  // -X, +Y, +Z
+        // bool b7 = (bakedAO_mask & 128) != 0; // +X, +Y, +Z
+
+        // // Map the correct 4 corners depending on the face we hit
+        // if (mask.x > 0) {
+        //     faceUV = localHitPos.yz;
+        //     if (ray.direction.x < 0) { 
+        //         c00 = b1 ? 1.0 : 0.0; c10 = b3 ? 1.0 : 0.0; c01 = b5 ? 1.0 : 0.0; c11 = b7 ? 1.0 : 0.0; 
+        //     } else { 
+        //         c00 = b0 ? 1.0 : 0.0; c10 = b2 ? 1.0 : 0.0; c01 = b4 ? 1.0 : 0.0; c11 = b6 ? 1.0 : 0.0; 
+        //     }
+        // } else if (mask.y > 0) {
+        //     faceUV = localHitPos.xz;
+        //     if (ray.direction.y < 0) { 
+        //         c00 = b2 ? 1.0 : 0.0; c10 = b3 ? 1.0 : 0.0; c01 = b6 ? 1.0 : 0.0; c11 = b7 ? 1.0 : 0.0; 
+        //     } else { 
+        //         c00 = b0 ? 1.0 : 0.0; c10 = b1 ? 1.0 : 0.0; c01 = b4 ? 1.0 : 0.0; c11 = b5 ? 1.0 : 0.0; 
+        //     }
+        // } else {
+        //     faceUV = localHitPos.xy;
+        //     if (ray.direction.z < 0) { 
+        //         c00 = b4 ? 1.0 : 0.0; c10 = b5 ? 1.0 : 0.0; c01 = b6 ? 1.0 : 0.0; c11 = b7 ? 1.0 : 0.0; 
+        //     } else { 
+        //         c00 = b0 ? 1.0 : 0.0; c10 = b1 ? 1.0 : 0.0; c01 = b2 ? 1.0 : 0.0; c11 = b3 ? 1.0 : 0.0; 
+        //     }
+        // }
+
+        // // Sub-voxel bilinear interpolation
+        // float bottomAO = lerp(c00, c10, faceUV.x);
+        // float topAO = lerp(c01, c11, faceUV.x);
+        // float finalAO = lerp(bottomAO, topAO, faceUV.y);
+
+        // float rawVao = 1.0 - (finalAO * 0.6);
+        // float vao = saturate(rawVao);
+        
+        // // --- TRUE DIRECTIONAL SUN SHADOWS ---
+        // Ray shadowRay;
+        // // Push the ray slightly off the block's surface using its normal so it doesn't shadow itself
+        // shadowRay.origin = (ray.origin + ray.direction * t) + (normal * finalVoxelSize * 0.1); 
+        // shadowRay.direction = _SunDir;
+        
+        // float s_t = 0; int3 s_mask = 0; uint s_mat = 0; 
+        // float s_size = 1.0; float3 s_pos = 0; int s_steps = 0;
+        
+        // // Trace for only 4.0 units (~8 meters) for shadows. 
+        // // 16 steps is enough to capture local ambient shadows without stalling the GPU.
+        // bool inShadow = TraceVoxelRay(shadowRay, 4.0, true, s_t, s_mask, s_mat, s_size, s_pos, s_steps);
+        // // Soften the shadow slightly so it doesn't look like pitch black ink
+        // float sunExposure = inShadow ? 0.25 : 1.0;
+        
+        // float ambient = 0.2;
+        // // Multiply the chunk's ambient sun value by our new real-time directional shadow
+        // float3 voxelLight = float3(r_light, g_light, b_light) + (sun_light * 2.5 * sunExposure) + ambient;
+        // float3 colorWithLight = baseColor * faceShade * voxelLight * vao;
+
+
+
+        // ---TEST VERSION: 1-BIT PROCEDURAL RENDERING ---
+        
+        // 1. Texture Noise
+        // float noiseLarge = hash(floor(finalBlockPos * 0.1));
+        // float noiseDetail = (hash(finalBlockPos) - 0.5) * 0.08; 
+        
+        // // 2. Procedural White/Grey Color
+        // float3 baseColor = float3(0.85, 0.85, 0.85) + (noiseLarge * 0.05) + noiseDetail;
+
+        // // 3. Smooth Terracing / Shading
+        // float3 lightingNormal = normalize(normal + float3(0, 0.65, 0));
+        // float faceShade = saturate(dot(lightingNormal, float3(0, 1, 0))) * 0.5 + 
+        //                   saturate(abs(dot(lightingNormal, float3(1, 0, 0)))) * 0.2 + 0.45;
+
+        // // 4. Default fake AO and sunlight 
+        // float vao = 1.0; 
+        // float sun_light = saturate(dot(normal, _SunDir.xyz) * 0.8 + 0.2);
+        
+        // // 5. TRUE DIRECTIONAL SUN SHADOWS
+        // Ray shadowRay;
+        // shadowRay.origin = (ray.origin + ray.direction * t) + (normal * finalVoxelSize * 0.1);
+        // shadowRay.direction = _SunDir;
+        
+        // float s_t = 0; int3 s_mask = 0; uint s_mat = 0; 
+        // float s_size = 1.0; float3 s_pos = 0; int s_steps = 0;
+        
+        // bool inShadow = TraceVoxelRay(shadowRay, 4.0, true, s_t, s_mask, s_mat, s_size, s_pos, s_steps);
+        // float sunExposure = inShadow ? 0.25 : 1.0;
+        
+        // float ambient = 0.2;
+        // float3 voxelLight = float3(0, 0, 0) + (sun_light * 2.5 * sunExposure) + ambient;
+        
+        // float3 colorWithLight = baseColor * faceShade * voxelLight * vao;
+
+
+        #if DUAL_STATE_1BIT
+        // --- 1-BIT PROCEDURAL RENDERING ---
+            float noiseLarge = hash(floor(finalBlockPos * 0.1));
+            float noiseDetail = (hash(finalBlockPos) - 0.5) * 0.08; 
+            float3 baseColor = float3(0.85, 0.85, 0.85) + (noiseLarge * 0.05) + noiseDetail;
+            
+            float3 lightingNormal = normalize(normal + float3(0, 0.65, 0));
+            float faceShade = saturate(dot(lightingNormal, float3(0, 1, 0))) * 0.5 + saturate(abs(dot(lightingNormal, float3(1, 0, 0)))) * 0.2 + 0.45;
+            
+            float sun_light = saturate(dot(normal, _SunDir.xyz) * 0.8 + 0.2);
+            float3 colorWithLight = baseColor * faceShade * ((sun_light * 2.5) + 0.2); // Simplified light
+        #else
+        // --- 32-BIT BRICKMAP RENDERING ---
+            uint mat; float r_light, g_light, b_light, sun_light; uint bakedAO_mask;
+            UnpackLight(hitMatID_Data, mat, r_light, g_light, b_light, sun_light, bakedAO_mask);
+            VoxelMaterial matData = _MaterialPalette[mat];
+            
+            // --- TEMPORARY SUNLIGHT INJECTION ---
+            sun_light = saturate(dot(normal, _SunDir.xyz) * 0.8 + 0.2);
+            
+            if (_DebugViewMode == 1) { 
+                Result[id.xy] = float4(lerp(float3(0,0,1), float3(1,0,0), saturate((float)steps / 150.0)), 1); 
+                return; 
+            }
+            if (_DebugViewMode == 2) { float d = saturate(t / 400.0); Result[id.xy] = float4(1.0 - d, 1.0 - d, 1.0 - d, 1); return; }
+            if (_DebugViewMode == 3) { Result[id.xy] = float4(normal * 0.5 + 0.5, 1); return; }
+            if (_DebugViewMode == 4) { Result[id.xy] = float4(matData.albedo.rgb, 1); return; }
+            if (_DebugViewMode == 5) { Result[id.xy] = float4((float3(r_light, g_light, b_light) + sun_light) / 1.5, 1); return; }
+
+            float distanceFade = saturate(1.0 - (t - 80.0) / 80.0);
+
+            // 1. Smooth the Shading (The Terracing Fix)
+            float3 lightingNormal = normalize(normal + float3(0, 0.65, 0));
+            float rawFaceShade = saturate(dot(lightingNormal, float3(0, 1, 0))) * 0.5 + 
+                                saturate(abs(dot(lightingNormal, float3(1, 0, 0)))) * 0.2 + 0.45;
+            float faceShade = rawFaceShade;
+
+            // 2. Smooth the Texture Noise
+            float noiseLarge = hash(floor(finalBlockPos * 0.1));
+            float noiseMedium = hash(floor(finalBlockPos * 0.5));
+            float noiseDetail = (hash(finalBlockPos) - 0.5) * 0.08; 
+
+            float3 baseColor = matData.albedo.rgb;
+            if (baseColor.g > baseColor.r && baseColor.g > baseColor.b) {
+                float3 colorLush = baseColor * float3(1.1, 1.1, 0.8);
+                float3 colorOlive = baseColor * float3(0.8, 0.9, 0.6);
+                float3 colorDeep = baseColor * float3(0.5, 0.7, 0.5);
+                
+                float blend1 = smoothstep(0.2, 0.8, noiseLarge);
+                float3 mixColor = lerp(colorLush, colorOlive, blend1);
+                
+                float blend2 = smoothstep(0.3, 0.9, noiseMedium);
+                mixColor = lerp(mixColor, colorDeep, blend2);
+                
+                baseColor = mixColor + noiseDetail;
+            } else {
+                baseColor += noiseDetail;
+            }
+
+            // --- TRUE 3D VOXEL AMBIENT OCCLUSION ---
+            float3 localHitPos = frac((ray.origin + ray.direction * t) / finalVoxelSize);
+            float2 faceUV;
+            float c00 = 0, c10 = 0, c01 = 0, c11 = 0;
+            
+            bool b0 = (bakedAO_mask & 1) != 0;  bool b1 = (bakedAO_mask & 2) != 0;
+            bool b2 = (bakedAO_mask & 4) != 0;  bool b3 = (bakedAO_mask & 8) != 0;
+            bool b4 = (bakedAO_mask & 16) != 0; bool b5 = (bakedAO_mask & 32) != 0;
+            bool b6 = (bakedAO_mask & 64) != 0; bool b7 = (bakedAO_mask & 128) != 0;
+
+            if (mask.x > 0) {
+                faceUV = localHitPos.yz;
+                if (ray.direction.x < 0) { c00=b1?1.0:0.0; c10=b3?1.0:0.0; c01=b5?1.0:0.0; c11=b7?1.0:0.0; } 
+                else { c00=b0?1.0:0.0; c10=b2?1.0:0.0; c01=b4?1.0:0.0; c11=b6?1.0:0.0; }
+            } else if (mask.y > 0) {
+                faceUV = localHitPos.xz;
+                if (ray.direction.y < 0) { c00=b2?1.0:0.0; c10=b3?1.0:0.0; c01=b6?1.0:0.0; c11=b7?1.0:0.0; } 
+                else { c00=b0?1.0:0.0; c10=b1?1.0:0.0; c01=b4?1.0:0.0; c11=b5?1.0:0.0; }
+            } else {
+                faceUV = localHitPos.xy;
+                if (ray.direction.z < 0) { c00=b4?1.0:0.0; c10=b5?1.0:0.0; c01=b6?1.0:0.0; c11=b7?1.0:0.0; } 
+                else { c00=b0?1.0:0.0; c10=b1?1.0:0.0; c01=b2?1.0:0.0; c11=b3?1.0:0.0; }
+            }
+
+            float bottomAO = lerp(c00, c10, faceUV.x);
+            float topAO = lerp(c01, c11, faceUV.x);
+            float finalAO = lerp(bottomAO, topAO, faceUV.y);
+            float vao = saturate(1.0 - (finalAO * 0.6));
+            
+            // --- TRUE DIRECTIONAL SUN SHADOWS ---
+            Ray shadowRay;
+            shadowRay.origin = (ray.origin + ray.direction * t) + (normal * finalVoxelSize * 0.1); 
+            shadowRay.direction = _SunDir;
+            
+            float s_t = 0; int3 s_mask = 0; uint s_mat = 0; 
+            float s_size = 1.0; float3 s_pos = 0; int s_steps = 0;
+            
+            bool inShadow = TraceVoxelRay(shadowRay, 4.0, true, s_t, s_mask, s_mat, s_size, s_pos, s_steps);
+            float sunExposure = inShadow ? 0.25 : 1.0;
+            
+            float ambient = 0.2;
+            float3 voxelLight = float3(r_light, g_light, b_light) + (sun_light * 2.5 * sunExposure) + ambient;
+            float3 colorWithLight = baseColor * faceShade * voxelLight * vao;
+        #endif
+
+        // DYNAMIC FOG: Calculates atmosphere thickness based on your exact Inspector bounds
+        int maxL = _ClipmapLayers - 1;
+        float maxWorldDist = _RenderBounds.x * 32.0f * _ClipmapCenters[maxL].w;
+        
+        // Fog starts at 40% of your maximum view distance and reaches maximum density at the edge
+        float fogStart = maxWorldDist * 0.4f; 
+        float fog = saturate((t - fogStart) / (maxWorldDist - fogStart));
+        // float fog = 1.0 - exp(-pow(t * 0.008, 2.0));
+        float3 skyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
+
+        // Output raw HDR color
+        float3 finalColor = lerp(colorWithLight, skyColor, fog);
+
+        // --- TARGET BLOCK HIGHLIGHT ---
+        // If we hit a block and are in edit mode, check if this pixel belongs to the targeted block
+        if (_IsEditMode == 1 && _TargetBlock.w == 1.0 && hit) {
+            
+            // Validate if the pixel we are currently drawing is part of the crosshair's target block
+            if (abs(finalBlockPos.x - _TargetBlock.x) < 0.1 && 
+                abs(finalBlockPos.y - _TargetBlock.y) < 0.1 && 
+                abs(finalBlockPos.z - _TargetBlock.z) < 0.1) {
+                
+                // Calculate the normal of the face this pixel is on
+                float3 rawNormal = float3(mask) * -sign(ray.direction);
+                
+                // Check if this pixel is on the exact face the crosshair is resting on
+                bool isTargetFace = (abs(rawNormal.x - _TargetNormal.x) < 0.1 && 
+                                     abs(rawNormal.y - _TargetNormal.y) < 0.1 && 
+                                     abs(rawNormal.z - _TargetNormal.z) < 0.1);
+                
+                // 1. Add a subtle emission glow (Gold for the active face, slight white for the rest)
+                finalColor += isTargetFace ? float3(0.3, 0.25, 0.05) : float3(0.08, 0.08, 0.08);
+                
+                // 2. Draw a crisp wireframe around the block
+                float3 localPos = frac((ray.origin + ray.direction * t) / finalVoxelSize);
+                float2 faceUV = mask.x > 0 ? localPos.yz : (mask.y > 0 ? localPos.xz : localPos.xy);
+                
+                // Find distance to the nearest edge (0.0 to 0.5)
+                float edgeDist = min(min(faceUV.x, 1.0 - faceUV.x), min(faceUV.y, 1.0 - faceUV.y));
+                
+                if (edgeDist < 0.04) {
+                    // Bright Yellow/Orange wireframe for the active face, White for the rest
+                    finalColor = isTargetFace ? float3(1.0, 0.8, 0.0) : float3(0.9, 0.9, 0.9);
+                }
+            }
+        }
+
+        // --- GPU HOLOGRAM OVERLAY ---
+        if (_IsEditMode == 1 && _TargetBlock.w == 1.0) {
+            float3 targetGrid = _TargetBlock.xyz;
+            float3 targetNorm = _TargetNormal.xyz;
+            
+            // 1. ALIGN TO SURFACE: Push the center out/in by the brush radius
+            float3 centerGrid = targetGrid;
+            if (_EditMode == 1) {
+                // PLACE: Push out by (BrushSize + 1.0) to sit exactly on the surface block
+                centerGrid += targetNorm * (_BrushSize + 1.0);
+            } else {
+                // REMOVE: Push in by BrushSize to carve perfectly flush
+                centerGrid -= targetNorm * _BrushSize;
+            }
+            
+            // 2. AABB BOUNDING BOX
+            float physicalRadius = (_BrushSize + 0.5) * _VoxelScale;
+            float3 centerWorld = (centerGrid * _VoxelScale) + (_VoxelScale * 0.5);
+            float3 boxMin = centerWorld - physicalRadius;
+            float3 boxMax = centerWorld + physicalRadius;
+            
+            float3 safeDir = ray.direction;
+            if (abs(safeDir.x) < 1e-6) safeDir.x = sign(safeDir.x) * 1e-6;
+            if (abs(safeDir.y) < 1e-6) safeDir.y = sign(safeDir.y) * 1e-6;
+            if (abs(safeDir.z) < 1e-6) safeDir.z = sign(safeDir.z) * 1e-6;
+            
+            float3 invDir = 1.0 / safeDir;
+            float3 t0 = (boxMin - ray.origin) * invDir;
+            float3 t1 = (boxMax - ray.origin) * invDir;
+            float3 tMin = min(t0, t1);
+            float3 tMax = max(t0, t1);
+            float tEnter = max(max(tMin.x, tMin.y), tMin.z);
+            float tExit = min(min(tMax.x, tMax.y), tMax.z);
+            
+            if (tEnter < tExit && tExit > 0) {
+                // We hit the bounding box! Run a Mini-DDA to find the exact voxel wireframe
+                float tStep = max(tEnter, 0.0);
+                
+                // If placing, hide blocks behind the terrain. If removing, X-Ray through it.
+                float maxT = (_EditMode == 1) ? min(tExit, t) : tExit;
+
+                float3 rayPos = ray.origin + ray.direction * tStep;
+                int3 currentGrid = floor(rayPos / _VoxelScale);
+                int3 stepDir = sign(safeDir);
+                float3 tDelta = abs(_VoxelScale * invDir);
+                float3 tMaxV = ((currentGrid + max(stepDir, 0)) * _VoxelScale - ray.origin) * invDir;
+
+                // THE FIX: DDA Infinity Guard
+                // Prevents divide-by-zero Infinity logic traps when looking parallel to an axis
+                if (abs(ray.direction.x) < 1e-6f) { tMaxV.x = 3.4e38f; tDelta.x = 3.4e38f; }
+                if (abs(ray.direction.y) < 1e-6f) { tMaxV.y = 3.4e38f; tDelta.y = 3.4e38f; }
+                if (abs(ray.direction.z) < 1e-6f) { tMaxV.z = 3.4e38f; tDelta.z = 3.4e38f; }
+                
+                bool hitHoloVoxel = false;
+                int3 holoMask = 0;
+                float hitT = 0;
+
+                [loop]
+                for (int i = 0; i < 40; i++) { 
+                    if (tStep > maxT) break;
+                    
+                    float3 pLocal = currentGrid - centerGrid;
+                    float dist = 0.0;
+                    
+                    // --- MODULAR SDF SWITCH (Must match WorldGen exactly) ---
+                    switch (_BrushShape) {
+                        case 0: // CUBE
+                            dist = max(abs(pLocal.x), max(abs(pLocal.y), abs(pLocal.z)));
+                            break;
+                        case 1: // SPHERE
+                            dist = length(pLocal);
+                            break;
+                    }
+
+                    if (dist <= _BrushSize + 0.5) {
+                        hitHoloVoxel = true;
+                        hitT = tStep;
+                        break;
+                    }
+                    
+                    // Step to next voxel inside the bounding box
+                    if (tMaxV.x < tMaxV.y) {
+                        if (tMaxV.x < tMaxV.z) { tStep = tMaxV.x; tMaxV.x += tDelta.x; currentGrid.x += stepDir.x; holoMask = int3(1,0,0); }
+                        else { tStep = tMaxV.z; tMaxV.z += tDelta.z; currentGrid.z += stepDir.z; holoMask = int3(0,0,1); }
+                    } else {
+                        if (tMaxV.y < tMaxV.z) { tStep = tMaxV.y; tMaxV.y += tDelta.y; currentGrid.y += stepDir.y; holoMask = int3(0,1,0); }
+                        else { tStep = tMaxV.z; tMaxV.z += tDelta.z; currentGrid.z += stepDir.z; holoMask = int3(0,0,1); }
+                    }
+                }
+                
+                if (hitHoloVoxel) {
+                    float3 holoColor = (_EditMode == 0) ? float3(1.0, 0.1, 0.1) : float3(0.1, 1.0, 0.2);
+                    
+                    // Draw a crisp wireframe over the voxelized shape
+                    float3 hitPosHolo = ray.origin + ray.direction * hitT;
+                    float3 localFacePos = frac(hitPosHolo / _VoxelScale);
+                    float2 uvHolo = holoMask.x > 0 ? localFacePos.yz : (holoMask.y > 0 ? localFacePos.xz : localFacePos.xy);
+                    
+                    float edgeDist = min(min(uvHolo.x, 1.0 - uvHolo.x), min(uvHolo.y, 1.0 - uvHolo.y));
+                    float alpha = (edgeDist < 0.05) ? 0.7 : 0.2; 
+                    
+                    finalColor = lerp(finalColor, holoColor, alpha);
+                }
+            }
+        }
+
+        // Output raw HDR color
+        float zDepth = t * dot(ray.direction, _CameraForward.xyz);
+        Result[id.xy] = float4(finalColor, zDepth);
+    } else {
+        float3 skyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
+        Result[id.xy] = float4(skyColor, 0); 
+    }
+}

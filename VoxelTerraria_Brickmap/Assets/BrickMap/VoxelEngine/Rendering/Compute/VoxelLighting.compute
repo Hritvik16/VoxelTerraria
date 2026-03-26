@@ -1,0 +1,67 @@
+#pragma kernel BakeAO
+#pragma kernel PropagateSunlight
+#pragma kernel SpreadLight
+
+struct ChunkJobData {
+    float4 worldPos;   
+    int mapIndex;      
+    int lodStep;       
+    float layerScale;
+    uint pad1;
+    int editStartIndex; 
+    int editCount;      
+    int pad2; // The dense sparse pool index         
+    int pad3;           
+};
+
+RWStructuredBuffer<uint> _DenseChunkPool;
+StructuredBuffer<ChunkJobData> _JobQueue;
+int _JobCount;
+
+// Helper to check if a local voxel is solid
+bool IsSolid(int3 localPos, uint denseBase) {
+    if (any(localPos < 0) || any(localPos > 31)) return false; // Assume air across chunk borders for now
+    uint flatIdx = localPos.x + (localPos.y << 5) + (localPos.z << 10);
+    uint mat = _DenseChunkPool[denseBase + flatIdx] & 0xFF;
+    return mat > 0;
+}
+
+[numthreads(8,8,8)]
+void BakeAO(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID) {
+    uint jobIndex = groupID.x / 4u; // 4x4x4 threadgroups per chunk
+    if (jobIndex >= (uint)_JobCount) return;
+
+    uint denseIndex = (uint)_JobQueue[jobIndex].pad2;
+    uint denseBase = denseIndex * 32768u;
+    
+    // FIX: Wrap the X coordinate so it never exceeds 31! Prevents massive GPU memory faults.
+    int3 localPos = int3(id.x % 32, id.y, id.z);
+    uint flatIdx = localPos.x + (localPos.y << 5) + (localPos.z << 10);
+    
+    uint voxelData = _DenseChunkPool[denseBase + flatIdx];
+    if ((voxelData & 0xFF) == 0) return; // Skip air
+
+    uint aoMask = 0;
+    
+    // Evaluate the 8 corners for baked Ambient Occlusion
+    // b0: -X,-Y,-Z | b1: +X,-Y,-Z | b2: -X,+Y,-Z | b3: +X,+Y,-Z
+    // b4: -X,-Y,+Z | b5: +X,-Y,+Z | b6: -X,+Y,+Z | b7: +X,+Y,+Z
+    
+    if (IsSolid(localPos + int3(-1, -1, -1), denseBase)) aoMask |= 1;
+    if (IsSolid(localPos + int3( 1, -1, -1), denseBase)) aoMask |= 2;
+    if (IsSolid(localPos + int3(-1,  1, -1), denseBase)) aoMask |= 4;
+    if (IsSolid(localPos + int3( 1,  1, -1), denseBase)) aoMask |= 8;
+    
+    if (IsSolid(localPos + int3(-1, -1,  1), denseBase)) aoMask |= 16;
+    if (IsSolid(localPos + int3( 1, -1,  1), denseBase)) aoMask |= 32;
+    if (IsSolid(localPos + int3(-1,  1,  1), denseBase)) aoMask |= 64;
+    if (IsSolid(localPos + int3( 1,  1,  1), denseBase)) aoMask |= 128;
+
+    // Clear top 8 bits and insert the new AO mask
+    voxelData = (voxelData & 0x00FFFFFF) | (aoMask << 24);
+    _DenseChunkPool[denseBase + flatIdx] = voxelData;
+}
+
+// Empty stubs for future Global Illumination expansion
+[numthreads(8,8,8)] void PropagateSunlight(uint3 id : SV_DispatchThreadID) { }
+[numthreads(8,8,8)] void SpreadLight(uint3 id : SV_DispatchThreadID) { }

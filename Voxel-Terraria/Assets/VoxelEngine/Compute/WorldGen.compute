@@ -1,4 +1,11 @@
-#pragma kernel GenerateChunk
+#pragma kernel EvaluateVoxels
+#pragma kernel ReduceL1
+#pragma kernel ReduceL2
+#pragma kernel ReduceL3
+#pragma kernel ReduceL4
+#pragma kernel ReduceL5
+#pragma kernel ConstructSVO
+
 #pragma kernel DecompressSVOToDense
 #pragma kernel EditDenseVoxel
 #pragma kernel DamageDenseVoxel
@@ -12,14 +19,25 @@ struct ChunkJobData {
     int mapIndex;      
     int lodStep;       
     float layerScale;
-    float pad1;        
+    uint pad1;          // FIX: Match C# uint to prevent floating point truncation
+    int editStartIndex; 
+    int editCount;      
+    int pad2;           
+    int pad3;           
+};
+
+struct VoxelEdit {
+    int flatIndex;
+    uint material;
 };
 
 RWStructuredBuffer<SVONode> _SVOPool;
+StructuredBuffer<VoxelEdit> _DeltaMapBuffer;
 RWStructuredBuffer<ChunkData> _ChunkMap;
 StructuredBuffer<ChunkJobData> _JobQueue; 
 RWStructuredBuffer<uint> _DenseChunkPool;
 RWStructuredBuffer<uint> _DenseLogicPool;
+RWStructuredBuffer<uint> _TempDenseBuffer; // The secret 128KB Flat Array
 
 int _ChunkSize;
 int _JobCount;
@@ -31,7 +49,6 @@ int3 _EditLocalPos;
 uint _NewMaterialData;
 int _BrushSize;
 int _BrushShape;
-
 int _DamageAmount;
 
 #include "TerrainMath.hlsl"
@@ -40,7 +57,6 @@ uint PackMaterialAndLight(uint matID, uint r, uint g, uint b, uint sun) {
     return matID | (r << 8) | (g << 12) | (b << 16) | (sun << 20);
 }
 
-// --- SVO TRAVERSAL HELPER ---
 uint GetVoxelFromRoot(uint rootIndex, int3 localPos) {
     if (rootIndex == 0xFFFFFFFF || rootIndex >= (uint)_PoolSize) return 0;
     uint nodeIndex = rootIndex;
@@ -50,182 +66,429 @@ uint GetVoxelFromRoot(uint rootIndex, int3 localPos) {
         SVONode node = _SVOPool[nodeIndex];
         if (node.childIndex == 0) return node.material;
         size >>= 1;
-        int3 childIdx = (localPos >= size) ? 1 : 0;
+        int3 childIdx = int3(localPos.x >= size ? 1 : 0, localPos.y >= size ? 1 : 0, localPos.z >= size ? 1 : 0);
         localPos -= childIdx * size;
         nodeIndex = node.childIndex + (childIdx.x + childIdx.y * 2 + childIdx.z * 4);
     }
-    // THE FIX: Return the actual material of the final leaf node, not Air (0)!
     return _SVOPool[nodeIndex].material; 
 }
 
 uint PackData(int3 p, int s) { return (s << 15) | (p.z << 10) | (p.y << 5) | p.x; }
 void UnpackData(uint d, out int3 p, out int s) {
-    p.x = d & 0x1F;
-    p.y = (d >> 5) & 0x1F; p.z = (d >> 10) & 0x1F;
-    s = (d >> 15) & 0x3F;
+    p.x = d & 0x1F; p.y = (d >> 5) & 0x1F; p.z = (d >> 10) & 0x1F; s = (d >> 15) & 0x3F;
 }
 
-groupshared uint stack_node[32][48];
-groupshared uint stack_data[32][48];
+// --- FAST LOCAL SURFACE TOPOLOGY ---
+void GetLocalSurfaceTopology(float2 worldXZ, int localFeatures[16], int numFeatures, out float baseHeight, out int activeBiome) {
+    float distFromCenter = length(worldXZ);
+    float coastDist = GetCoastDistance(worldXZ);
+    
+    float n = perlin2D(worldXZ * 0.002);
+    baseHeight = 15.0 + (n * 20.0);
+    activeBiome = 1; 
+    
+    if (distFromCenter > coastDist) {
+        float drop = (distFromCenter - coastDist) * 0.5;
+        baseHeight = clamp(10.0 - drop, -40.0, 10.0); 
+        return;
+    }
 
-[numthreads(32, 1, 1)]
-void GenerateChunk (uint3 id : SV_DispatchThreadID, uint GI : SV_GroupIndex)
+    for(int i = 0; i < numFeatures; i++) {
+        FeatureAnchor anchor = _FeatureAnchorBuffer[localFeatures[i]];
+        float d = distance(worldXZ, anchor.position);
+        
+        if (d < anchor.radius) {
+            float W = 0.0;
+            if (anchor.topologyID == 10) { float norm = 1.0 - (d / anchor.radius); W = max(0.0, norm * norm); baseHeight = lerp(baseHeight, anchor.heightMod, W); } 
+            else if (anchor.topologyID == 11) { W = max(0.0, 1.0 - pow(d / anchor.radius, 6.0)); baseHeight = lerp(baseHeight, anchor.heightMod, W); }
+            else if (anchor.topologyID == 12) { W = cos((d / anchor.radius) * 1.57079); baseHeight -= (W * abs(anchor.heightMod)); }
+            if (anchor.topologyID == 0) activeBiome = anchor.biomeID;
+        }
+    }
+}
+
+uint GetLevelOffset(int level) {
+    if (level == 0) return 0;
+    if (level == 1) return 32768; // size 2 nodes (width 16)
+    if (level == 2) return 36864; // size 4 nodes (width 8)
+    if (level == 3) return 37376; // size 8 nodes (width 4)
+    if (level == 4) return 37440; // size 16 nodes (width 2)
+    if (level == 5) return 37448; // size 32 node (root)
+    return 0;
+}
+
+// --- EVALUATE VOXELS (BOTTOM-UP GENERATOR KERNEL) ---
+groupshared float noiseCorners[27];
+
+[numthreads(8,8,8)]
+void EvaluateVoxels (uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID, uint groupIndex : SV_GroupIndex)
 {
-    if (id.x >= (uint)_JobCount) return;
-    ChunkJobData job = _JobQueue[id.x];
-    uint rootIndex = (uint)job.pad1;
-    uint maxMemory = (uint)job.worldPos.w;
-    uint memoryOffset = 8;
+    // Dispatch scale: (JobCount * 4, 4, 4)
+    uint jobIndex = groupID.x / 4;
+    if (jobIndex >= (uint)_JobCount) return;
+    ChunkJobData job = _JobQueue[jobIndex];
+    
+    // We logically map the ThreadGroups back into 0..3 locally to build the 32x32 block.
+    uint3 localGroup = uint3(groupID.x % 4, groupID.y, groupID.z);
+    int3 localPos = localGroup * 8 + groupThreadID;
+    
+    uint flatIndex = localPos.x + (localPos.y << 5) + (localPos.z << 10);
+    uint bufferIndex = jobIndex * 37449 + flatIndex;
 
+    // --- HARDWARE ALU MACRO-CULLING ---
+    // Instantly bypass 30 Billion ops by mathematically asserting bounding boundaries.
+    float chunkMinWorldY = job.worldPos.y * job.layerScale;
+    float chunkMaxWorldY = chunkMinWorldY + (32.0 * job.layerScale);
+
+    if (chunkMinWorldY > 100.0) {
+        // Guaranteed Pure Air!
+        _DenseChunkPool[job.editStartIndex + flatIndex] = 0;
+        return;
+    }
+    if (chunkMaxWorldY < -240.0) {
+        // Guaranteed Underworld Mantel (Solid Ash)!
+        _DenseChunkPool[job.editStartIndex + flatIndex] = 14; 
+        return;
+    }
+    
+    // --- EXACT GROUND-TRUTH CULLING & CACHE ---
+    int localFeatures[16]; int numFeatures = 0;
+    float2 chunkCenterXZ_Cull = (job.worldPos.xz + float2(16.0, 16.0)) * job.layerScale;
+    float chunkRadiusXZ = 16.0 * 1.414 * job.layerScale;
+    for(int f = 0; f < _FeatureCount && numFeatures < 16; f++) {
+        FeatureAnchor anchor = _FeatureAnchorBuffer[f];
+        if (distance(chunkCenterXZ_Cull, anchor.position) < anchor.radius + chunkRadiusXZ + 4.0) {
+            localFeatures[numFeatures++] = f;
+        }
+    }
+    
+    int localCaverns[16]; int numCaverns = 0;
+    int localTunnels[8];  int numTunnels = 0;
+    bool chunkIntersectsCarver = false;
+    
+    float3 chunkCenterWorld = (job.worldPos.xyz + float3(16.0, 16.0, 16.0)) * job.layerScale;
+    float chunkRadius = 16.0 * 1.732 * job.layerScale; 
+
+    for(int c = 0; c < _CavernCount && numCaverns < 16; c++) {
+        CavernNode cNode = _CavernNodeBuffer[c];
+        float3 delta = chunkCenterWorld - cNode.position;
+        if (dot(delta, delta) < (cNode.radius + chunkRadius + 4.0) * (cNode.radius + chunkRadius + 4.0)) {
+            localCaverns[numCaverns++] = c;
+            if (cNode.cavernType == 1) chunkIntersectsCarver = true; 
+        }
+    }
+    for(int t = 0; t < _TunnelCount && numTunnels < 8; t++) {
+        TunnelSpline tunnel = _TunnelSplineBuffer[t];
+        float3 minB = min(tunnel.startPoint, tunnel.endPoint) - tunnel.radius - chunkRadius - 4.0;
+        float3 maxB = max(tunnel.startPoint, tunnel.endPoint) + tunnel.radius + chunkRadius + 4.0;
+        
+        if (all(chunkCenterWorld >= minB) && all(chunkCenterWorld <= maxB)) {
+            float3 ab = tunnel.endPoint - tunnel.startPoint;
+            float3 ap = chunkCenterWorld - tunnel.startPoint;
+            float tSpline = saturate(dot(ap, ab) / dot(ab, ab));
+            float3 closest = tunnel.startPoint + tSpline * ab;
+            float3 delta = chunkCenterWorld - closest;
+            if (dot(delta, delta) < (tunnel.radius + chunkRadius + 4.0) * (tunnel.radius + chunkRadius + 4.0)) {
+                localTunnels[numTunnels++] = t;
+                chunkIntersectsCarver = true; 
+            }
+        }
+    }
+
+    // VOXEL EVALUATION
+    float blockMinY = (job.worldPos.y + localPos.y) * job.layerScale;
+    float2 worldXZ = (job.worldPos.xz + float2(localPos.x, localPos.z)) * job.layerScale;
+    float3 worldXYZ = float3(worldXZ.x, blockMinY, worldXZ.y);
+
+    float baseHeight; int activeBiome;
+    GetLocalSurfaceTopology(worldXZ, localFeatures, numFeatures, baseHeight, activeBiome);
+
+    int columnMaterial = -1;
+
+    // --- TRILINEAR NOISE INTERPOLATION (THE 98% ALU BYPASS) ---
+    
+    if (groupIndex < 27) {
+        int _cx = groupIndex % 3;
+        int _cy = (groupIndex / 3) % 3;
+        int _cz = groupIndex / 9;
+
+        int3 cornerLocalPos = (localGroup * 8) + int3(_cx * 4, _cy * 4, _cz * 4);
+        float cornerBlockMinY = (job.worldPos.y + cornerLocalPos.y) * job.layerScale;
+        float2 cornerWorldXZ = (job.worldPos.xz + float2(cornerLocalPos.x, cornerLocalPos.z)) * job.layerScale;
+        float3 cornerWorldXYZ = float3(cornerWorldXZ.x, cornerBlockMinY, cornerWorldXZ.y);
+
+        noiseCorners[groupIndex] = perlin3D(cornerWorldXYZ * 0.05); 
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    float voxelNoise = 0.0;
+    int tx = groupThreadID.x; int ty = groupThreadID.y; int tz = groupThreadID.z;
+    int cx = tx / 4; int cy = ty / 4; int cz = tz / 4;
+    
+    int baseCorner = cx + cy * 3 + cz * 9;
+    
+    float v000 = noiseCorners[baseCorner];
+    float v100 = noiseCorners[baseCorner + 1];
+    float v010 = noiseCorners[baseCorner + 3];
+    float v110 = noiseCorners[baseCorner + 4];
+    float v001 = noiseCorners[baseCorner + 9];
+    float v101 = noiseCorners[baseCorner + 10];
+    float v011 = noiseCorners[baseCorner + 12];
+    float v111 = noiseCorners[baseCorner + 13];
+
+    float wx = (tx % 4) / 4.0; float wy = (ty % 4) / 4.0; float wz = (tz % 4) / 4.0;
+
+    float val00 = lerp(v000, v100, wx);
+    float val10 = lerp(v010, v110, wx);
+    float val01 = lerp(v001, v101, wx);
+    float val11 = lerp(v011, v111, wx);
+
+    float val0 = lerp(val00, val10, wy);
+    float val1 = lerp(val01, val11, wy);
+
+    voxelNoise = lerp(val0, val1, wz);
+    // -----------------------------------------------------------
+
+    // Mathematical Heights Skip
+    if (blockMinY > baseHeight + 5.0) {
+        columnMaterial = 0;
+    } else if (blockMinY < baseHeight - 5.0 && !chunkIntersectsCarver) {
+        columnMaterial = GetMaterial(worldXYZ, baseHeight, activeBiome);
+    } else {
+        float density = GetDensity(worldXYZ, baseHeight);
+        
+        if (density > 0.0 && worldXYZ.y < baseHeight - 5.0 && chunkIntersectsCarver) {
+            for(int lc = 0; lc < numCaverns; lc++) {
+                CavernNode node = _CavernNodeBuffer[localCaverns[lc]];
+                if (node.cavernType == 1) { 
+                    float3 delta = worldXYZ - node.position;
+                    float sqrDist = dot(delta, delta);
+                    if (sqrDist < node.radius * node.radius) {
+                        float erosion = 4.0 * voxelNoise;
+                        if (sqrDist < (node.radius + erosion) * (node.radius + erosion)) density = -1.0;
+                    }
+                }
+            }
+            if (density > 0.0) {
+                for(int lt = 0; lt < numTunnels; lt++) {
+                    TunnelSpline tunnel = _TunnelSplineBuffer[localTunnels[lt]];
+                    float3 ab = tunnel.endPoint - tunnel.startPoint;
+                    float3 ap = worldXYZ - tunnel.startPoint;
+                    float tSpline = saturate(dot(ap, ab) / dot(ab, ab));
+                    float3 closest = tunnel.startPoint + tSpline * ab;
+                    float3 delta = worldXYZ - closest;
+                    float sqrDist = dot(delta, delta);
+                    if (sqrDist < tunnel.radius * tunnel.radius) {
+                        float erosion = tunnel.noiseIntensity * 4.0 * voxelNoise;
+                        if (sqrDist < (tunnel.radius + erosion) * (tunnel.radius + erosion)) density = -1.0;
+                    }
+                }
+            }
+        }
+        
+        if (abs(density) < 0.6) {
+            density += 0.6 * voxelNoise;
+        }
+        
+        int currentActiveBiome = activeBiome;
+        for (int i = 0; i < numCaverns; i++) {
+            CavernNode node = _CavernNodeBuffer[localCaverns[i]];
+            if (node.cavernType == 0 && distance(worldXYZ, node.position) < node.radius) {
+                currentActiveBiome = node.biomeID;
+                break;
+            }
+        }
+        columnMaterial = (density > 0.0) ? GetMaterial(worldXYZ, baseHeight, currentActiveBiome) : 0;
+    }
+
+    // DELTA MAP OVERRIDES
+    if (job.editCount > 0) {
+        for (int e = 0; e < job.editCount; e++) {
+            VoxelEdit edit = _DeltaMapBuffer[job.editStartIndex + e];
+            int3 ePos = int3(edit.flatIndex & 0x1F, (edit.flatIndex >> 5) & 0x1F, (edit.flatIndex >> 10) & 0x1F);
+            if (ePos.x == localPos.x && ePos.y == localPos.y && ePos.z == localPos.z) {
+                columnMaterial = (int)edit.material;
+            }
+        }
+    }
+
+    _TempDenseBuffer[bufferIndex] = (uint)columnMaterial;
+}
+
+// --- REDUCTION KERNELS (BUILDING THE MIPMAP TREE O(1)) ---
+void DoReduction(uint3 groupID, uint3 groupThreadID, uint targetWidth, uint sourceWidth, uint myOffset, uint prevOffset, uint jobGroups) {
+    uint jobIndex = groupID.x / jobGroups;
+    if (jobIndex >= (uint)_JobCount) return;
+    
+    // Calculate local mapped 3D thread position
+    uint3 localGroup = uint3(groupID.x % jobGroups, groupID.y, groupID.z);
+    uint3 nodePos = localGroup * 8 + groupThreadID;
+    
+    if (nodePos.x >= targetWidth || nodePos.y >= targetWidth || nodePos.z >= targetWidth) return;
+    
+    uint firstMat = 0;
+    bool isUniform = true;
+    for(int cz=0; cz<2; cz++) {
+        for(int cy=0; cy<2; cy++) {
+            for(int cx=0; cx<2; cx++) {
+                uint cx_child = nodePos.x * 2 + cx;
+                uint cy_child = nodePos.y * 2 + cy;
+                uint cz_child = nodePos.z * 2 + cz;
+                uint flatChild = cx_child + (cy_child * sourceWidth) + (cz_child * sourceWidth * sourceWidth);
+                
+                uint mat = _TempDenseBuffer[jobIndex * 37449 + prevOffset + flatChild];
+                if (cx == 0 && cy == 0 && cz == 0) firstMat = mat;
+                else if (mat != firstMat || mat == 0xFFFFFFFF) isUniform = false;
+            }
+        }
+    }
+    
+    uint flatMe = nodePos.x + (nodePos.y * targetWidth) + (nodePos.z * targetWidth * targetWidth);
+    _TempDenseBuffer[jobIndex * 37449 + myOffset + flatMe] = isUniform ? firstMat : 0xFFFFFFFF;
+}
+
+[numthreads(8,8,8)] void ReduceL1(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID) { DoReduction(groupID, groupThreadID, 16, 32, 32768, 0, 2); }
+[numthreads(8,8,8)] void ReduceL2(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID) { DoReduction(groupID, groupThreadID, 8, 16, 36864, 32768, 1); }
+[numthreads(4,4,4)] void ReduceL3(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID) { DoReduction(groupID, groupThreadID, 4, 8, 37376, 36864, 1); }
+[numthreads(2,2,2)] void ReduceL4(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID) { DoReduction(groupID, groupThreadID, 2, 4, 37440, 37376, 1); }
+[numthreads(1,1,1)] void ReduceL5(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID) { DoReduction(groupID, groupThreadID, 1, 2, 37448, 37440, 1); }
+
+// --- O(1) SVO CONSTRUCTOR ---
+[numthreads(1,1,1)]
+void ConstructSVO(uint3 id : SV_DispatchThreadID) {
+    uint jobIndex = id.x;
+    if (jobIndex >= (uint)_JobCount) return;
+    ChunkJobData job = _JobQueue[jobIndex];
+    uint rootIndex = job.pad1;
+    
+    uint rootVal = _TempDenseBuffer[jobIndex * 37449 + 37448];
+    if (rootVal != 0xFFFFFFFF) {
+        _SVOPool[rootIndex].childIndex = 0;
+        _SVOPool[rootIndex].material = PackMaterialAndLight(rootVal, 0,0,0,0);
+        _ChunkMap[job.mapIndex].position = float4(job.worldPos.xyz, 0);
+        _ChunkMap[job.mapIndex].rootNodeIndex = rootIndex;
+        _ChunkMap[job.mapIndex].currentLOD = job.lodStep;
+        _ChunkMap[job.mapIndex].packedState = ((uint)32 << 8);
+        return;
+    }
+    
+    uint allocCounter = 8;
+    _SVOPool[rootIndex].childIndex = rootIndex + 8;
+    _SVOPool[rootIndex].material = 0;
+    
     int stackPtr = 1;
-    stack_node[GI][0] = rootIndex;
-    stack_data[GI][0] = PackData(int3(0,0,0), 32);
-
+    uint stack_node[512];
+    uint stack_data[512]; 
+    
+    for(int i = 0; i < 8; i++) {
+        int cx = i & 1; int cy = (i >> 1) & 1; int cz = (i >> 2) & 1;
+        stack_node[stackPtr] = rootIndex + 8 + i;
+        stack_data[stackPtr] = PackData(int3(cx * 16, cy * 16, cz * 16), 16);
+        stackPtr++;
+    }
+    allocCounter += 8;
+    
     int chunkMaxY = 0;
     int chunkMinY = 32;
 
-    while(stackPtr > 0) {
+    while(stackPtr > 1) {
         stackPtr--;
-        uint currentNode = stack_node[GI][stackPtr];
+        uint currentNode = stack_node[stackPtr];
         int3 currentPos; int currentSize;
-        UnpackData(stack_data[GI][stackPtr], currentPos, currentSize);
-
-        bool isUniform = true;
-        int firstMaterial = -1;
-        float blockMinY = (job.worldPos.y + currentPos.y) * job.layerScale;
-        float blockMaxY = blockMinY + (currentSize * job.layerScale);
-
-        for(int cx = 0; cx < currentSize && isUniform; cx++) {
-            for(int cz = 0; cz < currentSize && isUniform; cz++) {
-                float2 worldXZ = (job.worldPos.xz + float2(currentPos.x + cx, currentPos.z + cz)) * job.layerScale;
+        UnpackData(stack_data[stackPtr], currentPos, currentSize);
+        
+        int level = (currentSize == 16) ? 4 : (currentSize == 8) ? 3 : (currentSize == 4) ? 2 : (currentSize == 2) ? 1 : 0;
+        uint width = (currentSize == 16) ? 2 : (currentSize == 8) ? 4 : (currentSize == 4) ? 8 : (currentSize == 2) ? 16 : 32;
+        int3 gridPos = currentPos / currentSize;
+        uint myOffset = GetLevelOffset(level);
+        uint flatMe = gridPos.x + (gridPos.y * width) + (gridPos.z * width * width);
+        uint mat = _TempDenseBuffer[jobIndex * 37449 + myOffset + flatMe];
+        
+        // MIXED FALLBACK FIX: Resolve the solid component algorithmically if degrading at high LODs
+        if (mat != 0xFFFFFFFF || currentSize <= job.lodStep) {
+            uint resolveMat = mat;
+            // If we are forced to cap out due to LOD, downsample perfectly from the mathematically pure Level 0!
+            if (mat == 0xFFFFFFFF) {
+                uint flat0 = currentPos.x + (currentPos.y * 32) + (currentPos.z * 1024);
+                resolveMat = _TempDenseBuffer[jobIndex * 37449 + flat0];
                 
-                // 1. ORGANIC COASTLINE MATH
-                bool isLand = IsInsideIsland(worldXZ);
-
-                // 2. FLAT ISLAND GENERATION (Material 4 is Yellow/Sand in your YAML)
-                int columnMaterial = -1;
-                
-                if (isLand) {
-                    // Solid land from Y=0 downwards
-                    columnMaterial = (blockMaxY <= 0.0) ? 4 : ((blockMinY <= 0.0) ? 4 : 0);
-                } else {
-                    // Empty space outside the island radius
-                    columnMaterial = 0; 
+                // If corner sample is Air, try the exact topological center to prevent phantom missing blocks
+                if (resolveMat == 0 && currentSize > 1) {
+                    uint cx = currentPos.x + (currentSize >> 1);
+                    uint cy = currentPos.y + (currentSize >> 1);
+                    uint cz = currentPos.z + (currentSize >> 1);
+                    uint flatC = cx + (cy * 32) + (cz * 1024);
+                    resolveMat = _TempDenseBuffer[jobIndex * 37449 + flatC];
                 }
-
-                if (columnMaterial == -1) { isUniform = false; break; }
-                if (firstMaterial == -1) firstMaterial = columnMaterial;
-                else if (firstMaterial != columnMaterial) { isUniform = false; break; }
             }
-        }
-
-        uint safeIndex = (currentNode < (uint)_PoolSize) ? currentNode : 0; //currentNode & 134217727;
-        if (isUniform || currentSize <= job.lodStep) {
-            _SVOPool[safeIndex].childIndex = 0;
-            uint m = (!isUniform) ? 1 : ((firstMaterial == -1) ? 0 : (uint)firstMaterial);
-            // Default: Air is unlit until PropagateSunlight hits it
-            _SVOPool[safeIndex].material = PackMaterialAndLight(m, 0, 0, 0, 0);
             
-            if (m != 0) {
+            _SVOPool[currentNode].childIndex = 0;
+            _SVOPool[currentNode].material = PackMaterialAndLight(resolveMat, 0,0,0,0);
+            if (resolveMat != 0) {
                 int curTop = currentPos.y + currentSize;
                 if (curTop > chunkMaxY) chunkMaxY = curTop;
                 if (currentPos.y < chunkMinY) chunkMinY = currentPos.y;
             }
         } else {
-            uint childStart = rootIndex + memoryOffset;
-            memoryOffset += 8;
-            if (memoryOffset >= maxMemory - 8) {
-                _SVOPool[safeIndex].childIndex = 0;
-                _SVOPool[safeIndex].material = PackMaterialAndLight(1, 0, 0, 0, 0);
-                continue;
+            uint childStart = rootIndex + allocCounter;
+            allocCounter += 8;
+            _SVOPool[currentNode].childIndex = childStart;
+            _SVOPool[currentNode].material = 0;
+            
+            int half = currentSize >> 1;
+            for(int j=0; j<8; j++) {
+                int cx = j & 1; int cy = (j >> 1) & 1; int cz = (j >> 2) & 1;
+                stack_node[stackPtr] = childStart + j;
+                stack_data[stackPtr] = PackData(currentPos + int3(cx*half, cy*half, cz*half), half);
+                stackPtr++;
             }
-            _SVOPool[safeIndex].childIndex = childStart;
-            _SVOPool[safeIndex].material = PackMaterialAndLight(0, 0, 0, 0, 0);
-
-            int half = currentSize >> 1; 
-            for(int cz = 0; cz < 2; cz++) 
-                for(int cy = 0; cy < 2; cy++) 
-                    for(int cx = 0; cx < 2; cx++) {
-                        stack_node[GI][stackPtr] = childStart + (cx + cy * 2 + cz * 4);
-                        stack_data[GI][stackPtr] = PackData(currentPos + int3(cx, cy, cz) * half, half);
-                        stackPtr++;
-                    }
         }
     }
-    // THE FIX: Write back the exact unscaled position so the RayTracer validation check passes.
+    
     _ChunkMap[job.mapIndex].position = float4(job.worldPos.xyz, (float)chunkMaxY);
     _ChunkMap[job.mapIndex].rootNodeIndex = rootIndex;
     _ChunkMap[job.mapIndex].currentLOD = job.lodStep;
-    // Pack chunkMinY into the state, leaving bit 0 as 0 (isDense = false)
     _ChunkMap[job.mapIndex].packedState = ((uint)chunkMinY << 8);
     _ChunkMap[job.mapIndex].densePoolIndex = 0;
 }
 
-// --- PHASE 2: DENSE ARRAY KERNELS ---
 
+// --- PHASE 2: DECOMPRESS / EDIT KERNELS ---
 [numthreads(8,8,8)]
 void DecompressSVOToDense(uint3 id : SV_DispatchThreadID) {
     if (any(id >= 32)) return;
-    // Read the perfectly compressed data from the SVO tree
     uint mat = GetVoxelFromRoot(_TargetRootIndex, id);
-    
-    // O(1) Math: Write it directly into the 1D flat dense array
     uint flatIdx = id.x + (id.y << 5) + (id.z << 10);
     uint currentIndex = _TargetDenseIndex * 32768 + flatIdx;
-    
     _DenseChunkPool[currentIndex] = mat;
-    
-    // THE FIX: Initialize the logic state for the woken chunk.
-    // If the block is solid (mat != 0), assign it a base health of 100 (Bits 0-7).
     _DenseLogicPool[currentIndex] = ((mat & 0xFF) != 0) ? 100 : 0;
 }
 
 [numthreads(1,1,1)]
 void EditDenseVoxel(uint3 id : SV_DispatchThreadID) {
     int3 center = _EditLocalPos;
-    
     for (int x = -_BrushSize; x <= _BrushSize; x++) {
         for (int y = -_BrushSize; y <= _BrushSize; y++) {
             for (int z = -_BrushSize; z <= _BrushSize; z++) {
-                
                 float3 pLocal = float3(x, y, z);
                 float dist = 0.0;
-                
-                // --- MODULAR SDF SWITCH ---
                 switch (_BrushShape) {
-                    case 0: // CUBE (Chebyshev distance)
-                        dist = max(abs(pLocal.x), max(abs(pLocal.y), abs(pLocal.z)));
-                        break;
-                    case 1: // SPHERE (Euclidean distance)
-                        dist = length(pLocal);
-                        break;
-                    case 2: // CYLINDER Example (Distance on XZ plane)
-                        dist = length(float2(pLocal.x, pLocal.z));
-                        break;
+                    case 0: dist = max(abs(pLocal.x), max(abs(pLocal.y), abs(pLocal.z))); break;
+                    case 1: dist = length(pLocal); break;
+                    case 2: dist = length(float2(pLocal.x, pLocal.z)); break;
                 }
-
-                // +0.5 softens the integer boundary so shapes render cleanly
                 if (dist > _BrushSize + 0.5) continue; 
-
                 int3 p = center + int3(x, y, z);
                 if (p.x >= 0 && p.x < 32 && p.y >= 0 && p.y < 32 && p.z >= 0 && p.z < 32) {
                     uint flatIdx = p.x + (p.y << 5) + (p.z << 10);
                     uint currentIndex = _TargetDenseIndex * 32768 + flatIdx;
-                    
-                    // --- NON-DESTRUCTIVE PLACEMENT & INSTANT LIGHTING ---
                     if (_NewMaterialData != 0) {
                         uint existingMat = _DenseChunkPool[currentIndex] & 0xFF;
                         if (existingMat != 0) continue; 
-                        
-                        // FIX: Inject maximum Sunlight (15) and full Ambient Occlusion (255) 
                         _DenseChunkPool[currentIndex] = _NewMaterialData | (15 << 20) | (255 << 24);
-                        
-                        // Write to logic pool: newly placed blocks get 100 health
                         _DenseLogicPool[currentIndex] = 100;
                     } else {
-                        // We are removing. Write pure 0 (Air, 0 light)
                         _DenseChunkPool[currentIndex] = 0;
-                        // Clear the logic state
                         _DenseLogicPool[currentIndex] = 0;
                     }
                 }
@@ -237,48 +500,30 @@ void EditDenseVoxel(uint3 id : SV_DispatchThreadID) {
 [numthreads(1,1,1)]
 void DamageDenseVoxel(uint3 id : SV_DispatchThreadID) {
     int3 center = _EditLocalPos;
-    
     for (int x = -_BrushSize; x <= _BrushSize; x++) {
         for (int y = -_BrushSize; y <= _BrushSize; y++) {
             for (int z = -_BrushSize; z <= _BrushSize; z++) {
-                
                 float3 pLocal = float3(x, y, z);
                 float dist = 0.0;
-                
-                // --- MODULAR SDF SWITCH ---
                 switch (_BrushShape) {
-                    case 0: // CUBE
-                        dist = max(abs(pLocal.x), max(abs(pLocal.y), abs(pLocal.z)));
-                        break;
-                    case 1: // SPHERE
-                        dist = length(pLocal);
-                        break;
-                    case 2: // CYLINDER
-                        dist = length(float2(pLocal.x, pLocal.z));
-                        break;
+                    case 0: dist = max(abs(pLocal.x), max(abs(pLocal.y), abs(pLocal.z))); break;
+                    case 1: dist = length(pLocal); break;
+                    case 2: dist = length(float2(pLocal.x, pLocal.z)); break;
                 }
-
                 if (dist > _BrushSize + 0.5) continue;
-                
                 int3 p = center + int3(x, y, z);
-                // Ensure we only damage blocks within this specific chunk's bounds
                 if (p.x >= 0 && p.x < 32 && p.y >= 0 && p.y < 32 && p.z >= 0 && p.z < 32) {
                     uint flatIdx = p.x + (p.y << 5) + (p.z << 10);
                     uint currentIndex = _TargetDenseIndex * 32768 + flatIdx;
-                    
                     uint currentMat = _DenseChunkPool[currentIndex] & 0xFF;
-                    if (currentMat == 0) continue; // Cannot damage air
-                    
+                    if (currentMat == 0) continue; 
                     uint currentLogic = _DenseLogicPool[currentIndex];
                     int currentHealth = (int)(currentLogic & 0xFF); 
-                    
                     int newHealth = currentHealth - _DamageAmount;
                     if (newHealth <= 0) {
-                        // Block is broken!
                         _DenseChunkPool[currentIndex] = 0; 
                         _DenseLogicPool[currentIndex] = 0;
                     } else {
-                        // Update the health bits while preserving the rest of the block's state
                         _DenseLogicPool[currentIndex] = (currentLogic & 0xFFFFFF00) | (uint)newHealth;
                     }
                 }

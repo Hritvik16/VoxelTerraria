@@ -4,8 +4,9 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 using VoxelEngine;
+using VoxelEngine.Interfaces;
+using System.Runtime.InteropServices;
 
-using VoxelEngine.Interfaces; // ADD THIS AT THE TOP
 [ExecuteAlways]
 
 public class ChunkManager : MonoBehaviour, IVoxelWorld
@@ -14,11 +15,11 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
     public int chunkSize = 32;
     public float voxelScale = 0.2f;
     [Range(1, 3)] public int clipmapLayers = 3;
-    public int renderDistanceXZ = 18; // 39x39x19 bounds = ~28,899 chunks (Tier 0 is ~60m)
-    public int renderDistanceY = 9;
+    public int renderDistanceXZ = 5; // 39x39x19 bounds = ~28,899 chunks (Tier 0 is ~60m)
+    public int renderDistanceY = 5;
 
     [Header("Performance")]
-    public int maxConcurrentJobs = 800; 
+    public int maxConcurrentJobs = 512; // THE FIX: 512 concurrent chunks pushes terminal velocity limits beyond bounds.
     public float gpuUpdateInterval = 0.05f;
 
     [Header("Physics & Entities")]
@@ -33,8 +34,14 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
     public int brushSize = 0;
     public int brushShape = 0;
 
+    [Header("Debug & Profiling")]
+    [Tooltip("Locks the Z-axis to generate a 2D cross-section of the world for testing subterranean biomes.")]
+    public bool enableAntFarmSlice = false;
+
     // DATA STRUCTURES
     public struct SVONode { public uint childIndex; public uint material; }
+    
+    [StructLayout(LayoutKind.Sequential)] // FIX: Force exact byte alignment
     public struct ChunkData {
         public Vector4 position;    // Note: position.w already holds chunkMaxY from WorldGen!
         public uint rootNodeIndex;
@@ -42,29 +49,51 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         public uint packedState;    // Bit 0: isDense flag. Bits 8-15: chunkMinY (HDDA optimization).
         public uint densePoolIndex; // Pointer to the chunk's 1D array in _DenseChunkPool
     }
+    
+    [StructLayout(LayoutKind.Sequential)] // FIX: Force exact byte alignment
     public struct ChunkJobData {
         public Vector4 worldPos;
         public int mapIndex;
         public int lodStep; 
         public float layerScale;
-        public float pad1; 
+        public uint pad1;          // FIX: Changed to uint to survive numbers > 16.7 Million!
+        public int editStartIndex; 
+        public int editCount;      
+        public int pad2;           
+        public int pad3;           
     }
     public struct LayerCoord {
         public int layer;
         public Vector3Int coord;
     }
 
-    private NativeArray<ChunkData> chunkMapArray;
-    private NativeArray<Vector3Int> chunkTargetCoordArray; 
+    // --- DELTA MAP STRUCTURES ---
+    public struct VoxelEdit {
+        public int flatIndex;
+        public uint material;
+    }
+    private ComputeBuffer deltaMapBuffer;
+    private const int MAX_EDITS_PER_DISPATCH = 16384; // Safe cap for a single frame's generation batch
     
-    private Queue<LayerCoord>[] generationQueues = new Queue<LayerCoord>[8];
+    // The Master Record of all changes in the world. 
+    // Key: Global Chunk Coordinate (e.g., x:10, y:0, z:-5)
+    // Value: A dictionary mapping the flatLocalIndex to the new material.
+    private Dictionary<Vector3Int, Dictionary<int, uint>> worldDeltaMap = new Dictionary<Vector3Int, Dictionary<int, uint>>();
+    
+    
+
+    private ChunkData[] chunkMapArray;
+    private Vector3Int[] chunkTargetCoordArray;  
+    
+    private List<LayerCoord>[] generationQueues = new List<LayerCoord>[8];
     private Vector3Int[] scanOffsets;
 
     // private NativeArray<SVONode> masterNodePool;
     
     private const int POOL_SIZE = 671088512; 
 
-    private ComputeBuffer svoPoolBuffer, chunkMapBuffer, jobQueueBuffer; 
+    private ComputeBuffer svoPoolBuffer, chunkMapBuffer, jobQueueBuffer;
+    private ComputeBuffer tempDenseBuffer; // NEW: The flat 1D array for bottom-up SVO generation 
     
     // --- DENSE POOL VARIABLES (Visual & Logic) ---
     private ComputeBuffer denseChunkPoolBuffer; // Visuals (Material, Light)
@@ -111,6 +140,31 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
     //     Shader.SetGlobalBuffer("_MaterialPalette", materialBuffer);
     // }
 
+    // Saves an edit to standard RAM permanently. Returns true if it was a new edit.
+    private void RecordEditToDeltaMap(Vector3Int globalVoxelPos, uint newMaterial) {
+        // 1. Find which chunk this voxel belongs to
+        Vector3Int chunkCoord = new Vector3Int(
+            Mathf.FloorToInt(globalVoxelPos.x / 32f),
+            Mathf.FloorToInt(globalVoxelPos.y / 32f),
+            Mathf.FloorToInt(globalVoxelPos.z / 32f)
+        );
+
+        // 2. Find the local coordinate inside that chunk (0 to 31)
+        int localX = globalVoxelPos.x - (chunkCoord.x * 32);
+        int localY = globalVoxelPos.y - (chunkCoord.y * 32);
+        int localZ = globalVoxelPos.z - (chunkCoord.z * 32);
+
+        // 3. Convert 3D local coordinate to a 1D flat index (Fastest for GPU compute)
+        int flatLocalIndex = localX + (localY << 5) + (localZ << 10);
+
+        // 4. Save to the Delta Map
+        if (!worldDeltaMap.ContainsKey(chunkCoord)) {
+            worldDeltaMap[chunkCoord] = new Dictionary<int, uint>();
+        }
+        
+        worldDeltaMap[chunkCoord][flatLocalIndex] = newMaterial;
+    }
+
     void OnDestroy() {
         if (materialBuffer != null) materialBuffer.Release();
     }
@@ -128,13 +182,13 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         totalMapCapacity = chunksPerLayer * clipmapLayers; 
         
         // Stratified Static Pool: Balanced for 60m radius on M1 8GB
-        int tier0Size = chunksPerLayer * 8192;
-        int tier1Size = chunksPerLayer * 2048; // Increased from 1024 to allow full LOD 1 surface detail
-        int tier2Size = chunksPerLayer * 256;  // Reduced from 512 as Tier 2 (far distance) only needs basic shapes
+        int tier0Size = chunksPerLayer * 38000; // FIX: Padded to 38,000 to fix the off-by-8 floating gap bug!
+        int tier1Size = chunksPerLayer * 8192;  // FIX: High quality LOD 1
+        int tier2Size = chunksPerLayer * 256;   // Far distance placeholder
         int POOL_SIZE = tier0Size + tier1Size + tier2Size;
 
-        if (!chunkMapArray.IsCreated) {
-            chunkMapArray = new NativeArray<ChunkData>(totalMapCapacity, Allocator.Persistent);
+        if (chunkMapArray == null) {
+            chunkMapArray = new ChunkData[totalMapCapacity];
             for (int i = 0; i < totalMapCapacity; i++) {
                 chunkMapArray[i] = new ChunkData {
                     position = new Vector4(-99999f, -99999f, -99999f, 0f),
@@ -142,22 +196,35 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
                 };
             }
         }
-        if (!chunkTargetCoordArray.IsCreated) {
-            chunkTargetCoordArray = new NativeArray<Vector3Int>(totalMapCapacity, Allocator.Persistent);
+        if (chunkTargetCoordArray == null) {
+            chunkTargetCoordArray = new Vector3Int[totalMapCapacity];
             for(int i = 0; i < totalMapCapacity; i++) chunkTargetCoordArray[i] = new Vector3Int(-99999, -99999, -99999);
         }
 
         List<Vector3Int> offsets = new List<Vector3Int>();
-        for (int y = -renderDistanceY; y <= renderDistanceY; y++)
-            for (int x = -renderDistanceXZ; x <= renderDistanceXZ; x++)
-                for (int z = -renderDistanceXZ; z <= renderDistanceXZ; z++)
-                    offsets.Add(new Vector3Int(x, y, z));
+        
+        if (enableAntFarmSlice) {
+            // TEST 2: THE ANT FARM SLICE
+            // Generates a massive 2D wall slightly in front of the player
+            // Y is clamped to your render distance so deep chunks don't get culled!
+            int yMin = Mathf.Max(-12, -renderDistanceY);
+            for (int y = yMin; y <= 3; y++) 
+                for (int x = -10; x <= 10; x++) 
+                    for (int z = 2; z <= 2; z++) // Pushed 2 chunks forward so you don't spawn inside it
+                        offsets.Add(new Vector3Int(x, y, z));
+        } else {
+            // Standard Spherical Generation
+            for (int y = -renderDistanceY; y <= renderDistanceY; y++)
+                for (int x = -renderDistanceXZ; x <= renderDistanceXZ; x++)
+                    for (int z = -renderDistanceXZ; z <= renderDistanceXZ; z++)
+                        offsets.Add(new Vector3Int(x, y, z));
+        }
         
         offsets.Sort((a, b) => a.sqrMagnitude.CompareTo(b.sqrMagnitude));
         scanOffsets = offsets.ToArray();
 
         for(int i = 0; i < 8; i++) {
-            generationQueues[i] = new Queue<LayerCoord>();
+            generationQueues[i] = new List<LayerCoord>();
             primaryAnchorChunks[i] = new Vector3Int(-9999, -9999, -9999);
         }
 
@@ -166,7 +233,25 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
             // svoPoolBuffer.SetData(masterNodePool);
             Shader.SetGlobalBuffer("_SVOPool", svoPoolBuffer);
         }
-        if (jobQueueBuffer == null) jobQueueBuffer = new ComputeBuffer(maxConcurrentJobs, 32);
+        if (jobQueueBuffer == null) jobQueueBuffer = new ComputeBuffer(maxConcurrentJobs, 48); // FIX: 48 bytes for proper stride
+        
+        if (tempDenseBuffer == null) {
+            // Allocate exact space for the 37,449 SVO mipmap tree nodes multiplied by max jobs
+            tempDenseBuffer = new ComputeBuffer(maxConcurrentJobs * 37449, sizeof(uint));
+            Shader.SetGlobalBuffer("_TempDenseBuffer", tempDenseBuffer);
+        }
+        
+        if (tempDenseBuffer == null) {
+            // Allocate exact space for the 37,449 SVO mipmap tree nodes multiplied by max jobs
+            tempDenseBuffer = new ComputeBuffer(maxConcurrentJobs * 37449, sizeof(uint));
+            Shader.SetGlobalBuffer("_TempDenseBuffer", tempDenseBuffer);
+        }
+
+        if (deltaMapBuffer == null) {
+            deltaMapBuffer = new ComputeBuffer(MAX_EDITS_PER_DISPATCH, 8); // 8 bytes per edit
+            // FIX: Upload empty data immediately. Metal treats uninitialized buffers as fatal null pointers!
+            deltaMapBuffer.SetData(new VoxelEdit[MAX_EDITS_PER_DISPATCH]); 
+        }
 
         // THE FIX: Forcefully destroy the old buffer if it survived a script recompile!
         if (crosshairBuffer != null && crosshairBuffer.count != 2) {
@@ -281,32 +366,54 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
                 && chunkTargetCoordArray[idx] != coord) {
                 
                 chunkTargetCoordArray[idx] = coord; 
-                generationQueues[layer].Enqueue(new LayerCoord { layer = layer, coord = coord });
+                generationQueues[layer].Add(new LayerCoord { layer = layer, coord = coord });
             }
         }
+
+        // ONE-TIME O(N log N) PRE-SORT: Sort descending so the closest chunks are at the END. 
+        // This makes `RemoveAt(Count - 1)` an instant O(1) op in the tightly packed inner `DispatchJobs` loop.
+        generationQueues[layer].Sort((a, b) => {
+            float distA = Vector3.SqrMagnitude(a.coord - center);
+            float distB = Vector3.SqrMagnitude(b.coord - center);
+            return distB.CompareTo(distA);
+        });
     }
 
     void DispatchJobs() {
         int dispatchesThisFrame = 0;
-        int maxAttempts = maxConcurrentJobs * 3; 
+        
+        // THE FIX: Dynamic Time-Slicing for the CPU Queue!
+        // We give the CPU exactly 2.0 milliseconds to dig through the queue.
+        // It will instantly bypass thousands of "Ghost Chunks" without ever stuttering,
+        // guaranteeing the GPU pipeline stays fully fed at high speeds.
+        Stopwatch queueTimer = Stopwatch.StartNew(); 
+        
         NativeArray<ChunkJobData> jobDataArray = new NativeArray<ChunkJobData>(maxConcurrentJobs, Allocator.Temp);
+        
+        // NEW: Prepare the flat delta map array for the GPU
+        NativeArray<VoxelEdit> editDataArray = new NativeArray<VoxelEdit>(MAX_EDITS_PER_DISPATCH, Allocator.Temp);
+        int totalEditsThisFrame = 0;
 
         bool jobsAvailable = true;
         
-        while (dispatchesThisFrame < maxConcurrentJobs && jobsAvailable && maxAttempts > 0) {
+        // Loop until we hit our GPU limit OR our CPU time limit (4.0ms)
+        while (dispatchesThisFrame < maxConcurrentJobs && jobsAvailable && queueTimer.Elapsed.TotalMilliseconds < 4.0) {
             jobsAvailable = false;
             
             for (int L = 0; L < clipmapLayers; L++) {
                 if (dispatchesThisFrame >= maxConcurrentJobs) break;
                 
-                while (generationQueues[L].Count > 0 && maxAttempts > 0) {
-                    maxAttempts--;
-                    LayerCoord lc = generationQueues[L].Dequeue();
+                while (generationQueues[L].Count > 0 && queueTimer.Elapsed.TotalMilliseconds < 4.0) {
+                    
+                    // O(1) Pop from end (the array is ALREADY PRE-SORTED descending upstream!)
+                    int lastQueueElement = generationQueues[L].Count - 1;
+                    LayerCoord lc = generationQueues[L][lastQueueElement];
+                    generationQueues[L].RemoveAt(lastQueueElement);
+                    
                     int idx = GetMapIndex(lc.layer, lc.coord);
                     
                     if (chunkTargetCoordArray[idx] != lc.coord) continue;
 
-                    Vector3Int center = primaryAnchorChunks[lc.layer];
                     // The buggy distance check here was removed. Culling is now safely handled upstream.
 
                     float layerScale = voxelScale * (1 << lc.layer);
@@ -314,22 +421,39 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
                     uint safeRootIndex = 8;
                     int chunkIndexInLayer = idx % chunksPerLayer;
                     if (lc.layer == 0) {
-                        safeRootIndex = (uint)(chunkIndexInLayer * 8192) + 8;
+                        safeRootIndex = (uint)(chunkIndexInLayer * 38000) + 8;
                     } else if (lc.layer == 1) {
-                        safeRootIndex = (uint)(chunksPerLayer * 8192) + (uint)(chunkIndexInLayer * 2048) + 8;
+                        safeRootIndex = (uint)(chunksPerLayer * 38000) + (uint)(chunkIndexInLayer * 8192) + 8;
                     } else if (lc.layer == 2) {
-                        safeRootIndex = (uint)(chunksPerLayer * 8192) + (uint)(chunksPerLayer * 2048) + (uint)(chunkIndexInLayer * 256) + 8;
+                        safeRootIndex = (uint)(chunksPerLayer * 38000) + (uint)(chunksPerLayer * 8192) + (uint)(chunkIndexInLayer * 256) + 8;
                     }
 
-                    int siloCap = (lc.layer == 0) ? 8192 : (lc.layer == 1) ? 2048 : 256;
+                    int siloCap = (lc.layer == 0) ? 38000 : (lc.layer == 1) ? 8192 : 256;
                     int targetLod = (lc.layer == 0) ? 1 : (lc.layer == 1) ? 2 : 4; 
+
+                    int startIndex = totalEditsThisFrame;
+                    int editCount = 0;
+                    
+                    // Check if this chunk has any recorded edits in the Delta Map
+                    if (worldDeltaMap.TryGetValue(lc.coord, out var chunkEdits)) {
+                        foreach (var edit in chunkEdits) {
+                            if (totalEditsThisFrame >= MAX_EDITS_PER_DISPATCH) break; // Safety cap
+                            editDataArray[totalEditsThisFrame] = new VoxelEdit { flatIndex = edit.Key, material = edit.Value };
+                            totalEditsThisFrame++;
+                            editCount++;
+                        }
+                    }
 
                     jobDataArray[dispatchesThisFrame] = new ChunkJobData {
                         worldPos = new Vector4(lc.coord.x * chunkSize, lc.coord.y * chunkSize, lc.coord.z * chunkSize, siloCap),
                         mapIndex = idx,
                         lodStep = targetLod,
                         layerScale = layerScale,
-                        pad1 = safeRootIndex 
+                        pad1 = safeRootIndex,
+                        editStartIndex = startIndex,
+                        editCount = editCount,
+                        pad2 = 0,
+                        pad3 = 0
                     };
 
                     ChunkData cd = chunkMapArray[idx];
@@ -348,14 +472,62 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
 
         if (dispatchesThisFrame > 0) {
             jobQueueBuffer.SetData(jobDataArray, 0, 0, dispatchesThisFrame);
-            int kernel = worldGenShader.FindKernel("GenerateChunk");
-            worldGenShader.SetBuffer(kernel, "_SVOPool", svoPoolBuffer);
-            worldGenShader.SetBuffer(kernel, "_ChunkMap", chunkMapBuffer);
-            worldGenShader.SetBuffer(kernel, "_JobQueue", jobQueueBuffer); 
-            worldGenShader.SetInt("_JobCount", dispatchesThisFrame);
-            worldGenShader.Dispatch(kernel, Mathf.CeilToInt(dispatchesThisFrame / 32f), 1, 1);
-
             
+            // FIX: Never upload a 0-length array to Metal. This caused the 1 FPS stutter!
+            if (totalEditsThisFrame > 0) {
+                deltaMapBuffer.SetData(editDataArray, 0, 0, totalEditsThisFrame); 
+            }
+
+            int kEval = worldGenShader.FindKernel("EvaluateVoxels");
+            int kReduce1 = worldGenShader.FindKernel("ReduceL1");
+            int kReduce2 = worldGenShader.FindKernel("ReduceL2");
+            int kReduce3 = worldGenShader.FindKernel("ReduceL3");
+            int kReduce4 = worldGenShader.FindKernel("ReduceL4");
+            int kReduce5 = worldGenShader.FindKernel("ReduceL5");
+            int kConstruct = worldGenShader.FindKernel("ConstructSVO");
+
+            worldGenShader.SetBuffer(kEval, "_TempDenseBuffer", tempDenseBuffer);
+            worldGenShader.SetBuffer(kEval, "_JobQueue", jobQueueBuffer); 
+            worldGenShader.SetBuffer(kEval, "_DeltaMapBuffer", deltaMapBuffer);
+
+            worldGenShader.SetBuffer(kReduce1, "_TempDenseBuffer", tempDenseBuffer);
+            worldGenShader.SetBuffer(kReduce2, "_TempDenseBuffer", tempDenseBuffer);
+            worldGenShader.SetBuffer(kReduce3, "_TempDenseBuffer", tempDenseBuffer);
+            worldGenShader.SetBuffer(kReduce4, "_TempDenseBuffer", tempDenseBuffer);
+            worldGenShader.SetBuffer(kReduce5, "_TempDenseBuffer", tempDenseBuffer);
+
+            worldGenShader.SetBuffer(kConstruct, "_TempDenseBuffer", tempDenseBuffer);
+            worldGenShader.SetBuffer(kConstruct, "_SVOPool", svoPoolBuffer);
+            worldGenShader.SetBuffer(kConstruct, "_ChunkMap", chunkMapBuffer);
+            worldGenShader.SetBuffer(kConstruct, "_JobQueue", jobQueueBuffer);
+            
+            worldGenShader.SetInt("_JobCount", dispatchesThisFrame);
+
+            // TEST 3: THE ALU PROFILER
+            Stopwatch aluTimer = Stopwatch.StartNew();
+            
+            // Step 1: Evaluate 32,768 voxels flawlessly in parallel
+            worldGenShader.Dispatch(kEval, dispatchesThisFrame * 4, 4, 4);
+
+            // Step 2: Parallel Reduction Mipmapping (Bottom-Up)
+            worldGenShader.Dispatch(kReduce1, dispatchesThisFrame * 2, 2, 2);
+            worldGenShader.Dispatch(kReduce2, dispatchesThisFrame, 1, 1);
+            worldGenShader.Dispatch(kReduce3, dispatchesThisFrame, 1, 1);
+            worldGenShader.Dispatch(kReduce4, dispatchesThisFrame, 1, 1);
+            worldGenShader.Dispatch(kReduce5, dispatchesThisFrame, 1, 1);
+
+            // Step 3: Construct the final SVO into global memory using the mapped reduction tree
+            worldGenShader.Dispatch(kConstruct, dispatchesThisFrame, 1, 1);
+            
+            aluTimer.Stop();
+            
+            // FIX: Silenced to prevent massive Garbage Collection CPU spikes!
+            // if (aluTimer.Elapsed.TotalMilliseconds > 6.0) {
+            //      UnityEngine.Debug.LogWarning($"[Profiler] GPU WorldGen Spike: {dispatchesThisFrame} chunks took {aluTimer.Elapsed.TotalMilliseconds:F2} ms");
+            // } else {
+            //      UnityEngine.Debug.Log($"[Profiler] GPU WorldGen: {dispatchesThisFrame} chunks in {aluTimer.Elapsed.TotalMilliseconds:F2} ms");
+            // }
+
             // --- PHASE 3: THE STUTTER-FIX DISPATCH ---
             if (voxelLightingShader != null && dispatchesThisFrame > 0) {
                 int lightKernel = voxelLightingShader.FindKernel("PropagateSunlight");
@@ -368,8 +540,8 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
                 voxelLightingShader.SetBuffer(lightKernel, "_SVOPool", svoPoolBuffer);
                 voxelLightingShader.Dispatch(lightKernel, 1, 1, 1); 
 
-                // THE FIX: Use floating point division to avoid integer truncation errors on M1
-                int layer = Mathf.FloorToInt((float)rootIdx / (chunksPerLayer * 8192f));
+                // THE FIX: Sync the lighting shader math with the new 38,000 padded LOD 0 cap
+                int layer = Mathf.FloorToInt((float)rootIdx / (chunksPerLayer * 38000f));
                 if (layer == 0) {
                     voxelLightingShader.SetBuffer(spreadKernel, "_SVOPool", svoPoolBuffer);
                     voxelLightingShader.Dispatch(spreadKernel, 4, 4, 4); 
@@ -382,6 +554,7 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
             }
         }
         jobDataArray.Dispose();
+        editDataArray.Dispose();
         // Only pull back data when the world actually changes
         // Only pull back data when the world actually changes
         // Only pull back data when the world actually changes
@@ -397,7 +570,18 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
 
     public void BindPhysicsData(ComputeShader cs, int kernel) {
         if (svoPoolBuffer == null || chunkMapBuffer == null) return;
-        if (crosshairBuffer != null) cs.SetBuffer(kernel, "_CrosshairTarget", crosshairBuffer);
+        
+        // Only bind crosshair/edit data to the RayTracer, not the Physics Scanner
+        if (cs.name == "RayTracer" && crosshairBuffer != null) {
+            cs.SetBuffer(kernel, "_CrosshairTarget", crosshairBuffer);
+            cs.SetVector("_TargetBlock", new Vector4(crosshairData[0], crosshairData[1], crosshairData[2], crosshairData[3]));
+            cs.SetVector("_TargetNormal", new Vector4(crosshairData[4], crosshairData[5], crosshairData[6], 0));
+            cs.SetInt("_IsEditMode", isEditMode ? 1 : 0);
+            cs.SetInt("_EditMode", editMode);
+            cs.SetInt("_BrushSize", brushSize);
+            cs.SetInt("_BrushShape", brushShape);
+            cs.SetFloat("_VoxelScale", voxelScale);
+        }
         
         // --- THE CRITICAL FIX: PLUG IN THE DENSE POOLS ---
         if (denseChunkPoolBuffer != null) cs.SetBuffer(kernel, "_DenseChunkPool", denseChunkPoolBuffer);
@@ -407,16 +591,7 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         cs.SetBuffer(kernel, "_ChunkMap", chunkMapBuffer);
         cs.SetVectorArray("_ClipmapCenters", shaderCenterChunks);
         cs.SetVector("_RenderBounds", new Vector4(renderDistanceXZ, renderDistanceY, 0, 0));
-        // Send the exact crosshair target and normal to the shader
-        cs.SetVector("_TargetBlock", new Vector4(crosshairData[0], crosshairData[1], crosshairData[2], crosshairData[3]));
-        cs.SetVector("_TargetNormal", new Vector4(crosshairData[4], crosshairData[5], crosshairData[6], 0));
         cs.SetInt("_ChunkCount", chunksPerLayer);
-        cs.SetInt("_IsEditMode", isEditMode ? 1 : 0);
-        cs.SetInt("_EditMode", editMode);
-        cs.SetInt("_BrushSize", brushSize);
-        cs.SetInt("_BrushShape", brushShape);
-        cs.SetFloat("_VoxelScale", voxelScale);
-        // if (materialBuffer != null) cs.SetBuffer(kernel, "_MaterialPalette", materialBuffer);
     }
 
     Vector3Int GetChunkCoord(Vector3 pos, float worldChunkSize) => 
@@ -431,6 +606,20 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
 
    // --- PHASE 2: INTERACTION & DECOMPRESSION ---
     public void EditVoxel(Vector3Int globalVoxelPos, uint newMaterial, int brushSize = 0, int brushShape = 0) {
+        // 0. Record to Delta Map (Memory)
+        for (int x = -brushSize; x <= brushSize; x++) {
+            for (int y = -brushSize; y <= brushSize; y++) {
+                for (int z = -brushSize; z <= brushSize; z++) {
+                    Vector3Int targetPos = globalVoxelPos + new Vector3Int(x, y, z);
+                    float dist = brushShape == 0 ? 
+                        Mathf.Max(Mathf.Abs(x), Mathf.Max(Mathf.Abs(y), Mathf.Abs(z))) : new Vector3(x, y, z).magnitude;
+                    if (dist <= brushSize + 0.5f) {
+                        RecordEditToDeltaMap(targetPos, newMaterial);
+                    }
+                }
+            }
+        }
+
         // 1. Calculate the global bounding box of the brush
         Vector3Int minGlobal = globalVoxelPos - new Vector3Int(brushSize, brushSize, brushSize);
         Vector3Int maxGlobal = globalVoxelPos + new Vector3Int(brushSize, brushSize, brushSize);
@@ -517,6 +706,20 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
     }
 
     public void DamageVoxel(Vector3Int globalVoxelPos, int damageAmount, int brushSize = 0, int brushShape = 0) {
+        // 0. Record destruction to Delta Map (Memory)
+        for (int x = -brushSize; x <= brushSize; x++) {
+            for (int y = -brushSize; y <= brushSize; y++) {
+                for (int z = -brushSize; z <= brushSize; z++) {
+                    Vector3Int targetPos = globalVoxelPos + new Vector3Int(x, y, z);
+                    float dist = brushShape == 0 ? 
+                        Mathf.Max(Mathf.Abs(x), Mathf.Max(Mathf.Abs(y), Mathf.Abs(z))) : new Vector3(x, y, z).magnitude;
+                    if (dist <= brushSize + 0.5f) {
+                        RecordEditToDeltaMap(targetPos, 0); // 0 = Air/Destroyed
+                    }
+                }
+            }
+        }
+
         // 1. Calculate the global bounding box of the damage area
         Vector3Int minGlobal = globalVoxelPos - new Vector3Int(brushSize, brushSize, brushSize);
         Vector3Int maxGlobal = globalVoxelPos + new Vector3Int(brushSize, brushSize, brushSize);
@@ -609,7 +812,10 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         svoPoolBuffer?.Release(); 
         chunkMapBuffer?.Release(); 
         jobQueueBuffer?.Release();
-        materialBuffer?.Release(); 
+        tempDenseBuffer?.Release();
+        tempDenseBuffer?.Release(); // NEW
+        deltaMapBuffer?.Release();
+        materialBuffer?.Release();
         denseChunkPoolBuffer?.Release(); 
         denseLogicPoolBuffer?.Release();
         crosshairBuffer?.Release();
@@ -617,9 +823,13 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         svoPoolBuffer = null;
         chunkMapBuffer = null;
         jobQueueBuffer = null;
+        tempDenseBuffer = null;
+        tempDenseBuffer = null;
         materialBuffer = null;
         denseChunkPoolBuffer = null;
         denseLogicPoolBuffer = null;
+        deltaMapBuffer = null;  // FIX: Prevent zombie buffer crash
+        crosshairBuffer = null; // FIX: Prevent zombie buffer crash
     }
 
     void OnGUI() {

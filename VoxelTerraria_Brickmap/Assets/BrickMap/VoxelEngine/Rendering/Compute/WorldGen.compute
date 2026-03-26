@@ -1,0 +1,123 @@
+#pragma kernel GenerateChunk
+
+struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD; uint packedState; uint densePoolIndex; };
+
+struct ChunkJobData {
+    float4 worldPos;   
+    int mapIndex;      
+    int lodStep;       
+    float layerScale;
+    uint pad1;
+    int editStartIndex; 
+    int editCount;      
+    int pad2;           
+    int pad3;           
+};
+
+struct VoxelEdit {
+    int flatIndex;
+    uint material;
+};
+
+// --- BUFFERS ---
+StructuredBuffer<VoxelEdit> _DeltaMapBuffer;
+RWStructuredBuffer<ChunkData> _ChunkMap;
+StructuredBuffer<ChunkJobData> _JobQueue; 
+RWStructuredBuffer<uint> _DenseChunkPool;
+RWStructuredBuffer<uint> _DenseLogicPool;
+
+int _JobCount;
+#include "TerrainMath.hlsl"
+
+[numthreads(8,8,8)]
+void GenerateChunk(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID, uint groupIndex : SV_GroupIndex) {
+    uint jobIndex = (uint)groupID.x / 4u;
+    if (jobIndex >= (uint)_JobCount) return; 
+
+    ChunkJobData job = _JobQueue[jobIndex];
+    uint3 localGroup = uint3(groupID.x % 4u, groupID.y, groupID.z);
+    uint3 localPos = localGroup * 8u + groupThreadID;
+    uint mapIndex = (uint)job.mapIndex;
+    uint denseBase = mapIndex * 32768u;
+    uint flatIdx = localPos.x + (localPos.y << 5u) + (localPos.z << 10u);
+
+    // Optimization: Chunk-level center for distance checks
+    float3 chunkCenter = job.worldPos.xyz + (16.0 * job.layerScale);
+    float chunkRadius = 16.0 * 1.732 * job.layerScale;
+
+    // --- VOXEL EVALUATION ---
+    float2 worldXZ = (job.worldPos.xz + (float2)localPos.xz) * job.layerScale;
+    float3 worldXYZ = float3(worldXZ.x, (job.worldPos.y + (float)localPos.y) * job.layerScale, worldXZ.y);
+    
+    // Per-voxel Topology (Robust, No groupshared races)
+    float baseHeight; int activeBiome;
+    {
+        float dFC = length(worldXZ); float cD = GetCoastDistance(worldXZ);
+        float nT = perlin2D(worldXZ * 0.002); baseHeight = 15.0 + (nT * 20.0); activeBiome = 1; 
+        if (dFC > cD) { baseHeight = clamp(10.0 - (dFC - cD) * 0.5, -40.0, 10.0); }
+        else {
+            for(int i_f = 0; i_f < _FeatureCount; i_f++) {
+                FeatureAnchor anchor = _FeatureAnchorBuffer[i_f];
+                // Chunk-level Early Out
+                if (distance(job.worldPos.xz + 16.0, anchor.position) > anchor.radius + 16.0) continue;
+
+                float d_f = distance(worldXZ, anchor.position);
+                if (d_f < anchor.radius) {
+                    float W = (anchor.topologyID == 10) ? pow(max(0.0, 1.0 - (d_f/anchor.radius)), 2.0) : 
+                             ((anchor.topologyID == 11) ? max(0.0, 1.0 - pow(d_f/anchor.radius, 6.0)) : 
+                             ((anchor.topologyID == 12) ? cos((d_f/anchor.radius) * 1.57079) : 0.0));
+                    if (anchor.topologyID == 12) baseHeight -= (W * abs(anchor.heightMod));
+                    else baseHeight = lerp(baseHeight, anchor.heightMod, W);
+                    if (anchor.topologyID == 0) activeBiome = anchor.biomeID;
+                }
+            }
+        }
+    }
+
+    float voxN = perlin3D(worldXYZ * 0.05);
+
+    int colMat = 0;
+    if (worldXYZ.y > baseHeight + 5.0) { colMat = 0; }
+    else if (worldXYZ.y < baseHeight - 5.0) { 
+        colMat = GetMaterial(worldXYZ, baseHeight, activeBiome); 
+        for(int c=0; c<_CavernCount; c++) {
+            CavernNode node = _CavernNodeBuffer[c];
+            if (distance(chunkCenter, node.position) > node.radius + chunkRadius) continue;
+            if (node.cavernType == 1 && length(worldXYZ - node.position) < node.radius + 4.0 * voxN) { colMat = 0; break; }
+        }
+    }
+    else {
+        float density = baseHeight - worldXYZ.y;
+        if (abs(density) < 0.6) density += 0.6 * voxN;
+        colMat = (density > 0.0) ? GetMaterial(worldXYZ, baseHeight, activeBiome) : 0;
+        
+        if (colMat > 0) {
+            for(int c2=0; c2<_CavernCount; c2++) {
+                CavernNode node = _CavernNodeBuffer[c2];
+                if (distance(chunkCenter, node.position) > node.radius + chunkRadius) continue;
+                if (node.cavernType == 1 && length(worldXYZ - node.position) < node.radius + 4.0 * voxN) { colMat = 0; break; }
+            }
+        }
+    }
+
+    // Edits
+    if (job.editCount > 0) {
+        for (int e = 0; e < job.editCount; e++) {
+            VoxelEdit edit = _DeltaMapBuffer[job.editStartIndex + e];
+            uint3 eP = uint3((uint)edit.flatIndex & 0x1Fu, ((uint)edit.flatIndex >> 5u) & 0x1Fu, ((uint)edit.flatIndex >> 10u) & 0x1Fu);
+            if (all(eP == localPos)) colMat = (int)edit.material;
+        }
+    }
+
+    // --- FINALIZATION ---
+    _DenseChunkPool[denseBase + flatIdx] = (uint)colMat;
+    _DenseLogicPool[denseBase + flatIdx] = 100u;
+
+    if (groupIndex == 0u) {
+        _ChunkMap[mapIndex].position = float4(job.worldPos.xyz, 32.0);
+        _ChunkMap[mapIndex].densePoolIndex = mapIndex;
+        _ChunkMap[mapIndex].packedState = 1; 
+        
+    }
+
+}
