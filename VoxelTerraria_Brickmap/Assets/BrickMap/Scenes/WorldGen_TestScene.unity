@@ -752,7 +752,7 @@ MonoBehaviour:
   chunkSize: 32
   voxelScale: 0.1
   clipmapLayers: 3
-  renderDistanceXZ: 7
+  renderDistanceXZ: 20
   renderDistanceY: 2
   maxConcurrentJobs: 32
   gpuUpdateInterval: 0.05

@@ -644,7 +644,8 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float3 skyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
 
         // Output raw HDR color
-        float3 finalColor = lerp(colorWithLight, skyColor, fog);
+        // float3 finalColor = lerp(colorWithLight, skyColor, fog); //Disable fog during development
+        float3 finalColor = colorWithLight;
 
         // --- TARGET BLOCK HIGHLIGHT ---
         // If we hit a block and are in edit mode, check if this pixel belongs to the targeted block
