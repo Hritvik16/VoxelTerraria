@@ -439,19 +439,18 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
 
                 // --- DYNAMIC DENSE CHECK ---
                 #if DUAL_STATE_1BIT
+                    // 1 BIT TEST
                     int flatIdx = vLocal.x + (vLocal.y << 5) + (vLocal.z << 10);
-                    uint packedBase = denseIndex * 1024; 
+                    uint packedBase = denseIndex * 1024u; 
                     uint matData = _DenseChunkPool[packedBase + (flatIdx >> 5)];
                     if ((matData & (1u << (flatIdx & 31))) != 0) { 
-                        hitInside = true; hitMatID_Data = 1; 
-                        finalVoxelSize = voxelSize; finalBlockPos = mapPos; break; 
+                        hitInside = true; hitMatID_Data = 1; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
                     }
                 #else
                     uint denseBase = denseIndex << 15;
                     uint matData = _DenseChunkPool[denseBase + vLocal.x + (vLocal.y << 5) + (vLocal.z << 10)];
                     if ((matData & 0xFF) > 0) { 
-                        hitInside = true; hitMatID_Data = matData; 
-                        finalVoxelSize = voxelSize; finalBlockPos = mapPos; break; 
+                        hitInside = true; hitMatID_Data = matData; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
                     }
                 #endif
                 
@@ -524,7 +523,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         if (hit && t < 50.0) { 
             _CrosshairTarget[0] = int4((int)finalBlockPos.x, (int)finalBlockPos.y, (int)finalBlockPos.z, 1);
             // Calculate and pass the exact geometric normal of the face we hit
-            float3 rawNormal = float3(mask) * -sign(ray.direction);
+            float3 rawNormal = float3(mask) * (ray.direction < 0.0f ? 1.0f : -1.0f); // -sign(ray.direction);
             _CrosshairTarget[1] = int4((int)rawNormal.x, (int)rawNormal.y, (int)rawNormal.z, 0);
         } else {
             _CrosshairTarget[0] = int4(-999, -999, -999, 0); 
@@ -534,7 +533,9 @@ void CSMain (uint3 id : SV_DispatchThreadID)
 
     if (hit) {
         
-        float3 normal = float3(mask) * -sign(ray.direction);
+        // THE FIX: Prevent HLSL sign(0)=0 from collapsing the normal vector
+        float3 raySign = ray.direction < 0.0f ? 1.0f : -1.0f;
+        float3 normal = float3(mask) * raySign;
         float3 hitWorldPos = ray.origin + ray.direction * t;
         
         int layer = GetLayer(hitWorldPos);
@@ -706,16 +707,37 @@ void CSMain (uint3 id : SV_DispatchThreadID)
 
 
         #if DUAL_STATE_1BIT
-        // --- 1-BIT PROCEDURAL RENDERING ---
+        // --- 1-BIT PROCEDURAL RENDERING & SHADOWS ---
             float noiseLarge = hash(floor(finalBlockPos * 0.1));
             float noiseDetail = (hash(finalBlockPos) - 0.5) * 0.08; 
             float3 baseColor = float3(0.85, 0.85, 0.85) + (noiseLarge * 0.05) + noiseDetail;
             
             float3 lightingNormal = normalize(normal + float3(0, 0.65, 0));
             float faceShade = saturate(dot(lightingNormal, float3(0, 1, 0))) * 0.5 + saturate(abs(dot(lightingNormal, float3(1, 0, 0)))) * 0.2 + 0.45;
-            
             float sun_light = saturate(dot(normal, _SunDir.xyz) * 0.8 + 0.2);
-            float3 colorWithLight = baseColor * faceShade * ((sun_light * 2.5) + 0.2); // Simplified light
+
+            // Cast a secondary ray toward the sun
+            // --- 1-BIT DIRECTIONAL SHADOWS (ACNE-FREE) ---
+            Ray shadowRay;
+            
+            // 1. Get the integer coordinate of the empty air block touching the face we hit
+            float3 airBlockPos = finalBlockPos + normal;
+            
+            // 2. Spawn the ray from the exact mathematical center of that air block
+            shadowRay.origin = (airBlockPos * finalVoxelSize) + (finalVoxelSize * 0.5f);
+            
+            // 3. Fire at the sun
+            shadowRay.direction = _SunDir;
+            
+            float s_t = 0; int3 s_mask = 0; uint s_mat = 0; 
+            float s_size = 1.0; float3 s_pos = 0; int s_steps = 0;
+            
+            bool inShadow = TraceVoxelRay(shadowRay, 4.0, true, s_t, s_mask, s_mat, s_size, s_pos, s_steps);
+            
+            float sunExposure = inShadow ? 0.25 : 1.0;
+            float ambient = 0.2;
+
+            float3 colorWithLight = baseColor * faceShade * ((sun_light * 2.5 * sunExposure) + ambient);
         #else
         // --- 32-BIT BRICKMAP RENDERING ---
             uint mat; float r_light, g_light, b_light, sun_light; uint bakedAO_mask;
@@ -833,7 +855,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                 abs(finalBlockPos.z - _TargetBlock.z) < 0.1) {
                 
                 // Calculate the normal of the face this pixel is on
-                float3 rawNormal = float3(mask) * -sign(ray.direction);
+                float3 rawNormal = float3(mask) * (ray.direction < 0.0f ? 1.0f : -1.0f); //-sign(ray.direction);
                 
                 // Check if this pixel is on the exact face the crosshair is resting on
                 bool isTargetFace = (abs(rawNormal.x - _TargetNormal.x) < 0.1 && 
