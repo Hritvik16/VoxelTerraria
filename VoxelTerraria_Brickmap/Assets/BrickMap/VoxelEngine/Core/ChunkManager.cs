@@ -495,9 +495,9 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
 
         // if (anyAnchorChanged) mapOrMaskChanged = true;
 
-        // // if (VoxelPhysicsManager.Instance != null) {
-        // //     VoxelPhysicsManager.Instance.SyncPhysics();
-        // // }
+        // if (VoxelPhysicsManager.Instance != null) {
+        //     VoxelPhysicsManager.Instance.SyncPhysics();
+        // }
 
         // 2. CONTINUOUS AMORTIZED RADAR (The 50 m/s Fix)
         bool anyAnchorChanged = false;

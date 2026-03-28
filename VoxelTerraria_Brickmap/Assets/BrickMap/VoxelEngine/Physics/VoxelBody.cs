@@ -14,23 +14,30 @@ public class VoxelBody : MonoBehaviour
     [HideInInspector] public Vector3Int lastMaxBound = new Vector3Int(-999,-999,-999);
 
     [HideInInspector] public Vector3 lastBuildPosition = new Vector3(-999, -999, -999);
-    
-    // --> ADDED THIS ONE LINE to fix the compiler error <--
     [HideInInspector] public Vector3Int lastGridPos = new Vector3Int(-999, -999, -999);
     
     private Collider col;
-
     private Rigidbody rb;
 
-    void Start()
+    void Awake()
     {
         col = GetComponent<Collider>();
         rb = GetComponent<Rigidbody>();
-        if (VoxelPhysicsManager.Instance != null)
-            VoxelPhysicsManager.Instance.RegisterBody(this);
     }
 
-    void OnDestroy()
+    // THE FIX: Register as soon as the object is active, not a frame later.
+    void OnEnable()
+    {
+        if (VoxelPhysicsManager.Instance != null) {
+            VoxelPhysicsManager.Instance.RegisterBody(this);
+        } else {
+            // BRUTE FORCE: If the singleton isn't ready, find it manually.
+            VoxelPhysicsManager manager = FindFirstObjectByType<VoxelPhysicsManager>();
+            if (manager != null) manager.RegisterBody(this);
+        }
+    }
+
+    void OnDisable()
     {
         if (VoxelPhysicsManager.Instance != null)
             VoxelPhysicsManager.Instance.UnregisterBody(this);
@@ -48,15 +55,12 @@ public class VoxelBody : MonoBehaviour
         // We look ahead by 0.15s to compensate for AsyncGPUReadback latency (approx 2-3 frames)
         if (rb != null && rb.linearVelocity.sqrMagnitude > 0.1f) {
             Vector3 prediction = rb.linearVelocity * 0.15f;
-            // Expand the bounds to encompass both current and predicted position
             b.Encapsulate(b.min + prediction);
             b.Encapsulate(b.max + prediction);
         }
 
-        // Expand the bounds by our voxel buffer (increased for high-speed reliability)
         b.Expand(voxelBuffer * voxelScale * 2f);
 
-        // Convert world bounds to exact voxel grid min/max coordinates
         minGridBound = new Vector3Int(
             Mathf.FloorToInt(b.min.x / voxelScale),
             Mathf.FloorToInt(b.min.y / voxelScale),
