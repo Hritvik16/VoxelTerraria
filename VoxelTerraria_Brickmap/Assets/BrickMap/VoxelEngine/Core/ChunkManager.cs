@@ -57,6 +57,15 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
     [Header("Debug & Profiling")]
     public bool enableAntFarmSlice = false;
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BiomeAnchor {
+        public Vector3 position;
+        public float radius;
+        public int biomeType;
+    }
+    
+    private ComputeBuffer biomeAnchorBuffer;
+
     // DATA STRUCTURES
     [StructLayout(LayoutKind.Sequential)]
     public struct ChunkData {
@@ -118,6 +127,16 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
     public Vector3Int[] chunkTargetCoordArray;
     private List<LayerCoord>[] generationQueues = new List<LayerCoord>[8];
     private Vector3Int[] scanOffsets;
+
+    public NativeArray<uint> cpuIlluminationPool; 
+    private ComputeBuffer illuminationPoolBuffer;
+    
+    // 32x32x32 voxels = 32,768 voxels. At 16-bits per voxel (2 bytes), that is 65,536 bytes.
+    // Divided by 4 bytes (size of a uint), we need exactly 16,384 uints per chunk.
+    private const int UINTS_PER_LIGHT_CHUNK = 16384; 
+
+    // --- THE DIRTY FLAG JANITOR ---
+    private Queue<int> dirtyLightChunks = new Queue<int>();
 
     // private ComputeBuffer[] chunkMapBuffers = new ComputeBuffer[2]; // FIX: Ring-buffered map!
     // private ComputeBuffer macroGridBuffer;
@@ -327,6 +346,11 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         if (denseChunkPoolBuffer == null) {
             denseChunkPoolBuffer = new ComputeBuffer(dynamicMaxChunks * UINTS_PER_CHUNK, sizeof(uint));
             cpuDenseChunkPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_CHUNK, Allocator.Persistent);
+            // Allocate the 16-Bit RGB Light Array
+            illuminationPoolBuffer = new ComputeBuffer(dynamicMaxChunks * UINTS_PER_LIGHT_CHUNK, sizeof(uint));
+            cpuIlluminationPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_LIGHT_CHUNK, Allocator.Persistent);
+            
+            Shader.SetGlobalBuffer("_IlluminationPool", illuminationPoolBuffer);
             cpuMacroMaskPool = new NativeArray<uint>(dynamicMaxChunks * 19, Allocator.Persistent); 
 
             chunkHeightBuffer = new ComputeBuffer(totalMapCapacity, sizeof(float));
@@ -339,6 +363,26 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
             if (!persistentTunnelArray.IsCreated) persistentTunnelArray = new NativeArray<VoxelEngine.World.TunnelSpline>(5000, Allocator.Persistent); 
 
             denseChunkPoolBuffer.SetData(cpuDenseChunkPool);
+
+            // --- BIOME BLUEPRINT SYSTEM ---
+            if (biomeAnchorBuffer == null) {
+                // Let's create a huge map with 5 distinct Biome zones
+                BiomeAnchor[] anchors = new BiomeAnchor[5];
+                
+                // 0 = Forest, 1 = Desert, 2 = Winter, 3 = Jungle
+                anchors[0] = new BiomeAnchor { position = new Vector3(0, 0, 0), radius = 250f, biomeType = 0 };       // Spawn is Forest
+                anchors[1] = new BiomeAnchor { position = new Vector3(400, 0, 0), radius = 350f, biomeType = 1 };     // East is Desert
+                anchors[2] = new BiomeAnchor { position = new Vector3(-400, 0, 0), radius = 350f, biomeType = 2 };    // West is Snow
+                anchors[3] = new BiomeAnchor { position = new Vector3(0, 0, 400), radius = 350f, biomeType = 3 };     // North is Jungle
+                anchors[4] = new BiomeAnchor { position = new Vector3(250, 0, 250), radius = 200f, biomeType = 1 };   // Desert/Jungle intersection
+                
+                // 20 bytes per struct (12 + 4 + 4)
+                biomeAnchorBuffer = new ComputeBuffer(anchors.Length, 20);
+                biomeAnchorBuffer.SetData(anchors);
+                
+                Shader.SetGlobalBuffer("_BiomeAnchors", biomeAnchorBuffer);
+                Shader.SetGlobalInt("_BiomeAnchorCount", anchors.Length);
+            }
 
             if (argsBuffer == null) {
                 // The "Args" buffer tells the GPU how many triangles to draw.
@@ -594,6 +638,7 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
 
         // 4. DISPATCH NEW JOBS
         DispatchNewJobs(); 
+        ProcessDirtyLightChunks();
 
         if (crosshairBuffer != null && Time.frameCount % 4 == 0) {
             UnityEngine.Rendering.AsyncGPUReadback.Request(crosshairBuffer, crosshairCallback);
@@ -670,6 +715,7 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
                 cd.packedState = state | (px << 8) | (py << 16) | (pz << 24);
                 
                 chunkMapArray[mapIndex] = cd;
+                dirtyLightChunks.Enqueue(mapIndex);
             }
         }
 
@@ -719,6 +765,47 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         isTerrainJobRunning = false;
         activeDispatches = 0;
 
+    }
+    private void ProcessDirtyLightChunks() {
+        int processedThisFrame = 0;
+        int maxPerFrame = 5; // Throttle to prevent CPU spikes
+        int attempts = dirtyLightChunks.Count;
+
+        while (processedThisFrame < maxPerFrame && attempts > 0) {
+            attempts--;
+            int mapIndex = dirtyLightChunks.Dequeue();
+            ChunkData cd = chunkMapArray[mapIndex];
+
+            // 1. Stale Check: If the chunk was unloaded while waiting in line, ignore it.
+            if (cd.densePoolIndex == 0xFFFFFFFF) continue;
+
+            int layer = mapIndex / chunksPerLayer;
+            Vector3Int coord = chunkTargetCoordArray[mapIndex];
+
+            // 2. Neighbor Check: Do the 6 adjacent chunks exist yet?
+            bool allNeighborsReady = true;
+            Vector3Int[] dirs = { Vector3Int.up, Vector3Int.down, Vector3Int.left, Vector3Int.right, Vector3Int.forward, Vector3Int.back };
+            
+            foreach (Vector3Int dir in dirs) {
+                int nIdx = GetMapIndex(layer, coord + dir);
+                // If the neighbor's state is 0, it hasn't finished geometry generation.
+                if (chunkTargetCoordArray[nIdx] != coord + dir || chunkMapArray[nIdx].packedState == 0) {
+                    allNeighborsReady = false;
+                    break;
+                }
+            }
+
+            // 3. The Execution
+            if (allNeighborsReady) {
+                // TODO: Run C# Burst Light Propagation Job!
+                
+                // For now, just mark it as processed
+                processedThisFrame++;
+            } else {
+                // 4. The Patience: Not ready yet. Throw it to the back of the line to check again later.
+                dirtyLightChunks.Enqueue(mapIndex);
+            }
+        }
     }
 
     void DispatchNewJobs() {
@@ -1049,6 +1136,9 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         if (persistentTunnelArray.IsCreated) persistentTunnelArray.Dispose();
         if (nativeChunkUpload.IsCreated) nativeChunkUpload.Dispose();
         if (nativeMaskUpload.IsCreated) nativeMaskUpload.Dispose();
+        if (cpuIlluminationPool.IsCreated) cpuIlluminationPool.Dispose();
+
+        illuminationPoolBuffer?.Release();
         
         macroGridBuffer?.Release();
         deltaMapBuffer?.Release();
@@ -1061,6 +1151,8 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
             jobQueueBuffers[i]?.Release();
             tempMaskUploadBuffers[i]?.Release();
         }
+        biomeAnchorBuffer?.Release();
+        biomeAnchorBuffer = null;
 
         vertexBuffer?.Release();
         argsBuffer?.Release();
@@ -1073,6 +1165,12 @@ public class ChunkManager : MonoBehaviour, IVoxelWorld
         denseChunkPoolBuffer = null;
         deltaMapBuffer = null;
         crosshairBuffer = null;
+    }
+
+    public void WaitForTerrainJobs() {
+        if (isTerrainJobRunning) {
+            activeTerrainJobHandle.Complete(); 
+        }
     }
 
     void OnGUI() {

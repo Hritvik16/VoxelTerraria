@@ -52,8 +52,10 @@ namespace VoxelEngine.World
             float bh01 = GetHeight2D(wStartX, wEndZ);
             float bh11 = GetHeight2D(wEndX, wEndZ);
 
-            float minBH = math.min(math.min(bh00, bh10), math.min(bh01, bh11)) - 15f;
-            float maxBH = math.max(math.max(bh00, bh10), math.max(bh01, bh11)) + 15f;
+            float bhMid = GetHeight2D(wStartX + 16f * job.layerScale, wStartZ + 16f * job.layerScale);
+            
+            float minBH = math.min(math.min(math.min(bh00, bh10), math.min(bh01, bh11)), bhMid) - 30f;
+            float maxBH = math.max(math.max(math.max(bh00, bh10), math.max(bh01, bh11)), bhMid) + 30f;
 
             chunkHeights[job.mapIndex] = maxBH;
 

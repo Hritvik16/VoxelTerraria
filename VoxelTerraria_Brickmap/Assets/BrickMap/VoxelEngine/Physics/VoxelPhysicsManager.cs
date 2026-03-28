@@ -29,6 +29,7 @@ public class VoxelPhysicsManager : MonoBehaviour
         }
     }
     void FixedUpdate() {
+        ChunkManager.Instance.WaitForTerrainJobs();
         SyncPhysics();
     }
 

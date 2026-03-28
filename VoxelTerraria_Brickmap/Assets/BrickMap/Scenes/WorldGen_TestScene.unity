@@ -257,7 +257,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &996611172
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -265,7 +265,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 996611171}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: cfe9fdf1309bd45eca741b735dd2ae24, type: 3}
   m_Name: 
@@ -423,13 +423,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1044288755}
   serializedVersion: 2
-  m_LocalRotation: {x: -0.050656404, y: 0.9863052, z: -0.025511036, w: 0.15487167}
+  m_LocalRotation: {x: 0.0017589463, y: 0.007850824, z: 0.0017315317, w: 0.99996614}
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 1.985, y: 162.045, z: -6.194}
+  m_LocalEulerAnglesHint: {x: 0.2, y: 0.9, z: 0.2}
 --- !u!1 &1111590112
 GameObject:
   m_ObjectHideFlags: 0
@@ -737,8 +737,8 @@ MonoBehaviour:
   chunkSize: 32
   voxelScale: 0.1
   clipmapLayers: 3
-  renderDistanceXZ: 22
-  renderDistanceY: 10
+  renderDistanceXZ: 18
+  renderDistanceY: 5
   maxConcurrentJobs: 400
   gpuUpdateInterval: 0.05
   worldLoaders:
@@ -1158,7 +1158,7 @@ Transform:
   m_GameObject: {fileID: 1811667596}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0.041242424, z: 0, w: 0.99914926}
-  m_LocalPosition: {x: 6.2627106, y: 26.38152, z: -60.623177}
+  m_LocalPosition: {x: 37.968113, y: 38.264523, z: -72.0687}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
