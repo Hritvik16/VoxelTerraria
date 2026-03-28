@@ -4,7 +4,7 @@
 #pragma kernel CommitUploadBuffers // NEW KERNEL
 #pragma multi_compile _ DUAL_STATE_1BIT
 
-struct ChunkData { float4 position; uint rootNodeIndex; int currentLOD; uint packedState; uint densePoolIndex; };
+struct ChunkData { uint packedState; uint densePoolIndex; };
 
 struct ChunkJobData {
     float4 worldPos;   
@@ -28,6 +28,8 @@ RWStructuredBuffer<ChunkData> _ChunkMap;
 StructuredBuffer<ChunkJobData> _JobQueue; 
 RWStructuredBuffer<uint> _DenseChunkPool;
 RWStructuredBuffer<uint> _DenseLogicPool;
+RWStructuredBuffer<uint> _MacroMaskPool;   // NEW
+StructuredBuffer<uint> _TempMaskUpload;    // NEW
 
 int _ChunkSize;
 int _JobCount;
@@ -120,13 +122,14 @@ void ClearJobState(uint3 id : SV_DispatchThreadID) {
     uint denseIndex = (uint)_JobQueue[id.x].pad2; 
     
     _MacroGrid[mapIndex] = uint2(mapIndex + 2, 1); 
-    _ChunkMap[mapIndex].position = float4(_JobQueue[id.x].worldPos.xyz, 32.0);
+    // _ChunkMap[mapIndex].position = float4(_JobQueue[id.x].worldPos.xyz, 32.0);
     _ChunkMap[mapIndex].packedState = 0; // FIX: Hide from Raytracer until job finishes
     _ChunkMap[mapIndex].densePoolIndex = denseIndex;
 }
 
 StructuredBuffer<uint> _TempChunkUpload;
 StructuredBuffer<uint> _TempLogicUpload;
+
 
 [numthreads(256, 1, 1)]
 void CommitUploadBuffers(uint3 id : SV_DispatchThreadID) {
@@ -135,36 +138,100 @@ void CommitUploadBuffers(uint3 id : SV_DispatchThreadID) {
     // --- THE 1-BIT ARCHITECTURE ---
     uint totalPacked = (uint)_JobCount * 1024u;
     if (id.x >= totalPacked) return;
+    
     uint jobIndex = id.x / 1024u;
     uint flatIdx = id.x % 1024u;
-    uint denseBase = ((uint)_JobQueue[jobIndex].pad2) * 1024u;
+    
+    // DECLARED GLOBALLY SO ALL BLOCKS CAN USE IT:
+    uint denseIndex = (uint)_JobQueue[jobIndex].pad2; 
+    uint denseBase = denseIndex * 1024u;
 
+    // Copy the chunk data
     _DenseChunkPool[denseBase + flatIdx] = _TempChunkUpload[id.x];
 
+    // Natively patch the Table of Contents on the GPU!
+    if (flatIdx < 19) {
+        _MacroMaskPool[denseIndex * 19 + flatIdx] = _TempMaskUpload[jobIndex * 19 + flatIdx];
+    }
+
+    // FIX: The exact millisecond the GPU finishes copying the memory, mark it as ready to render!
     if (flatIdx == 0) {
         uint mapIndex = _JobQueue[jobIndex].mapIndex;
         uint isSky = _JobQueue[jobIndex].pad3;
-        _ChunkMap[mapIndex].packedState = (isSky == 1) ? 3u : 1u;
+        
+        // --- THE 0-BYTE SPATIAL TAG ---
+        // THE FIX: Do not divide by scale! worldPos is already unscaled in the queue.
+        int3 coord = int3(floor(_JobQueue[jobIndex].worldPos.xyz / 32.0));
+        
+        uint state = (isSky == 1) ? 3u : 1u;
+        uint px = (uint)(coord.x & 0xFF);
+        uint py = (uint)(coord.y & 0xFF);
+        uint pz = (uint)(coord.z & 0xFF);
+        
+        _ChunkMap[mapIndex].packedState = state | (px << 8) | (py << 16) | (pz << 24);
     }
 
 #else
     // --- THE 32-BIT BRICKMAP ARCHITECTURE ---
     uint totalVoxels = (uint)_JobCount * 32768u;
     if (id.x >= totalVoxels) return;
+    
     uint jobIndex = id.x / 32768u;
     uint flatIdx = id.x % 32768u;
-    uint denseBase = ((uint)_JobQueue[jobIndex].pad2) * 32768u;
+    
+    uint denseIndex = (uint)_JobQueue[jobIndex].pad2;
+    uint denseBase = denseIndex * 32768u;
 
     _DenseChunkPool[denseBase + flatIdx] = _TempChunkUpload[id.x];
     _DenseLogicPool[denseBase + flatIdx] = _TempLogicUpload[id.x];
-
+    
     if (flatIdx == 0) {
         uint mapIndex = _JobQueue[jobIndex].mapIndex;
         uint isSky = _JobQueue[jobIndex].pad3;
+        
+        // _ChunkMap[mapIndex].position = float4(_JobQueue[jobIndex].worldPos.xyz, 32.0);
+        _ChunkMap[mapIndex].densePoolIndex = denseIndex;
         _ChunkMap[mapIndex].packedState = (isSky == 1) ? 3u : 1u;
     }
 #endif
 }
+// [numthreads(256, 1, 1)]
+// void CommitUploadBuffers(uint3 id : SV_DispatchThreadID) {
+    
+// #if DUAL_STATE_1BIT
+//     // --- THE 1-BIT ARCHITECTURE ---
+//     uint totalPacked = (uint)_JobCount * 1024u;
+//     if (id.x >= totalPacked) return;
+//     uint jobIndex = id.x / 1024u;
+//     uint flatIdx = id.x % 1024u;
+//     uint denseBase = ((uint)_JobQueue[jobIndex].pad2) * 1024u;
+
+//     _DenseChunkPool[denseBase + flatIdx] = _TempChunkUpload[id.x];
+
+//     if (flatIdx == 0) {
+//         uint mapIndex = _JobQueue[jobIndex].mapIndex;
+//         uint isSky = _JobQueue[jobIndex].pad3;
+//         _ChunkMap[mapIndex].packedState = (isSky == 1) ? 3u : 1u;
+//     }
+
+// #else
+//     // --- THE 32-BIT BRICKMAP ARCHITECTURE ---
+//     uint totalVoxels = (uint)_JobCount * 32768u;
+//     if (id.x >= totalVoxels) return;
+//     uint jobIndex = id.x / 32768u;
+//     uint flatIdx = id.x % 32768u;
+//     uint denseBase = ((uint)_JobQueue[jobIndex].pad2) * 32768u;
+
+//     _DenseChunkPool[denseBase + flatIdx] = _TempChunkUpload[id.x];
+//     _DenseLogicPool[denseBase + flatIdx] = _TempLogicUpload[id.x];
+
+//     if (flatIdx == 0) {
+//         uint mapIndex = _JobQueue[jobIndex].mapIndex;
+//         uint isSky = _JobQueue[jobIndex].pad3;
+//         _ChunkMap[mapIndex].packedState = (isSky == 1) ? 3u : 1u;
+//     }
+// #endif
+// }
 
 // --- NEW: FAST GPU-SIDE MEMORY COMMIT ---
 // StructuredBuffer<uint> _TempChunkUpload;

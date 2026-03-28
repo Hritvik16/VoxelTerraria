@@ -257,7 +257,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &996611172
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -526,7 +526,6 @@ GameObject:
   - component: {fileID: 1329300603}
   - component: {fileID: 1329300602}
   - component: {fileID: 1329300605}
-  - component: {fileID: 1329300606}
   - component: {fileID: 1329300607}
   - component: {fileID: 1329300608}
   m_Layer: 0
@@ -654,24 +653,6 @@ MonoBehaviour:
     m_VarianceClampScale: 0.9
     m_ContrastAdaptiveSharpening: 0
   m_Version: 2
---- !u!114 &1329300606
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1329300601}
-  m_Enabled: 0
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: d328aef8047684ca69ff16bcd1fe7fb9, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::FlyCamera
-  hermesBootsSpeed: 15
-  minecartMaxSpeed: 30
-  autoDrive: 0
-  mouseSensitivity: 0.1
-  pitch: 0
-  yaw: 0
 --- !u!114 &1329300607
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -749,12 +730,16 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ChunkManager
   currentArchitecture: 1
+  currentRenderer: 0
+  greedyMesherShader: {fileID: 7200000, guid: 71e6c8c88f301446b8eb1f08706dcc85, type: 3}
+  rasterVoxelMaterial: {fileID: 2100000, guid: 0b346886ecbfb4b1fa7021e1801324b7, type: 2}
+  maxVertexCount: 6000000
   chunkSize: 32
   voxelScale: 0.1
   clipmapLayers: 3
-  renderDistanceXZ: 20
-  renderDistanceY: 2
-  maxConcurrentJobs: 32
+  renderDistanceXZ: 22
+  renderDistanceY: 10
+  maxConcurrentJobs: 400
   gpuUpdateInterval: 0.05
   worldLoaders:
   - {fileID: 1329300604}

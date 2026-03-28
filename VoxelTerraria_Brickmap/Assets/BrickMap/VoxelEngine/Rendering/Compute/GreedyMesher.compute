@@ -1,0 +1,102 @@
+#pragma kernel BuildMesh
+
+struct ChunkJobData {
+    float4 worldPos;   
+    int mapIndex;      
+    int lodStep;       
+    float layerScale;
+    uint pad1;
+    int editStartIndex; 
+    int editCount;      
+    int pad2;           
+    int pad3;           
+};
+
+struct VertexData {
+    float3 position;
+    uint packedData; // We store the Normal/Face Direction here
+};
+
+StructuredBuffer<ChunkJobData> _JobQueue;
+StructuredBuffer<uint> _DenseChunkPool;
+RWStructuredBuffer<VertexData> _VertexBuffer;
+
+// ByteAddressBuffer safely handles cross-thread Interlocked adds for the triangle count
+RWStructuredBuffer<uint> _ArgsBuffer;
+
+int _JobCount;
+
+// Generates a perfectly merged Quad along the X-axis
+// Generates a perfectly merged Quad along the X-axis
+    void EmitQuad(uint faceDir, uint startX, uint endX, uint y, uint z, float3 chunkPos, float scale) {
+        uint vIndex;
+        InterlockedAdd(_ArgsBuffer[0], 6, vIndex); // THE FIX: Access index [0]
+        if(vIndex >= 5999990) return;
+
+    float3 p0, p1, p2, p3;
+
+    // faceDir: 0=+Y, 1=-Y, 2=+Z, 3=-Z, 4=+X, 5=-X
+    if (faceDir == 0)      { p0 = float3(startX, y + 1, z); p1 = float3(startX, y + 1, z + 1); p2 = float3(endX, y + 1, z + 1); p3 = float3(endX, y + 1, z); }
+    else if (faceDir == 1) { p0 = float3(startX, y, z + 1); p1 = float3(startX, y, z);         p2 = float3(endX, y, z);         p3 = float3(endX, y, z + 1); }
+    else if (faceDir == 2) { p0 = float3(endX, y, z + 1);   p1 = float3(startX, y, z + 1);     p2 = float3(startX, y + 1, z + 1); p3 = float3(endX, y + 1, z + 1); }
+    else if (faceDir == 3) { p0 = float3(startX, y, z);     p1 = float3(endX, y, z);           p2 = float3(endX, y + 1, z);       p3 = float3(startX, y + 1, z); }
+    else if (faceDir == 4) { p0 = float3(endX, y, z);       p1 = float3(endX, y, z + 1);       p2 = float3(endX, y + 1, z + 1);   p3 = float3(endX, y + 1, z); }
+    else if (faceDir == 5) { p0 = float3(startX, y, z + 1); p1 = float3(startX, y, z);         p2 = float3(startX, y + 1, z);     p3 = float3(startX, y + 1, z + 1); }
+
+    VertexData v0, v1, v2, v3;
+    v0.position = chunkPos + (p0 * scale); v0.packedData = faceDir;
+    v1.position = chunkPos + (p1 * scale); v1.packedData = faceDir;
+    v2.position = chunkPos + (p2 * scale); v2.packedData = faceDir;
+    v3.position = chunkPos + (p3 * scale); v3.packedData = faceDir;
+
+    // Output two triangles (0,1,2 and 0,2,3)
+    _VertexBuffer[vIndex + 0] = v0; _VertexBuffer[vIndex + 1] = v1; _VertexBuffer[vIndex + 2] = v2;
+    _VertexBuffer[vIndex + 3] = v0; _VertexBuffer[vIndex + 4] = v2; _VertexBuffer[vIndex + 5] = v3;
+}
+
+// 1024 Threads per chunk. Each thread handles a completely independent X-Axis row!
+[numthreads(32, 32, 1)]
+void BuildMesh(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID) {
+    uint jobIndex = groupID.x;
+    if (jobIndex >= (uint)_JobCount) return;
+
+    uint y = groupThreadID.x; // 0 to 31
+    uint z = groupThreadID.y; // 0 to 31
+
+    uint denseBase = _JobQueue[jobIndex].pad2 * 1024u;
+    uint currentMask = _DenseChunkPool[denseBase + y + (z << 5)];
+    
+    if (currentMask == 0) return; // Entire row is empty air. Skip instantly!
+
+    float scale = _JobQueue[jobIndex].layerScale;
+    float3 chunkPos = _JobQueue[jobIndex].worldPos.xyz * scale; // THE FIX
+
+    // Macro to fetch neighbor rows safely without leaving the chunk bounds
+    #define GET_ROW(dy, dz) ( ((int)y+(dy) >= 0 && (int)y+(dy) < 32 && (int)z+(dz) >= 0 && (int)z+(dz) < 32) ? _DenseChunkPool[denseBase + (y+(dy)) + ((z+(dz)) << 5)] : 0u )
+
+    // ULTRA-FAST BITWISE CULLING: Finds all exposed faces for 32 voxels in 6 operations
+    uint masks[6];
+    masks[0] = currentMask & ~GET_ROW(1, 0);  // +Y Exposed
+    masks[1] = currentMask & ~GET_ROW(-1, 0); // -Y Exposed
+    masks[2] = currentMask & ~GET_ROW(0, 1);  // +Z Exposed
+    masks[3] = currentMask & ~GET_ROW(0, -1); // -Z Exposed
+    masks[4] = currentMask & ~(currentMask << 1); // +X Exposed
+    masks[5] = currentMask & ~(currentMask >> 1); // -X Exposed
+
+    // 1D GREEDY MESHING: Sweep the masks and merge adjacent 1s into large strips
+    for (uint d = 0; d < 6; d++) {
+        uint mask = masks[d];
+        int startX = -1;
+        for (int x = 0; x <= 32; x++) {
+            bool isSolid = (x < 32) && ((mask & (1u << x)) != 0);
+            [branch]
+            if (isSolid && startX == -1) {
+                startX = x; // Start of a new face
+            } else if (!isSolid && startX != -1) {
+                // End of the face! Emit the merged quad!
+                EmitQuad(d, startX, x, y, z, chunkPos, scale);
+                startX = -1;
+            }
+        }
+    }
+}

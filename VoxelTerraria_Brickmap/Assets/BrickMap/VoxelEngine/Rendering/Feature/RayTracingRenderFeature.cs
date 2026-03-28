@@ -24,6 +24,9 @@ public class RayTracingRenderFeature : ScriptableRendererFeature
     }
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData) {
+        if (ChunkManager.Instance != null && ChunkManager.Instance.currentRenderer != ChunkManager.RenderBackend.Raytracer) {
+            return; 
+        }
         if (settings.computeShader == null || blitMaterial == null) return;
         renderer.EnqueuePass(rayTracingPass);
     }

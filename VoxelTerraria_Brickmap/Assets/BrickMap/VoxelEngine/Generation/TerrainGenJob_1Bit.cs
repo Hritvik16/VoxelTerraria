@@ -23,6 +23,7 @@ namespace VoxelEngine.World
         [NativeDisableParallelForRestriction] public NativeArray<uint> denseChunkPool;
         // [NativeDisableParallelForRestriction] public NativeArray<uint> denseLogicPool;
         [NativeDisableParallelForRestriction] public NativeArray<uint> macroMaskPool; // ADD THIS
+        [NativeDisableParallelForRestriction] public NativeArray<float> chunkHeights; // NEW: The Sky Teleporter Map
 
         // --- THE NEW AAA 2D SURFACE MATH ---
         private float GetHeight2D(float x, float z) {
@@ -54,6 +55,8 @@ namespace VoxelEngine.World
             float minBH = math.min(math.min(bh00, bh10), math.min(bh01, bh11)) - 15f;
             float maxBH = math.max(math.max(bh00, bh10), math.max(bh01, bh11)) + 15f;
 
+            chunkHeights[job.mapIndex] = maxBH;
+
             bool isFullyUnderground = wEndY < minBH;
             bool isFullySky = wStartY > maxBH;
 
@@ -62,56 +65,81 @@ namespace VoxelEngine.World
                 modifiedJob.pad3 = 1; 
                 jobQueue[jobIndex] = modifiedJob;
 
-                for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = 0; // CHANGED
+                for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = 0; 
+                
+                // --- THE FIX: Clear the mask so the GPU doesn't read garbage data! ---
+                int maskBase1 = job.pad2 * 19;
+                for (int i = 0; i < 19; i++) macroMaskPool[maskBase1 + i] = 0; 
+                
                 return; 
             }
 
             if (isFullyUnderground) {
-                for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = uint.MaxValue; // CHANGED: Fill with 1s
+                for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = uint.MaxValue; // Fill with 1s
                 ApplyCavesAndTunnels(denseBase, job);
-                return; 
+            } 
+            else {
+                // 2. SURFACE GENERATION (Packed 1-Bit)
+                for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = 0; // Clear memory first
+
+                for (int z = 0; z < 32; z++) {
+                    float zPos = (job.worldPos.z + z) * job.layerScale; 
+                    for (int x = 0; x < 32; x++) {
+                        float xPos = (job.worldPos.x + x) * job.layerScale;
+                        float h = GetHeight2D(xPos, zPos);
+
+                        for (int y = 0; y < 32; y++) {
+                            float yPos = (job.worldPos.y + y) * job.layerScale; 
+                            
+                            if (yPos <= h) {
+                                int flatIdx = x + (y << 5) + (z << 10);
+                                int uintIdx = flatIdx >> 5;
+                                int bitIdx = flatIdx & 31;
+                                denseChunkPool[(int)denseBase + uintIdx] |= (1u << bitIdx);
+                            }
+                        }
+                    }
+                }
+                ApplyCavesAndTunnels(denseBase, job);
             }
 
-            // 2. SURFACE GENERATION (Packed 1-Bit)
-            for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = 0; // Clear memory first
+            // 3. BAKE THE HIERARCHICAL DDA MASK (19 Uints)
+            int maskBase = job.pad2 * 19;
+            for (int i = 0; i < 19; i++) macroMaskPool[maskBase + i] = 0; 
 
-            for (int z = 0; z < 32; z++) {
-                float zPos = (job.worldPos.z + z) * job.layerScale; 
-                for (int x = 0; x < 32; x++) {
-                    float xPos = (job.worldPos.x + x) * job.layerScale;
-                    float h = GetHeight2D(xPos, zPos);
-
-                    for (int y = 0; y < 32; y++) {
-                        float yPos = (job.worldPos.y + y) * job.layerScale; 
-                        
-                        if (yPos <= h) {
-                            int flatIdx = x + (y << 5) + (z << 10);
-                            int uintIdx = flatIdx >> 5;
-                            int bitIdx = flatIdx & 31;
-                            denseChunkPool[(int)denseBase + uintIdx] |= (1u << bitIdx);
+            // LEVEL 0: 4x4x4 (16 Uints)
+            for (int x = 0; x < 32; x++) {
+                for (int y = 0; y < 32; y++) {
+                    for (int z = 0; z < 32; z++) {
+                        int flatIdx = x + (y << 5) + (z << 10);
+                        if ((denseChunkPool[(int)denseBase + (flatIdx >> 5)] & (1u << (flatIdx & 31))) != 0) {
+                            int sx = x >> 2; int sy = y >> 2; int sz = z >> 2;
+                            int subIndex = sx + (sy << 3) + (sz << 6);
+                            macroMaskPool[maskBase + (subIndex >> 5)] |= (1u << (subIndex & 31));
                         }
                     }
                 }
             }
 
-            ApplyCavesAndTunnels(denseBase, job);
+            // LEVEL 1: 8x8x8 (2 Uints / 64 Bits)
+            for(int i = 0; i < 512; i++) {
+                if ((macroMaskPool[maskBase + (i >> 5)] & (1u << (i & 31))) != 0) {
+                    int mx = (i & 7) >> 1;        // x in 0..3
+                    int my = ((i >> 3) & 7) >> 1; // y in 0..3
+                    int mz = (i >> 6) >> 1;       // z in 0..3
+                    int mip1Idx = mx + (my << 2) + (mz << 4);
+                    macroMaskPool[maskBase + 16 + (mip1Idx >> 5)] |= (1u << (mip1Idx & 31));
+                }
+            }
 
-            // 3. BAKE THE HIERARCHICAL DDA MASK
-            int maskBase = job.pad2 * 16;
-            for (int i = 0; i < 16; i++) macroMaskPool[maskBase + i] = 0; 
-
-            for (int x = 0; x < 32; x++) {
-                for (int y = 0; y < 32; y++) {
-                    for (int z = 0; z < 32; z++) {
-                        int flatIdx = x + (y << 5) + (z << 10);
-                        int uintIdx = flatIdx >> 5;
-                        int bitIdx = flatIdx & 31;
-
-                        if ((denseChunkPool[(int)denseBase + uintIdx] & (1u << bitIdx)) != 0) {
-                            int subIndex = (x >> 2) + ((y >> 2) << 3) + ((z >> 2) << 6);
-                            macroMaskPool[maskBase + (subIndex >> 5)] |= (1u << (subIndex & 31));
-                        }
-                    }
+            // LEVEL 2: 16x16x16 (1 Uint / 8 Bits)
+            for(int i = 0; i < 64; i++) {
+                if ((macroMaskPool[maskBase + 16 + (i >> 5)] & (1u << (i & 31))) != 0) {
+                    int mx = (i & 3) >> 1;        // x in 0..1
+                    int my = ((i >> 2) & 3) >> 1; // y in 0..1
+                    int mz = (i >> 4) >> 1;       // z in 0..1
+                    int mip2Idx = mx + (my << 1) + (mz << 2);
+                    macroMaskPool[maskBase + 18] |= (1u << mip2Idx);
                 }
             }
         }
