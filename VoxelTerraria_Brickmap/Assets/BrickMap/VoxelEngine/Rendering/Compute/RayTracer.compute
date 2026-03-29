@@ -678,7 +678,11 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     
     // RAISED TO 250m: Allows the camera to render mountains when flying high
     if (ray.origin.y > 250.0f && ray.direction.y >= 0.0f) {
-        Result[id.xy] = float4(0.6, 0.8, 1.0, 0);
+        float sunHighlight = pow(max(0.0f, dot(ray.direction, _SunDir)), 8.0f);
+        float3 baseSkyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
+        float3 sunHaloColor = float3(1.0, 0.9, 0.7);
+        float3 atmosphereColor = lerp(baseSkyColor, sunHaloColor, sunHighlight);
+        Result[id.xy] = float4(atmosphereColor, 0);
         return;
     }
 
@@ -914,19 +918,24 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             float3 colorWithLight = baseColor * faceShade * voxelLight * vao;
         #endif
 
-        // DYNAMIC FOG: Calculates atmosphere thickness based on your exact Inspector bounds
+        // --- OPTIMIZED ANALYTICAL HAZE (Moiré Killer) ---
         int maxL = _ClipmapLayers - 1;
         float maxWorldDist = _RenderBounds.x * 32.0f * _ClipmapCenters[maxL].w;
         
-        // Fog starts at 40% of your maximum view distance and reaches maximum density at the edge
-        float fogStart = maxWorldDist * 0.4f; 
-        float fog = saturate((t - fogStart) / (maxWorldDist - fogStart));
-        // float fog = 1.0 - exp(-pow(t * 0.008, 2.0));
-        float3 skyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
+        // 1. Calculate how "thick" the air is based on distance
+        float fogDensity = 1.2f / maxWorldDist; 
+        float fogFactor = 1.0f - exp(-(t * fogDensity));
 
-        // Output raw HDR color
-        // float3 finalColor = lerp(colorWithLight, skyColor, fog); //Disable fog during development
-        float3 finalColor = colorWithLight;
+        // 2. Calculate the bright sun "halo" through the fog (Mie Fake)
+        float sunHighlight = pow(max(0.0f, dot(ray.direction, _SunDir)), 8.0f);
+
+        // 3. Sky gradient and Sun Halo mix
+        float3 baseSkyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
+        float3 sunHaloColor = float3(1.0, 0.9, 0.7);
+        float3 atmosphereColor = lerp(baseSkyColor, sunHaloColor, sunHighlight);
+
+        // 4. Wash out the voxel contrast to perfectly kill Moiré bands
+        float3 finalColor = lerp(colorWithLight, atmosphereColor, fogFactor);
 
         // --- DEBUG: SHARP VOXEL EDGES ---
         float3 debugPreciseHitPos = (ray.origin + safeDir * t) / finalVoxelSize;
@@ -1088,7 +1097,11 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float zDepth = t * dot(ray.direction, _CameraForward.xyz);
         Result[id.xy] = float4(finalColor, zDepth);
     } else {
-        float3 skyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
-        Result[id.xy] = float4(skyColor, 0); 
+        float sunHighlight = pow(max(0.0f, dot(ray.direction, _SunDir)), 8.0f);
+        float3 baseSkyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
+        float3 sunHaloColor = float3(1.0, 0.9, 0.7);
+        float3 atmosphereColor = lerp(baseSkyColor, sunHaloColor, sunHighlight);
+
+        Result[id.xy] = float4(atmosphereColor, 0); 
     }
 }

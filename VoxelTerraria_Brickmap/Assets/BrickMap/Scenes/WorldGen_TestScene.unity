@@ -767,9 +767,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 54065725b278d46f49eaac24858500a9, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelDebugger
-  currentRenderMode: 0
-  showLODWireframes: 0
-  wireframeMaterial: {fileID: 2100000, guid: 1fd29b7751f734ea48a8da36cb859306, type: 2}
+  debugModeActive: 0
+  showRedWireframe: 0
 --- !u!1 &1482229630
 GameObject:
   m_ObjectHideFlags: 0

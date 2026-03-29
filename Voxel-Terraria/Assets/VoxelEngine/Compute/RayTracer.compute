@@ -590,7 +590,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float ambient = 0.2;
         // Multiply the chunk's ambient sun value by our new real-time directional shadow
         float3 voxelLight = float3(r_light, g_light, b_light) + (sun_light * 2.5 * sunExposure) + ambient;
-        float3 colorWithLight = baseColor * faceShade * voxelLight * vao;
+        float3 colorWithLight = baseColor * faceShade * voxelLight;// * vao;
 
         // DYNAMIC FOG: Calculates atmosphere thickness based on your exact Inspector bounds
         int maxL = _ClipmapLayers - 1;
