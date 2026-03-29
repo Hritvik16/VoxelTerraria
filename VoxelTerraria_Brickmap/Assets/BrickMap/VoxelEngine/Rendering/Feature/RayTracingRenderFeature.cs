@@ -103,6 +103,7 @@ class RayTracingPass : ScriptableRenderPass
                 Vector4 sunDir = new Vector4(dir.x, dir.y, dir.z, 0f).normalized; 
                 cmd.SetComputeVectorParam(data.computeShader, "_SunDir", sunDir);
                 cmd.SetComputeIntParam(data.computeShader, "_DebugViewMode", Shader.GetGlobalInt("_DebugViewMode"));
+                cmd.SetComputeIntParam(data.computeShader, "_ShowRedWireframe", Shader.GetGlobalInt("_ShowRedWireframe"));
 
                 cmd.DispatchCompute(data.computeShader, kernel, Mathf.CeilToInt(data.dispatchWidth / 8.0f), Mathf.CeilToInt(data.dispatchHeight / 8.0f), 1);
 

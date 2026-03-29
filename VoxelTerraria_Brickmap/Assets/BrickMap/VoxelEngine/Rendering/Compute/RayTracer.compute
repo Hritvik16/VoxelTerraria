@@ -31,6 +31,7 @@ float4 _ClipmapCenters[8];
 int _ClipmapLayers;
 float4 _RenderBounds;
 int _DebugViewMode;
+int _ShowRedWireframe;
 float3 _SunDir;
 
 int _IsEditMode;
@@ -939,7 +940,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         else debugUV = debugLocalHitPos.xy;
         
         float edgeDist = min(min(debugUV.x, 1.0 - debugUV.x), min(debugUV.y, 1.0 - debugUV.y));
-        if (edgeDist < 0.05) {
+        if (_ShowRedWireframe == 1 && edgeDist < 0.05) {
             finalColor = lerp(finalColor, float3(1, 0, 0), 0.8); // 80% opacity Red Voxel Edges
         }
 
