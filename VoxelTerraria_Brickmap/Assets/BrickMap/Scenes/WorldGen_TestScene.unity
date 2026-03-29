@@ -1222,7 +1222,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 41e4b76a13e864f93bd06e2e14e95b04, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PlayerMovement
-  walkSpeed: 2
+  walkSpeed: 5
   flySpeed: 6
   lookSensitivity: 2
   stepHeight: 0.21

@@ -452,10 +452,15 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
                 // Prevent overshooting into neighboring chunks by checking the XZ walls
                 float3 nextC = (chunkCoord + stepDirBounds) * chunkSize;
                 float3 tMaxC = (nextC - ray.origin) * invDir;
+                if (!(tMaxC.x > t - 0.1f) || abs(ray.direction.x) < 1e-6f) tMaxC.x = 3.4e38f;
+                if (!(tMaxC.z > t - 0.1f) || abs(ray.direction.z) < 1e-6f) tMaxC.z = 3.4e38f;
                 float tBoundary = min(tMaxC.x, tMaxC.z); 
                 
-                // Engage Teleport (Add micro-epsilon to decisively cross the chunk border!)
-                t = max(t, min(tRoof, tBoundary) + (voxelSize * 0.001f));
+                // Engage Teleport 
+                float teleportT = min(tRoof, tBoundary);
+                float pad = max(voxelSize * 1e-3f, teleportT * 1e-5f);
+                t = max(t + voxelSize * 1e-4f, teleportT + pad);
+                
                 // Resync to the safely capped vector
                 mapPos = int3(floor((ray.origin + safeDir * t) / voxelSize));
                 // tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
@@ -474,10 +479,9 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
 
             float3 tDelta = abs(voxelSize * invDir);
             float3 tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
-            
-            // if (abs(ray.direction.x) < 1e-6f) { tMaxV.x = 3.4e38f; tDelta.x = 3.4e38f; }
-            // if (abs(ray.direction.y) < 1e-6f) { tMaxV.y = 3.4e38f; tDelta.y = 3.4e38f; }
-            // if (abs(ray.direction.z) < 1e-6f) { tMaxV.z = 3.4e38f; tDelta.z = 3.4e38f; }
+            if (tMaxV.x < -1.0f || abs(ray.direction.x) < 1e-6f) tMaxV.x = 3.4e38f; else if (tMaxV.x <= t) tMaxV.x += tDelta.x;
+            if (tMaxV.y < -1.0f || abs(ray.direction.y) < 1e-6f) tMaxV.y = 3.4e38f; else if (tMaxV.y <= t) tMaxV.y += tDelta.y;
+            if (tMaxV.z < -1.0f || abs(ray.direction.z) < 1e-6f) tMaxV.z = 3.4e38f; else if (tMaxV.z <= t) tMaxV.z += tDelta.z;
 
             uint denseBase = denseIndex << 15;
             bool hitInside = false;
@@ -502,19 +506,25 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
                 if ((cachedMip2 & (1u << mip2Index)) == 0) { // USE CACHED REGISTER
                     int3 nextBoundLocal = (vLocal & ~15) + (stepDirBounds * 16);
                     float3 tPlanes = ((chunkCoord * 32 + nextBoundLocal) * voxelSize - ray.origin) * invDir;
-                    if (tPlanes.x <= t + 0.001f) tPlanes.x = 3.4e38f;
-                    if (tPlanes.y <= t + 0.001f) tPlanes.y = 3.4e38f;
-                    if (tPlanes.z <= t + 0.001f) tPlanes.z = 3.4e38f;
+                    if (!(tPlanes.x > t + 1e-4f)) tPlanes.x = 3.4e38f;
+                    if (!(tPlanes.y > t + 1e-4f)) tPlanes.y = 3.4e38f;
+                    if (!(tPlanes.z > t + 1e-4f)) tPlanes.z = 3.4e38f;
+                    
                     // 1. Find the closest plane
                     float tNext = min(min(tPlanes.x, tPlanes.y), tPlanes.z);
                     
-                    // 2. THE FIX: Explicitly save the normal of the plane we just leaped through!
                     mask = (tNext == tPlanes.x) ? int3(1,0,0) : ((tNext == tPlanes.y) ? int3(0,1,0) : int3(0,0,1));
                     
-                    // 3. THE CRACK FIX: Micro-epsilon + safeDir synchronization
-                    t = tNext + (voxelSize * 0.001f);
+                    // 3. SECURE MECHANICAL PROGRESSION
+                    // 3. SECURE MECHANICAL PROGRESSION
+                    float pad = max(voxelSize * 1e-3f, tNext * 1e-5f);
+                    t = max(t, tNext + pad);
                     mapPos = int3(floor((ray.origin + safeDir * t) / voxelSize)); 
+                    
                     tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
+                    if (tMaxV.x < -1.0f || abs(ray.direction.x) < 1e-6f) tMaxV.x = 3.4e38f; else if (tMaxV.x <= t) tMaxV.x += tDelta.x;
+                    if (tMaxV.y < -1.0f || abs(ray.direction.y) < 1e-6f) tMaxV.y = 3.4e38f; else if (tMaxV.y <= t) tMaxV.y += tDelta.y;
+                    if (tMaxV.z < -1.0f || abs(ray.direction.z) < 1e-6f) tMaxV.z = 3.4e38f; else if (tMaxV.z <= t) tMaxV.z += tDelta.z;
                     continue;
                 }
 
@@ -528,19 +538,24 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
                 if ((mip1Mask & (1u << (mip1Index & 31))) == 0) {
                     int3 nextBoundLocal = (vLocal & ~7) + (stepDirBounds * 8);
                     float3 tPlanes = ((chunkCoord * 32 + nextBoundLocal) * voxelSize - ray.origin) * invDir;
-                    if (tPlanes.x <= t + 0.001f) tPlanes.x = 3.4e38f;
-                    if (tPlanes.y <= t + 0.001f) tPlanes.y = 3.4e38f;
-                    if (tPlanes.z <= t + 0.001f) tPlanes.z = 3.4e38f;
+                    if (!(tPlanes.x > t - 0.1f) || abs(ray.direction.x) < 1e-6f) tPlanes.x = 3.4e38f;
+                    if (!(tPlanes.y > t - 0.1f) || abs(ray.direction.y) < 1e-6f) tPlanes.y = 3.4e38f;
+                    if (!(tPlanes.z > t - 0.1f) || abs(ray.direction.z) < 1e-6f) tPlanes.z = 3.4e38f;
+                    
                     // 1. Find the closest plane
                     float tNext = min(min(tPlanes.x, tPlanes.y), tPlanes.z);
                     
-                    // 2. THE FIX: Explicitly save the normal of the plane we just leaped through!
                     mask = (tNext == tPlanes.x) ? int3(1,0,0) : ((tNext == tPlanes.y) ? int3(0,1,0) : int3(0,0,1));
                     
-                    // 3. THE CRACK FIX: Micro-epsilon + safeDir synchronization
-                    t = tNext + (voxelSize * 0.001f);
+                    // 3. SECURE MECHANICAL PROGRESSION
+                    float pad = max(voxelSize * 1e-3f, tNext * 1e-5f);
+                    t = max(t + voxelSize * 1e-4f, tNext + pad);
                     mapPos = int3(floor((ray.origin + safeDir * t) / voxelSize)); 
+                    
                     tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
+                    if (tMaxV.x < -1.0f || abs(ray.direction.x) < 1e-6f) tMaxV.x = 3.4e38f; else if (tMaxV.x <= t) tMaxV.x += tDelta.x;
+                    if (tMaxV.y < -1.0f || abs(ray.direction.y) < 1e-6f) tMaxV.y = 3.4e38f; else if (tMaxV.y <= t) tMaxV.y += tDelta.y;
+                    if (tMaxV.z < -1.0f || abs(ray.direction.z) < 1e-6f) tMaxV.z = 3.4e38f; else if (tMaxV.z <= t) tMaxV.z += tDelta.z;
                     continue;
                 }
 
@@ -552,21 +567,24 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
                 if ((maskVal & (1u << (subIndex & 31))) == 0) {
                     int3 nextBoundLocal = (vLocal & ~3) + (stepDirBounds * 4);
                     float3 tPlanes = ((chunkCoord * 32 + nextBoundLocal) * voxelSize - ray.origin) * invDir;
-                    
-                    if (tPlanes.x <= t + 0.001f) tPlanes.x = 3.4e38f;
-                    if (tPlanes.y <= t + 0.001f) tPlanes.y = 3.4e38f;
-                    if (tPlanes.z <= t + 0.001f) tPlanes.z = 3.4e38f;
+                    if (!(tPlanes.x > t - 0.1f) || abs(ray.direction.x) < 1e-6f) tPlanes.x = 3.4e38f;
+                    if (!(tPlanes.y > t - 0.1f) || abs(ray.direction.y) < 1e-6f) tPlanes.y = 3.4e38f;
+                    if (!(tPlanes.z > t - 0.1f) || abs(ray.direction.z) < 1e-6f) tPlanes.z = 3.4e38f;
                     
                     // 1. Find the closest plane
                     float tNext = min(min(tPlanes.x, tPlanes.y), tPlanes.z);
                     
-                    // 2. THE FIX: Explicitly save the normal of the plane we just leaped through!
                     mask = (tNext == tPlanes.x) ? int3(1,0,0) : ((tNext == tPlanes.y) ? int3(0,1,0) : int3(0,0,1));
                     
-                    // 3. THE CRACK FIX: Micro-epsilon + safeDir synchronization
-                    t = tNext + (voxelSize * 0.001f);
+                    // 3. SECURE MECHANICAL PROGRESSION
+                    float pad = max(voxelSize * 1e-3f, tNext * 1e-5f);
+                    t = max(t + voxelSize * 1e-4f, tNext + pad);
                     mapPos = int3(floor((ray.origin + safeDir * t) / voxelSize)); 
+                    
                     tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
+                    if (tMaxV.x < -1.0f || abs(ray.direction.x) < 1e-6f) tMaxV.x = 3.4e38f; else if (tMaxV.x <= t) tMaxV.x += tDelta.x;
+                    if (tMaxV.y < -1.0f || abs(ray.direction.y) < 1e-6f) tMaxV.y = 3.4e38f; else if (tMaxV.y <= t) tMaxV.y += tDelta.y;
+                    if (tMaxV.z < -1.0f || abs(ray.direction.z) < 1e-6f) tMaxV.z = 3.4e38f; else if (tMaxV.z <= t) tMaxV.z += tDelta.z;
                     continue;
                 }
 
@@ -595,13 +613,19 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
                     uint packedBase = denseIndex * 1024u; 
                     uint matData = _DenseChunkPool[packedBase + (flatIdx >> 5)];
                     if ((matData & (1u << (flatIdx & 31))) != 0) { 
-                        hitInside = true; hitMatID_Data = 1; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
+                        float minExitT = min(min(tMaxV.x, tMaxV.y), tMaxV.z);
+                        if (minExitT > t + max(1e-5f, t * 1e-5f)) {
+                            hitInside = true; hitMatID_Data = 1; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
+                        }
                     }
                 #else
                     uint denseBase = denseIndex << 15;
                     uint matData = _DenseChunkPool[denseBase + vLocal.x + (vLocal.y << 5) + (vLocal.z << 10)];
                     if ((matData & 0xFF) > 0) { 
-                        hitInside = true; hitMatID_Data = matData; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
+                        float minExitT = min(min(tMaxV.x, tMaxV.y), tMaxV.z);
+                        if (minExitT > t + max(1e-5f, t * 1e-5f)) {
+                            hitInside = true; hitMatID_Data = matData; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
+                        }
                     }
                 #endif
                 
@@ -631,9 +655,14 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
         
         float3 nextC = (chunkCoord + stepDirBounds) * chunkSize;
         float3 tMaxC = (nextC - ray.origin) * invDir;
+        if (!(tMaxC.x > t - 0.1f) || abs(ray.direction.x) < 1e-6f) tMaxC.x = 3.4e38f;
+        if (!(tMaxC.y > t - 0.1f) || abs(ray.direction.y) < 1e-6f) tMaxC.y = 3.4e38f;
+        if (!(tMaxC.z > t - 0.1f) || abs(ray.direction.z) < 1e-6f) tMaxC.z = 3.4e38f;
         float tNext = min(min(tMaxC.x, tMaxC.y), tMaxC.z);
         mask = (tNext == tMaxC.x) ? int3(1,0,0) : ((tNext == tMaxC.y) ? int3(0,1,0) : int3(0,0,1));
-        t = max(t, tNext + (voxelSize * 0.001f));
+        
+        float pad = max(voxelSize * 1e-3f, tNext * 1e-5f);
+        t = max(t + voxelSize * 1e-4f, tNext + pad);
     }
     return false;
 }
@@ -897,6 +926,22 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         // Output raw HDR color
         // float3 finalColor = lerp(colorWithLight, skyColor, fog); //Disable fog during development
         float3 finalColor = colorWithLight;
+
+        // --- DEBUG: SHARP VOXEL EDGES ---
+        float3 debugPreciseHitPos = (ray.origin + safeDir * t) / finalVoxelSize;
+        float3 debugRawLocalHit = debugPreciseHitPos - (float3)finalBlockPos;
+        // Float truncation causes negative wrapping. We clamp securely to 0-1 voxel bounds
+        float3 debugLocalHitPos = saturate(debugRawLocalHit); 
+        
+        float2 debugUV;
+        if (abs(normal.x) > 0.5) debugUV = debugLocalHitPos.yz;
+        else if (abs(normal.y) > 0.5) debugUV = debugLocalHitPos.xz;
+        else debugUV = debugLocalHitPos.xy;
+        
+        float edgeDist = min(min(debugUV.x, 1.0 - debugUV.x), min(debugUV.y, 1.0 - debugUV.y));
+        if (edgeDist < 0.05) {
+            finalColor = lerp(finalColor, float3(1, 0, 0), 0.8); // 80% opacity Red Voxel Edges
+        }
 
         // --- TARGET BLOCK HIGHLIGHT ---
         // If we hit a block and are in edit mode, check if this pixel belongs to the targeted block
