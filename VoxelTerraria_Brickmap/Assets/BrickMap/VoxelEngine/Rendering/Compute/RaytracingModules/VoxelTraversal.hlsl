@@ -98,9 +98,12 @@ ChunkData GetChunkData(int3 chunkCoord, int layer) {
 
     int sideXZ = 2 * baseRadXZ + 1;
     int sideY = 2 * baseRadY + 1;
-    int mx = (int)(((uint)(chunkCoord.x + 400000 * sideXZ)) % (uint)sideXZ);
-    int my = (int)(((uint)(chunkCoord.y + 400000 * sideY)) % (uint)sideY);
-    int mz = (int)(((uint)(chunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
+    // int mx = (int)(((uint)(chunkCoord.x + 400000 * sideXZ)) % (uint)sideXZ);
+    // int my = (int)(((uint)(chunkCoord.y + 400000 * sideY)) % (uint)sideY);
+    // int mz = (int)(((uint)(chunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
+    int mx = (chunkCoord.x % sideXZ + sideXZ) % sideXZ;
+    int my = (chunkCoord.y % sideY + sideY) % sideY;
+    int mz = (chunkCoord.z % sideXZ + sideXZ) % sideXZ;
     
     ChunkData cd = _ChunkMap[(layer * _ChunkCount) + mx + mz * sideXZ + my * sideXZ * sideXZ];
     
@@ -240,9 +243,12 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
         // --- THE 2.5D SKY TELEPORTER ---
         int sideXZ = 2 * (int)_RenderBounds.x + 1;
         int sideY  = 2 * (int)_RenderBounds.y + 1;
-        int mx = (int)(((uint)(chunkCoord.x + 400000 * sideXZ)) % (uint)sideXZ);
-        int my = (int)(((uint)(chunkCoord.y + 400000 * sideY)) % (uint)sideY);
-        int mz = (int)(((uint)(chunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
+        // int mx = (int)(((uint)(chunkCoord.x + 400000 * sideXZ)) % (uint)sideXZ);
+        // int my = (int)(((uint)(chunkCoord.y + 400000 * sideY)) % (uint)sideY);
+        // int mz = (int)(((uint)(chunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
+        int mx = (chunkCoord.x % sideXZ + sideXZ) % sideXZ;
+        int my = (chunkCoord.y % sideY + sideY) % sideY;
+        int mz = (chunkCoord.z % sideXZ + sideXZ) % sideXZ;
         int mapIndex = (layer * _ChunkCount) + mx + mz * sideXZ + my * sideXZ * sideXZ;
 
         float chunkMaxY = _ChunkHeightMap[mapIndex];

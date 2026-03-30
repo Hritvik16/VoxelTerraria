@@ -5,9 +5,11 @@
 #include "RaytracingModules/VoxelDataStructures.hlsl"
 #include "RaytracingModules/RayMath.hlsl"
 #include "RaytracingModules/VoxelTraversal.hlsl"
+#include "RaytracingModules/VoxelFastPath.hlsl"
 #include "RaytracingModules/VoxelShading.hlsl"
 
-[numthreads(16,16,1)]
+// [numthreads(16,16,1)]
+[numthreads(8,8,1)]
 void CSMain (uint3 id : SV_DispatchThreadID)
 {
     uint width, height; Result.GetDimensions(width, height);
@@ -78,10 +80,16 @@ void CSMain (uint3 id : SV_DispatchThreadID)
 
         #if DUAL_STATE_1BIT
         // --- 1-BIT PROCEDURAL RENDERING & SHADOWS ---
+            // FETCH CHUNK DATA EXACTLY ONCE PER PIXEL
+            int3 baseChunkCoord = (int3)finalBlockPos >> 5;
+            ChunkData hitChunk = GetChunkData(baseChunkCoord, layer);
+            uint denseBase = hitChunk.densePoolIndex * 1024u;
+
             float noiseLarge = hash(floor(finalBlockPos * 0.1));
             float noiseDetail = (hash(finalBlockPos) - 0.5) * 0.08; 
-            // Ask the Blueprint function which Material ID to use here
-            uint matID = GetProceduralMaterial(finalBlockPos, layer);
+            
+            // Pass the cached memory to the biome generator
+            uint matID = GetProceduralMaterial(finalBlockPos, baseChunkCoord, denseBase, layer);
             
             // Fetch the exact colors you defined in the YAML
             VoxelMaterial matData = _MaterialPalette[matID];
@@ -92,13 +100,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             float3 lightingNormal = normalize(normal + float3(0, 0.65, 0));
             float faceShade = saturate(dot(lightingNormal, float3(0, 1, 0))) * 0.5 + saturate(abs(dot(lightingNormal, float3(1, 0, 0)))) * 0.2 + 0.45;
             float sun_light = saturate(dot(normal, _SunDir.xyz) * 0.8 + 0.2);
-
-            // // --- REAL-TIME 1-BIT VOXEL AMBIENT OCCLUSION (VAO) ---
-            // int3 faceAirPos = finalBlockPos + (int3)normal;
-            // int3 t1, t2;
-            // float2 faceUV;
-            // float3 localHitPos = frac((ray.origin + ray.direction * t) / finalVoxelSize);
-            // localHitPos = lerp(localHitPos, round(localHitPos), abs(normal));
 
             // --- REAL-TIME 1-BIT VOXEL AMBIENT OCCLUSION (VAO) ---
             int3 faceAirPos = finalBlockPos + (int3)normal;
@@ -121,16 +122,16 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                 faceUV = localHitPos.xy;
             }
 
-            // Sample the 8 immediate neighbors around the face
-            int s_m1 = IsSolid1Bit(faceAirPos - t1, layer);
-            int s_p1 = IsSolid1Bit(faceAirPos + t1, layer);
-            int s_m2 = IsSolid1Bit(faceAirPos - t2, layer);
-            int s_p2 = IsSolid1Bit(faceAirPos + t2, layer);
+            // USE THE FAST-PATH FOR ALL 8 NEIGHBORS
+            int s_m1 = FastIsSolid1Bit(faceAirPos - t1, baseChunkCoord, denseBase, layer);
+            int s_p1 = FastIsSolid1Bit(faceAirPos + t1, baseChunkCoord, denseBase, layer);
+            int s_m2 = FastIsSolid1Bit(faceAirPos - t2, baseChunkCoord, denseBase, layer);
+            int s_p2 = FastIsSolid1Bit(faceAirPos + t2, baseChunkCoord, denseBase, layer);
 
-            int d_mm = IsSolid1Bit(faceAirPos - t1 - t2, layer);
-            int d_pm = IsSolid1Bit(faceAirPos + t1 - t2, layer);
-            int d_mp = IsSolid1Bit(faceAirPos - t1 + t2, layer);
-            int d_pp = IsSolid1Bit(faceAirPos + t1 + t2, layer);
+            int d_mm = FastIsSolid1Bit(faceAirPos - t1 - t2, baseChunkCoord, denseBase, layer);
+            int d_pm = FastIsSolid1Bit(faceAirPos + t1 - t2, baseChunkCoord, denseBase, layer);
+            int d_mp = FastIsSolid1Bit(faceAirPos - t1 + t2, baseChunkCoord, denseBase, layer);
+            int d_pp = FastIsSolid1Bit(faceAirPos + t1 + t2, baseChunkCoord, denseBase, layer);
 
             // Calculate AO for the 4 corners (0.0 = dark, 1.0 = bright)
             #define VERTEX_AO(s1, s2, d) ((s1 && s2) ? 0.0 : (3.0 - (s1 + s2 + d)) / 3.0)

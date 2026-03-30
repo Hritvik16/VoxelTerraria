@@ -1,17 +1,17 @@
 // Evaluates the Voxel's macro-environment to assign a single, uniform Material ID
-uint GetProceduralMaterial(int3 voxelPos, int layer) {
+uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, int layer) {
     // 1. CALCULATE MACRO-SLOPE (Density Gradient)
     // Normal points from Solid (1) to Air (0)
-    float nx = (float)IsSolid1Bit(voxelPos + int3(-1, 0, 0), layer) - (float)IsSolid1Bit(voxelPos + int3(1, 0, 0), layer);
-    float ny = (float)IsSolid1Bit(voxelPos + int3(0, -1, 0), layer) - (float)IsSolid1Bit(voxelPos + int3(0, 1, 0), layer);
-    float nz = (float)IsSolid1Bit(voxelPos + int3(0, 0, -1), layer) - (float)IsSolid1Bit(voxelPos + int3(0, 0, 1), layer);
+    float nx = (float)FastIsSolid1Bit(voxelPos + int3(-1, 0, 0), baseChunkCoord, denseBase, layer) - (float)FastIsSolid1Bit(voxelPos + int3(1, 0, 0), baseChunkCoord, denseBase, layer);
+    float ny = (float)FastIsSolid1Bit(voxelPos + int3(0, -1, 0), baseChunkCoord, denseBase, layer) - (float)FastIsSolid1Bit(voxelPos + int3(0, 1, 0), baseChunkCoord, denseBase, layer);
+    float nz = (float)FastIsSolid1Bit(voxelPos + int3(0, 0, -1), baseChunkCoord, denseBase, layer) - (float)FastIsSolid1Bit(voxelPos + int3(0, 0, 1), baseChunkCoord, denseBase, layer);
     
     // If the block is completely buried (no gradient), default to pointing up
     float3 macroNormal = length(float3(nx, ny, nz)) > 0.1 ? normalize(float3(nx, ny, nz)) : float3(0, 1, 0);
 
     // 2. SURFACE & SLOPE RULES
     // Is there air directly above this specific block?
-    bool isSurface = !IsSolid1Bit(voxelPos + int3(0, 1, 0), layer); 
+    bool isSurface = !FastIsSolid1Bit(voxelPos + int3(0, 1, 0), baseChunkCoord, denseBase, layer); 
     // Is the general terrain steep here?
     bool isSteepSlope = macroNormal.y < 0.6; 
 
