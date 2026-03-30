@@ -85,8 +85,8 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             ChunkData hitChunk = GetChunkData(baseChunkCoord, layer);
             uint denseBase = hitChunk.densePoolIndex * 1024u;
 
-            float noiseLarge = hash(floor(finalBlockPos * 0.1));
-            float noiseDetail = (hash(finalBlockPos) - 0.5) * 0.08; 
+            // float noiseLarge = hash(floor(finalBlockPos * 0.1));
+            // float noiseDetail = (hash(finalBlockPos) - 0.5) * 0.08; 
             
             // Pass the cached memory to the biome generator
             uint matID = GetProceduralMaterial(finalBlockPos, baseChunkCoord, denseBase, layer);
@@ -95,11 +95,20 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             VoxelMaterial matData = _MaterialPalette[matID];
             
             // Apply the color and texture noise
-            float3 baseColor = matData.albedo.rgb + noiseDetail;
+            // float3 baseColor = matData.albedo.rgb + noiseDetail;
             
-            float3 lightingNormal = normalize(normal + float3(0, 0.65, 0));
-            float faceShade = saturate(dot(lightingNormal, float3(0, 1, 0))) * 0.5 + saturate(abs(dot(lightingNormal, float3(1, 0, 0)))) * 0.2 + 0.45;
-            float sun_light = saturate(dot(normal, _SunDir.xyz) * 0.8 + 0.2);
+            // float3 lightingNormal = normalize(normal + float3(0, 0.65, 0));
+            // float faceShade = saturate(dot(lightingNormal, float3(0, 1, 0))) * 0.5 + saturate(abs(dot(lightingNormal, float3(1, 0, 0)))) * 0.2 + 0.45;
+            // float sun_light = saturate(dot(normal, _SunDir.xyz) * 0.8 + 0.2);
+
+            half noiseLarge = (half)hash(floor(finalBlockPos * 0.1));
+            half noiseDetail = (half)((hash(finalBlockPos) - 0.5) * 0.08); 
+            
+            half3 baseColor = (half3)matData.albedo.rgb + noiseDetail;
+            half3 lightingNormal = (half3)normalize(normal + float3(0, 0.65, 0));
+            
+            half faceShade = saturate(dot(lightingNormal, half3(0, 1, 0))) * 0.5h + saturate(abs(dot(lightingNormal, half3(1, 0, 0)))) * 0.2h + 0.45h;
+            half sun_light = saturate(dot((half3)normal, (half3)_SunDir.xyz) * 0.8h + 0.2h);
 
             // --- REAL-TIME 1-BIT VOXEL AMBIENT OCCLUSION (VAO) ---
             int3 faceAirPos = finalBlockPos + (int3)normal;

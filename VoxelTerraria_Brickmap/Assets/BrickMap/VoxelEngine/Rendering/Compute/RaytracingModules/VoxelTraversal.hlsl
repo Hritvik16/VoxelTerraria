@@ -190,7 +190,8 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
     int3 rayStep = sign(safeDir);
     int3 stepDirBounds = max(rayStep, 0);
 
-    for (int steps = 0; steps < 160; steps++) {
+    // for (int steps = 0; steps < 160; steps++) {
+    for (int steps = 0; steps < 100; steps++) {
         raySteps++;
         if (t > maxDist) break;
         
