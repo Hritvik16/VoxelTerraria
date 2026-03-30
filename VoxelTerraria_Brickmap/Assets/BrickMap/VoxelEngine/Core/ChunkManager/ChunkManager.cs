@@ -32,7 +32,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     [Header("Clipmap Architecture")]
     public int chunkSize = 32;
     public float voxelScale = 0.2f;
-    [Range(1, 4)] public int clipmapLayers = 3;
+    [Range(1, 8)] public int clipmapLayers = 3;
     public int renderDistanceXZ = 5; 
     public int renderDistanceY = 5;
 
@@ -376,7 +376,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                 int activeRadXZ = renderDistanceXZ; 
                 int activeRadY = renderDistanceY;   
                 if (L == 0) { activeRadY = Mathf.Min(4, renderDistanceY); } 
-                else if (L == 1) { activeRadXZ = Mathf.Max(2, renderDistanceXZ - 4); activeRadY = Mathf.Min(8, renderDistanceY); } 
+                else if (L == 1) { activeRadY = Mathf.Min(8, renderDistanceY);}//activeRadXZ = Mathf.Max(2, renderDistanceXZ - 4); activeRadY = Mathf.Min(8, renderDistanceY); } 
                 else if (L >= 2) { activeRadXZ = Mathf.Max(2, renderDistanceXZ - 8); activeRadY = renderDistanceY; }
 
                 int dx = Mathf.Abs(coord.x - center.x);

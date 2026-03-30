@@ -10,19 +10,34 @@ int GetLayer(float3 worldPos) {
         int dz = abs(chunkCoord.z - centerChunk.z);
         int distXZ = max(dx, dz);
 
+        // // --- THE CASCADING TORNADO CLIPMAP ---
+        // int activeRadXZ = baseRadXZ;
+        // int activeRadY = baseRadY;
+
+        // if (L == 0) {
+        //     activeRadY = min(4, baseRadY);
+        // } else if (L == 1) {
+        //     activeRadXZ = max(2, baseRadXZ - 4);
+        //     activeRadY = min(8, baseRadY);
+        // } else if (L >= 2) {
+        //     activeRadXZ = max(2, baseRadXZ - 8);
+        //     activeRadY = baseRadY;
+        // }
+
+        // // PURE MATH. ZERO VRAM READS.
+        // if (distXZ <= activeRadXZ && abs(chunkCoord.y - centerChunk.y) <= activeRadY) {
+        //     return L;
+        // }
         // --- THE CASCADING TORNADO CLIPMAP ---
-        int activeRadXZ = baseRadXZ;
+        int activeRadXZ = baseRadXZ; // THE FIX: Never shrink the XZ radius!
         int activeRadY = baseRadY;
 
+        // We only shrink the Y radius to prevent wasting memory on deep underground/high sky LOD0 chunks
         if (L == 0) {
             activeRadY = min(4, baseRadY);
         } else if (L == 1) {
-            activeRadXZ = max(2, baseRadXZ - 4);
             activeRadY = min(8, baseRadY);
-        } else if (L >= 2) {
-            activeRadXZ = max(2, baseRadXZ - 8);
-            activeRadY = baseRadY;
-        }
+        } 
 
         // PURE MATH. ZERO VRAM READS.
         if (distXZ <= activeRadXZ && abs(chunkCoord.y - centerChunk.y) <= activeRadY) {
