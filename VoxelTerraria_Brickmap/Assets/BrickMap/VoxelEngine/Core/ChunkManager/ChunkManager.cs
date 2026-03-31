@@ -181,7 +181,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
     // NEW: Async Job Tracking
     private Unity.Jobs.JobHandle activeTerrainJobHandle;
-    private bool isTerrainJobRunning = false;
+    public bool isTerrainJobRunning = false; // THE FIX: Made public so Physics can read it!
     
     // --- TRUE ZERO ALLOCATION PERSISTENT ARRAYS ---
     private NativeArray<ChunkJobData> persistentJobDataArray;

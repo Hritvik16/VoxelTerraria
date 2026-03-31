@@ -29,7 +29,7 @@ public class VoxelPhysicsManager : MonoBehaviour
         }
     }
     void FixedUpdate() {
-        ChunkManager.Instance.WaitForTerrainJobs();
+        // THE FIX: Removed WaitForTerrainJobs() so the Main Thread never halts!
         SyncPhysics();
     }
 
@@ -38,6 +38,11 @@ public class VoxelPhysicsManager : MonoBehaviour
 
     public void SyncPhysics() {
         if (chunkManager == null || !chunkManager.cpuDenseChunkPool.IsCreated) return;
+        
+        // THE SAFETY SHIELD: If Burst is locking the array, skip rebuilding colliders this frame!
+        // Your 0.15s velocity prediction guarantees the old colliders will catch you safely.
+        if (chunkManager.isTerrainJobRunning) return;
+
         float scale = chunkManager.voxelScale;
 
         foreach (var body in trackedBodies) {
