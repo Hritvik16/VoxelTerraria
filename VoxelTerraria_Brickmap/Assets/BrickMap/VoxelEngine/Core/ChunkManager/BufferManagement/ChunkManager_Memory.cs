@@ -104,10 +104,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             denseChunkPoolBuffer = new ComputeBuffer(dynamicMaxChunks * UINTS_PER_CHUNK, sizeof(uint));
             cpuDenseChunkPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_CHUNK, Allocator.Persistent);
             // Allocate the 16-Bit RGB Light Array
-            illuminationPoolBuffer = new ComputeBuffer(dynamicMaxChunks * UINTS_PER_LIGHT_CHUNK, sizeof(uint));
-            cpuIlluminationPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_LIGHT_CHUNK, Allocator.Persistent);
+            // illuminationPoolBuffer = new ComputeBuffer(dynamicMaxChunks * UINTS_PER_LIGHT_CHUNK, sizeof(uint));
+            // cpuIlluminationPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_LIGHT_CHUNK, Allocator.Persistent);
             
-            Shader.SetGlobalBuffer("_IlluminationPool", illuminationPoolBuffer);
+            // Shader.SetGlobalBuffer("_IlluminationPool", illuminationPoolBuffer);
             cpuMacroMaskPool = new NativeArray<uint>(dynamicMaxChunks * 19, Allocator.Persistent); 
 
             chunkHeightBuffer = new ComputeBuffer(totalMapCapacity, sizeof(float));
@@ -203,9 +203,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         if (persistentTunnelArray.IsCreated) persistentTunnelArray.Dispose();
         if (nativeChunkUpload.IsCreated) nativeChunkUpload.Dispose();
         if (nativeMaskUpload.IsCreated) nativeMaskUpload.Dispose();
-        if (cpuIlluminationPool.IsCreated) cpuIlluminationPool.Dispose();
+        // if (cpuIlluminationPool.IsCreated) cpuIlluminationPool.Dispose();
 
-        illuminationPoolBuffer?.Release();
+        // illuminationPoolBuffer?.Release();
         
         macroGridBuffer?.Release();
         deltaMapBuffer?.Release();
@@ -245,6 +245,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             cs.SetInt("_BrushSize", brushSize);
             cs.SetInt("_BrushShape", brushShape);
             cs.SetFloat("_VoxelScale", voxelScale);
+            cs.SetBuffer(kernel, "_BiomeAnchors", biomeAnchorBuffer);
         }
         if (macroGridBuffer != null) cs.SetBuffer(kernel, "_MacroGrid", macroGridBuffer);
         if (denseChunkPoolBuffer != null) cs.SetBuffer(kernel, "_DenseChunkPool", denseChunkPoolBuffer);

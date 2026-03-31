@@ -55,7 +55,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                 cd.packedState = state | (px << 8) | (py << 16) | (pz << 24);
                 
                 chunkMapArray[mapIndex] = cd;
-                dirtyLightChunks.Enqueue(mapIndex);
+                // dirtyLightChunks.Enqueue(mapIndex);
             }
         }
 
@@ -107,6 +107,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
     }
 
+    /*
     private void ProcessDirtyLightChunks() {
         int processedThisFrame = 0;
         int maxPerFrame = 5; // Throttle to prevent CPU spikes
@@ -148,6 +149,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             }
         }
     }
+    */
 
 
     void DispatchNewJobs() {

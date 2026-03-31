@@ -128,15 +128,15 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     private List<LayerCoord>[] generationQueues = new List<LayerCoord>[8];
     private Vector3Int[] scanOffsets;
 
-    public NativeArray<uint> cpuIlluminationPool; 
-    private ComputeBuffer illuminationPoolBuffer;
-    
-    // 32x32x32 voxels = 32,768 voxels. At 16-bits per voxel (2 bytes), that is 65,536 bytes.
-    // Divided by 4 bytes (size of a uint), we need exactly 16,384 uints per chunk.
-    private const int UINTS_PER_LIGHT_CHUNK = 16384; 
+    // --- THE LIGHTING ARCHITECTURE (FUTURE PROOFING) ---
+    // This illumination buffer is currently UNUSED by the shaders but was setup for future Baked Global Illumination.
+    // At high render distances, this buffer exceeds the 4GB Unity ComputeBuffer limit.
+    // public NativeArray<uint> cpuIlluminationPool; 
+    // private ComputeBuffer illuminationPoolBuffer;
+    // private const int UINTS_PER_LIGHT_CHUNK = 16384; 
 
     // --- THE DIRTY FLAG JANITOR ---
-    private Queue<int> dirtyLightChunks = new Queue<int>();
+    // private Queue<int> dirtyLightChunks = new Queue<int>();
 
     // private ComputeBuffer[] chunkMapBuffers = new ComputeBuffer[2]; // FIX: Ring-buffered map!
     // private ComputeBuffer macroGridBuffer;
@@ -444,7 +444,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
         // 4. DISPATCH NEW JOBS
         DispatchNewJobs(); 
-        ProcessDirtyLightChunks();
+        // ProcessDirtyLightChunks();
 
         if (crosshairBuffer != null && Time.frameCount % 4 == 0) {
             UnityEngine.Rendering.AsyncGPUReadback.Request(crosshairBuffer, crosshairCallback);
