@@ -417,30 +417,14 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             UpdateGPUBuffers(); 
             totalLoadTimer.Restart();
             isWorldLoaded = false; 
-
-            // // NEW: Reset the triangle count back to 0 when the anchor moves!
-            // if (argsBuffer != null) {
-            //     argsBuffer.SetData(new uint[] { 6, 0, 0, 0 }); 
-            // }
         }
 
-        // // 3. THE TRUE GRAND SWAP (Zero-Stall GPU Upload)
-        // if (mapOrMaskChanged) {
-        //     int workRing = (ringIndex + 1) % 2; // Write to the IDLE buffer!
-
-        //     // chunkMapBuffers[workRing].SetData(chunkMapArray);
-        //     // macroMaskPoolBuffers[workRing].SetData(cpuMacroMaskPool);
-
-        //     ringIndex = workRing; // Flip the pointer!
-
-        //     Shader.SetGlobalBuffer("_ChunkMap", chunkMapBuffers[ringIndex]);
-        //     Shader.SetGlobalBuffer("_MacroMaskPool", macroMaskPoolBuffers[ringIndex]);
-
-        //     if (anyAnchorChanged) {
-        //         UpdateGPUBuffers(); 
-        //         totalLoadTimer.Restart();
-        //     }
-        // }
+        // --- THE CHAIN-JOB LOCKOUT FIX ---
+        // We are threading the needle! This runs in the exact split-second window 
+        // after the previous job completed, but BEFORE the next job locks the arrays!
+        if (!isTerrainJobRunning && VoxelPhysicsManager.Instance != null) {
+            VoxelPhysicsManager.Instance.SyncPhysics();
+        }
 
         // 4. DISPATCH NEW JOBS
         DispatchNewJobs(); 
