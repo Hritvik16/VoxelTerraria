@@ -15,6 +15,9 @@ namespace VoxelEngine.World
         [ReadOnly] public NativeArray<CavernNode> caverns;
         [ReadOnly] public NativeArray<TunnelSpline> tunnels; 
         
+        // --- NEW: The Delivery Truck ---
+        [ReadOnly] public NativeArray<ChunkManager.VoxelEdit> deltaMap;
+        
         public int featureCount;
         public int cavernCount;
         public int tunnelCount; 
@@ -52,15 +55,18 @@ namespace VoxelEngine.World
             bool isFullySky = wStartY > maxBH;
 
             if (isFullySky) {
-                var modifiedJob = jobQueue[jobIndex];
-                modifiedJob.pad3 = 1; 
-                jobQueue[jobIndex] = modifiedJob;
+                // THE FIX: Never skip a chunk if the player built something in it!
+                if (job.editCount == 0) {
+                    var modifiedJob = jobQueue[jobIndex];
+                    modifiedJob.pad3 = 1; 
+                    jobQueue[jobIndex] = modifiedJob;
 
-                for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = 0; 
-                
-                int maskBase1 = job.pad2 * 19;
-                for (int i = 0; i < 19; i++) macroMaskPool[maskBase1 + i] = 0; 
-                return; 
+                    for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = 0; 
+                    
+                    int maskBase1 = job.pad2 * 19;
+                    for (int i = 0; i < 19; i++) macroMaskPool[maskBase1 + i] = 0; 
+                    return; 
+                }
             }
 
             if (isFullyUnderground) {
@@ -89,6 +95,24 @@ namespace VoxelEngine.World
                     }
                 }
                 CaveCarverWorker.ApplyCavesAndTunnels_1Bit(ref denseChunkPool, denseBase, job.worldPos.x * job.layerScale, job.worldPos.y * job.layerScale, job.worldPos.z * job.layerScale, job.layerScale, caverns, cavernCount, tunnels, tunnelCount);
+            }
+
+            // --- THE DELTA OVERWRITE (Absolute Authority) ---
+            if (job.editCount > 0) {
+                for (int e = 0; e < job.editCount; e++) {
+                    ChunkManager.VoxelEdit edit = deltaMap[job.editStartIndex + e];
+                    
+                    int flatIdx = edit.flatIndex;
+                    int uintIdx = flatIdx >> 5;
+                    int bitIdx = flatIdx & 31;
+
+                    // 1-Bit Architecture: Material > 0 means Solid (1), Material == 0 means Air (0)
+                    if (edit.material > 0) {
+                        denseChunkPool[(int)denseBase + uintIdx] |= (1u << bitIdx); 
+                    } else {
+                        denseChunkPool[(int)denseBase + uintIdx] &= ~(1u << bitIdx); 
+                    }
+                }
             }
 
             int maskBase = job.pad2 * 19;

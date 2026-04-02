@@ -42,11 +42,12 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
             if (editorChunkArray.IsCreated) editorChunkArray.Dispose();
             if (editorMaskArray.IsCreated) editorMaskArray.Dispose();
             if (editorJobArray.IsCreated) editorJobArray.Dispose();
+            if (nativeDeltaMapArray.IsCreated) nativeDeltaMapArray.Dispose(); // NEW: Cleanup 'The Sieve'
         }
     }
 
     // 100% CPU-Driven Math: Guarantees Physics, Visuals, and Persistence never desync!
-    private uint TrackEditOnCPU(Vector3Int globalPos, bool isSolid, out Vector3Int outChunkCoord, out int outMapIndex) {
+    private uint TrackEditOnCPU(Vector3Int globalPos, uint material, out Vector3Int outChunkCoord, out int outMapIndex) {
         Vector3Int chunkCoord = new Vector3Int(
             Mathf.FloorToInt(globalPos.x / 32f),
             Mathf.FloorToInt(globalPos.y / 32f),
@@ -65,7 +66,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         if ((cd.packedState & 1) == 1 && cd.densePoolIndex != 0xFFFFFFFF) {
             denseIndex = cd.densePoolIndex;
         } else {
-            if (freeDenseIndices.Count == 0 || !isSolid) return 0xFFFFFFFF;
+            if (freeDenseIndices.Count == 0 || material == 0) return 0xFFFFFFFF;
             denseIndex = freeDenseIndices.Dequeue();
 
             cd.packedState = (cd.packedState & 0xFFFFFF00) | 1u;
@@ -91,16 +92,16 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         int bitIdx = flatIdx & 31;
         int poolIndex = (int)(denseIndex * 1024u) + uintIdx;
 
-        // 1. Persistence Tracking (Your original delta map goal)
+        // 1. Persistence Tracking (Material-Aware)
         if (!worldDeltaMap.ContainsKey(chunkCoord)) worldDeltaMap[chunkCoord] = new Dictionary<int, uint>();
-        worldDeltaMap[chunkCoord][flatIdx] = isSolid ? 1u : 0u;
+        worldDeltaMap[chunkCoord][flatIdx] = material;
 
         // 2. Physics & Visual Dense Memory
-        if (isSolid) cpuDenseChunkPool[poolIndex] |= (1u << bitIdx);
+        if (material > 0) cpuDenseChunkPool[poolIndex] |= (1u << bitIdx);
         else cpuDenseChunkPool[poolIndex] &= ~(1u << bitIdx);
 
         // 3. Lightning Fast O(1) Shadow Mask Updates
-        if (isSolid) {
+        if (material > 0) {
             int maskBase = (int)denseIndex * 19;
             int subIndex = (localX >> 2) + ((localY >> 2) << 3) + ((localZ >> 2) << 6);
             cpuMacroMaskPool[maskBase + (subIndex >> 5)] |= (1u << (subIndex & 31));
@@ -175,7 +176,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
                         Mathf.Max(Mathf.Abs(x), Mathf.Max(Mathf.Abs(y), Mathf.Abs(z))) : Mathf.Sqrt(x*x + y*y + z*z);
 
                     if (dist <= brushSize + 0.5f) {
-                        uint dirtyIdx = TrackEditOnCPU(targetPos, true, out Vector3Int cCoord, out int mIdx);
+                        uint dirtyIdx = TrackEditOnCPU(targetPos, newMaterial, out Vector3Int cCoord, out int mIdx);
                         if (dirtyIdx != 0xFFFFFFFF && !editorDirtyChunks.ContainsKey(dirtyIdx)) {
                             editorDirtyChunks[dirtyIdx] = new EditedChunkInfo { coord = cCoord, mapIndex = mIdx };
                         }
@@ -206,7 +207,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
                         Mathf.Max(Mathf.Abs(x), Mathf.Max(Mathf.Abs(y), Mathf.Abs(z))) : Mathf.Sqrt(x*x + y*y + z*z);
 
                     if (dist <= brushSize + 0.5f) {
-                        uint dirtyIdx = TrackEditOnCPU(targetPos, false, out Vector3Int cCoord, out int mIdx);
+                        uint dirtyIdx = TrackEditOnCPU(targetPos, 0, out Vector3Int cCoord, out int mIdx);
                         if (dirtyIdx != 0xFFFFFFFF && !editorDirtyChunks.ContainsKey(dirtyIdx)) {
                             editorDirtyChunks[dirtyIdx] = new EditedChunkInfo { coord = cCoord, mapIndex = mIdx };
                         }

@@ -12,6 +12,8 @@ using System.Runtime.InteropServices;
 
 public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 {
+    private NativeArray<VoxelEdit> nativeDeltaMapArray; // The Zero-GC Edit Buffer
+
     void CompleteActiveJob() {
         activeTerrainJobHandle.Complete();
         // int voxelCountThisDispatch = activeDispatches * VOXELS_PER_CHUNK;
@@ -171,7 +173,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             }
         }
 
+        if (!nativeDeltaMapArray.IsCreated) {
+            nativeDeltaMapArray = new NativeArray<VoxelEdit>(MAX_EDITS_PER_DISPATCH, Allocator.Persistent);
+        }
+
         int dispatchesThisFrame = 0;
+        int totalEditsThisDispatch = 0; // NEW: Tracks how many edits we've packed
         Stopwatch queueTimer = Stopwatch.StartNew(); 
         bool jobsAvailable = true;
         
@@ -207,14 +214,55 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     int siloCap = (lc.layer == 0) ? 38000 : (lc.layer == 1) ? 8192 : 256;
                     int targetLod = (lc.layer == 0) ? 1 : (lc.layer == 1) ? 2 : 4;
 
+                    // --- THE LOD SIEVE & DELTA PACKER ---
+                    int editStart = totalEditsThisDispatch;
+                    int editCount = 0;
+                    int step = 1 << lc.layer; // 1 for L0, 2 for L1, 4 for L2
+                    Vector3Int baseL0Coord = lc.coord * step;
+
+                    for (int dx = 0; dx < step; dx++) {
+                        for (int dy = 0; dy < step; dy++) {
+                            for (int dz = 0; dz < step; dz++) {
+                                Vector3Int l0Coord = baseL0Coord + new Vector3Int(dx, dy, dz);
+                                
+                                if (worldDeltaMap.TryGetValue(l0Coord, out var chunkEdits)) {
+                                    foreach (var kvp in chunkEdits) {
+                                        if (totalEditsThisDispatch >= MAX_EDITS_PER_DISPATCH) break;
+
+                                        int origFlat = kvp.Key;
+                                        uint mat = kvp.Value;
+
+                                        // Downsample to LOD local space
+                                        int lx = origFlat & 31;
+                                        int ly = (origFlat >> 5) & 31;
+                                        int lz = (origFlat >> 10) & 31;
+
+                                        int mappedX = (lx / step) + (dx * (32 / step));
+                                        int mappedY = (ly / step) + (dy * (32 / step));
+                                        int mappedZ = (lz / step) + (dz * (32 / step));
+
+                                        int mappedFlat = mappedX + (mappedY << 5) + (mappedZ << 10);
+
+                                        nativeDeltaMapArray[totalEditsThisDispatch] = new VoxelEdit {
+                                            flatIndex = mappedFlat,
+                                            material = mat
+                                        };
+                                        totalEditsThisDispatch++;
+                                        editCount++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     pendingJobsArray[dispatchesThisFrame] = new ChunkJobData {
                         worldPos = new Vector4(lc.coord.x * chunkSize, lc.coord.y * chunkSize, lc.coord.z * chunkSize, siloCap),
                         mapIndex = idx,
                         lodStep = targetLod,
                         layerScale = layerScale,
                         pad1 = safeRootIndex,
-                        editStartIndex = 0,
-                        editCount = 0,
+                        editStartIndex = editStart, // Now accurately points to the buffer slice!
+                        editCount = editCount,      // Tells the generator how many edits to apply!
                         pad2 = (int)denseIndex, 
                         pad3 = 0
                     };
@@ -236,6 +284,11 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         if (dispatchesThisFrame > 0) {
             activeDispatches = dispatchesThisFrame;
             
+            // Upload the packed Delta Map edits to the GPU!
+            if (totalEditsThisDispatch > 0 && deltaMapBuffer != null) {
+                deltaMapBuffer.SetData(nativeDeltaMapArray, 0, 0, totalEditsThisDispatch);
+            }
+
             ringIndex = (ringIndex + 1) % 2; 
             
             for(int i = 0; i < dispatchesThisFrame; i++) persistentJobDataArray[i] = pendingJobsArray[i];
@@ -268,7 +321,8 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     chunkHeights = cpuChunkHeights,
                     worldRadiusXZ = VoxelEngine.WorldManager.Instance.WorldRadiusXZ,
                     worldSeed = VoxelEngine.WorldManager.Instance.worldSeed,
-                    featureCount = persistentFeatureArray.Length, cavernCount = persistentCavernArray.Length
+                    featureCount = persistentFeatureArray.Length, cavernCount = persistentCavernArray.Length,
+                    deltaMap = nativeDeltaMapArray // <-- THE MISSING LINK!
                 };
                 activeTerrainJobHandle = terrainJob.Schedule(dispatchesThisFrame, 1);
             } else {
