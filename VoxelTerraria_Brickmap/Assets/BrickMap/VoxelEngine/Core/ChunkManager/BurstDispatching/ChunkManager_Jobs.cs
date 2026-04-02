@@ -205,14 +205,18 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     uint denseIndex = freeDenseIndices.Dequeue();
 
                     float layerScale = voxelScale * (1 << lc.layer);
-                    uint safeRootIndex = 8;
                     int chunkIndexInLayer = idx % chunksPerLayer;
-                    if (lc.layer == 0) safeRootIndex = (uint)(chunkIndexInLayer * 38000) + 8;
-                    else if (lc.layer == 1) safeRootIndex = (uint)(chunksPerLayer * 38000) + (uint)(chunkIndexInLayer * 8192) + 8;
-                    else if (lc.layer == 2) safeRootIndex = (uint)(chunksPerLayer * 38000) + (uint)(chunksPerLayer * 8192) + (uint)(chunkIndexInLayer * 256) + 8;
+                    
+                    int targetLod = 1 << lc.layer; // Dynamically evaluates to 1, 2, 4, 8, 16...
+                    int siloCap = (lc.layer == 0) ? 38000 : ((lc.layer == 1) ? 8192 : 256);
 
-                    int siloCap = (lc.layer == 0) ? 38000 : (lc.layer == 1) ? 8192 : 256;
-                    int targetLod = (lc.layer == 0) ? 1 : (lc.layer == 1) ? 2 : 4;
+                    // Dynamic legacy 32-bit SVO offset calculation
+                    uint safeRootIndex = 8;
+                    for (int prevLayer = 0; prevLayer < lc.layer; prevLayer++) {
+                        int prevSiloCap = (prevLayer == 0) ? 38000 : ((prevLayer == 1) ? 8192 : 256);
+                        safeRootIndex += (uint)(chunksPerLayer * prevSiloCap);
+                    }
+                    safeRootIndex += (uint)(chunkIndexInLayer * siloCap);
 
                     // --- THE LOD SIEVE & DELTA PACKER ---
                     int editStart = totalEditsThisDispatch;

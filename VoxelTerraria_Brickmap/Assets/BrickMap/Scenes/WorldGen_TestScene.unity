@@ -736,7 +736,7 @@ MonoBehaviour:
   maxVertexCount: 6000000
   chunkSize: 32
   voxelScale: 0.1
-  clipmapLayers: 3
+  clipmapLayers: 4
   renderDistanceXZ: 10
   renderDistanceY: 10
   maxConcurrentJobs: 400
@@ -753,6 +753,7 @@ MonoBehaviour:
   enableAntFarmSlice: 0
   chunkTargetCoordArray: []
   dynamicMaxChunks: 0
+  isTerrainJobRunning: 0
   crosshairData: 0000000000000000000000000000000000000000000000000000000000000000
   globalPalette: {fileID: 11400000, guid: 34120963095ef485ea302ce770ace049, type: 2}
 --- !u!114 &1394159924
@@ -1157,7 +1158,7 @@ Transform:
   m_GameObject: {fileID: 1811667596}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0.041242424, z: 0, w: 0.99914926}
-  m_LocalPosition: {x: 37.297016, y: 37.577694, z: -70.80473}
+  m_LocalPosition: {x: 37.35167, y: 78, z: -70.90351}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []

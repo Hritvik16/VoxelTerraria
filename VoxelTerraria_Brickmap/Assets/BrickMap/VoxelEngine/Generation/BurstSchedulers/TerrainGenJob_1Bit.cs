@@ -46,8 +46,11 @@ namespace VoxelEngine.World
             float bh11 = TerrainNoiseMath.GetHeight2D(wEndX, wEndZ);
             float bhMid = TerrainNoiseMath.GetHeight2D(wStartX + 16f * job.layerScale, wStartZ + 16f * job.layerScale);
             
-            float minBH = math.min(math.min(math.min(bh00, bh10), math.min(bh01, bh11)), bhMid) - 30f;
-            float maxBH = math.max(math.max(math.max(bh00, bh10), math.max(bh01, bh11)), bhMid) + 30f;
+            // --- FIX 1: DYNAMIC PEAK PADDING ---
+            // Massive LOD chunks need massive padding so we don't accidentally cull sharp mountain peaks!
+            float dynamicPad = 30f + (job.layerScale * 25f); 
+            float minBH = math.min(math.min(math.min(bh00, bh10), math.min(bh01, bh11)), bhMid) - dynamicPad;
+            float maxBH = math.max(math.max(math.max(bh00, bh10), math.max(bh01, bh11)), bhMid) + dynamicPad;
 
             chunkHeights[job.mapIndex] = maxBH;
 
@@ -69,9 +72,15 @@ namespace VoxelEngine.World
                 }
             }
 
+            // --- FIX 2: THE BURST FAST-PATH ---
+            // Distant chunks skip expensive 3D cave calculations to clear the CPU queue 100x faster!
+            bool isDistantLOD = job.layerScale >= 0.8f;
+
             if (isFullyUnderground) {
                 for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = uint.MaxValue; // Fill with 1s
-                CaveCarverWorker.ApplyCavesAndTunnels_1Bit(ref denseChunkPool, denseBase, job.worldPos.x * job.layerScale, job.worldPos.y * job.layerScale, job.worldPos.z * job.layerScale, job.layerScale, caverns, cavernCount, tunnels, tunnelCount);
+                if (!isDistantLOD) {
+                    CaveCarverWorker.ApplyCavesAndTunnels_1Bit(ref denseChunkPool, denseBase, job.worldPos.x * job.layerScale, job.worldPos.y * job.layerScale, job.worldPos.z * job.layerScale, job.layerScale, caverns, cavernCount, tunnels, tunnelCount);
+                }
             } 
             else {
                 for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = 0; // Clear memory first
@@ -94,7 +103,10 @@ namespace VoxelEngine.World
                         }
                     }
                 }
-                CaveCarverWorker.ApplyCavesAndTunnels_1Bit(ref denseChunkPool, denseBase, job.worldPos.x * job.layerScale, job.worldPos.y * job.layerScale, job.worldPos.z * job.layerScale, job.layerScale, caverns, cavernCount, tunnels, tunnelCount);
+                
+                if (!isDistantLOD) {
+                    CaveCarverWorker.ApplyCavesAndTunnels_1Bit(ref denseChunkPool, denseBase, job.worldPos.x * job.layerScale, job.worldPos.y * job.layerScale, job.worldPos.z * job.layerScale, job.layerScale, caverns, cavernCount, tunnels, tunnelCount);
+                }
             }
 
             // --- THE DELTA OVERWRITE (Absolute Authority) ---

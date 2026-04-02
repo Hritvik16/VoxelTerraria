@@ -10,18 +10,16 @@ int GetLayer(float3 worldPos) {
         int dz = abs(chunkCoord.z - centerChunk.z);
         int distXZ = max(dx, dz);
 
-        // --- THE CASCADING TORNADO CLIPMAP ---
-        int activeRadXZ = baseRadXZ;
+        // --- THE CASCADING TORNADO (Smooth Linear Curve) ---
+        int activeRadXZ = max(2, baseRadXZ - L);
         int activeRadY = baseRadY;
 
         if (L == 0) {
             activeRadY = min(4, baseRadY);
         } else if (L == 1) {
-            activeRadXZ = max(2, baseRadXZ - 4);
+            activeRadY = min(6, baseRadY);
+        } else if (L == 2) {
             activeRadY = min(8, baseRadY);
-        } else if (L >= 2) {
-            activeRadXZ = max(2, baseRadXZ - 8);
-            activeRadY = baseRadY;
         }
 
         // PURE MATH. ZERO VRAM READS.
@@ -43,20 +41,18 @@ int GetLayer(float3 worldPos) {
 //     int baseRadXZ = (int)_RenderBounds.x;
 //     int baseRadY  = (int)_RenderBounds.y; 
     
-//     // --- THE CASCADING TORNADO CLIPMAP ---
-//     int activeRadXZ = baseRadXZ;
+//     // --- THE CASCADING TORNADO (Smooth Linear Curve) ---
+//     int activeRadXZ = max(2, baseRadXZ - (int)layer);
 //     int activeRadY = baseRadY;
-
+//
 //     if (layer == 0) {
 //         activeRadY = min(4, baseRadY);
 //     } else if (layer == 1) {
-//         activeRadXZ = max(2, baseRadXZ - 4);
+//         activeRadY = min(6, baseRadY);
+//     } else if (layer == 2) {
 //         activeRadY = min(8, baseRadY);
-//     } else if (layer >= 2) {
-//         activeRadXZ = max(2, baseRadXZ - 8);
-//         activeRadY = baseRadY;
 //     }
-
+//
 //     int3 centerChunk = (int3)_ClipmapCenters[layer].xyz;
     
 //     // SQUARE CULLING ON THE GPU
@@ -83,23 +79,23 @@ ChunkData GetChunkData(int3 chunkCoord, int layer) {
     int baseRadXZ = (int)_RenderBounds.x;
     int baseRadY  = (int)_RenderBounds.y; 
     
-    int activeRadXZ = baseRadXZ;
+    // --- THE CASCADING TORNADO (Smooth Linear Curve MATCH) ---
+    int activeRadXZ = max(2, baseRadXZ - layer);
     int activeRadY = baseRadY;
 
     if (layer == 0) {
         activeRadY = min(4, baseRadY);
     } else if (layer == 1) {
-        activeRadXZ = max(2, baseRadXZ - 4);
+        activeRadY = min(6, baseRadY);
+    } else if (layer == 2) {
         activeRadY = min(8, baseRadY);
-    } else if (layer >= 2) {
-        activeRadXZ = max(2, baseRadXZ - 8);
-        activeRadY = baseRadY;
     }
 
     int3 centerChunk = (int3)_ClipmapCenters[layer].xyz;
     int dx = abs(chunkCoord.x - centerChunk.x);
     int dz = abs(chunkCoord.z - centerChunk.z);
     int distXZ = max(dx, dz);
+    
     if(distXZ > activeRadXZ || abs(chunkCoord.y - centerChunk.y) > activeRadY) return invalidChunk;
 
     int sideXZ = 2 * baseRadXZ + 1;
@@ -192,12 +188,14 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
     safeDir.y = abs(safeDir.y) < 1e-6f ? (safeDir.y >= 0 ? 1e-6f : -1e-6f) : safeDir.y;
     safeDir.z = abs(safeDir.z) < 1e-6f ? (safeDir.z >= 0 ? 1e-6f : -1e-6f) : safeDir.z;
     float3 invDir = 1.0f / safeDir;
+    float3 tDelta = 0; // Declare for function scope
+    float3 tMaxV = 0;  // Declare for function scope
 
     int3 rayStep = sign(safeDir);
     int3 stepDirBounds = max(rayStep, 0);
 
     // for (int steps = 0; steps < 160; steps++) {
-    for (int steps = 0; steps < 100; steps++) {
+    for (int steps = 0; steps < 400; steps++) {
         raySteps++;
         if (t > maxDist) break;
         
@@ -247,6 +245,15 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
             }
         }
 
+        // --- THE DDA HEARTBEAT (LOD-Sync) ---
+        // We MUST update these every iteration because the layer (and voxelSize) 
+        // can change dynamically during traversal.
+        tDelta = abs(voxelSize * invDir);
+        tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
+        if (tMaxV.x <= t + 1e-5f) tMaxV.x += tDelta.x;
+        if (tMaxV.y <= t + 1e-5f) tMaxV.y += tDelta.y;
+        if (tMaxV.z <= t + 1e-5f) tMaxV.z += tDelta.z;
+
         // --- THE 2.5D SKY TELEPORTER ---
         int sideXZ = 2 * (int)_RenderBounds.x + 1;
         int sideY  = 2 * (int)_RenderBounds.y + 1;
@@ -279,12 +286,26 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
                 
                 // Engage Teleport 
                 float teleportT = min(tRoof, tBoundary);
+                
+                // --- FIX: SET THE TELEPORT NORMAL ---
+                if (teleportT == tRoof) mask = int3(0, 1, 0);
+                else if (teleportT == tMaxC.x) mask = int3(1, 0, 0);
+                else mask = int3(0, 0, 1);
+
                 float pad = max(voxelSize * 1e-3f, teleportT * 1e-5f);
                 t = max(t + voxelSize * 1e-4f, teleportT + pad);
                 
-                // Resync to the safely capped vector
+                // --- THE VOID KILLER: FULL DDA RE-SYNC ---
+                // We must restore the DDA Heart (tMaxV) so the first voxel registers correctly!
                 mapPos = int3(floor((ray.origin + safeDir * t) / voxelSize));
-                // tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
+                tDelta = abs(voxelSize * invDir); 
+                tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
+                if (tMaxV.x <= t) tMaxV.x += tDelta.x;
+                if (tMaxV.y <= t) tMaxV.y += tDelta.y;
+                if (tMaxV.z <= t) tMaxV.z += tDelta.z;
+                
+                // Force a chunk data re-fetch at the new surface position
+                continue; 
             }
         }
 

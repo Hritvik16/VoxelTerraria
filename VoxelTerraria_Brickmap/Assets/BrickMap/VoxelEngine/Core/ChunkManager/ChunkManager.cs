@@ -247,25 +247,19 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     // void CleanupAndQueue(int layer, Vector3Int center) {
     //     float layerScale = voxelScale * (1 << layer);
         
-    //     int activeRadXZ = renderDistanceXZ; 
+    //     int activeRadXZ = Mathf.Max(2, renderDistanceXZ - layer); 
     //     int activeRadY = renderDistanceY;   
-        
-    //     // --- THE CASCADING TORNADO (Decoupled LODs) ---
+    //     
     //     if (layer == 0) {
-    //         // LOD 0: Wide pancake (High res surface, limits vertical waste)
     //         activeRadY = Mathf.Min(4, renderDistanceY); 
     //     } 
     //     else if (layer == 1) {
-    //         // LOD 1: Slightly narrower XZ, but deeper Y
-    //         activeRadXZ = Mathf.Max(2, renderDistanceXZ - 4);
-    //         activeRadY = Mathf.Min(8, renderDistanceY);
+    //         activeRadY = Mathf.Min(6, renderDistanceY);
     //     } 
-    //     else if (layer >= 2) {
-    //         // LOD 2+: Background chunks reach all the way down to the bedrock!
-    //         activeRadXZ = Mathf.Max(2, renderDistanceXZ - 8);
-    //         activeRadY = renderDistanceY; 
+    //     else if (layer == 2) {
+    //         activeRadY = Mathf.Min(8, renderDistanceY);
     //     }
-
+    //
     //     // int activeRadXZSq = activeRadXZ * activeRadXZ;
 
     //     for (int i = 0; i < scanOffsets.Length; i++) {
@@ -373,11 +367,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                 Vector3Int center = primaryAnchorChunks[L];
                 Vector3Int coord = center + offset;
                 
-                int activeRadXZ = renderDistanceXZ; 
+                int activeRadXZ = Mathf.Max(2, renderDistanceXZ - L); 
                 int activeRadY = renderDistanceY;   
+                
                 if (L == 0) { activeRadY = Mathf.Min(4, renderDistanceY); } 
-                else if (L == 1) { activeRadY = Mathf.Min(8, renderDistanceY);}//activeRadXZ = Mathf.Max(2, renderDistanceXZ - 4); activeRadY = Mathf.Min(8, renderDistanceY); } 
-                else if (L >= 2) { activeRadXZ = Mathf.Max(2, renderDistanceXZ - 8); activeRadY = renderDistanceY; }
+                else if (L == 1) { activeRadY = Mathf.Min(6, renderDistanceY); } 
+                else if (L == 2) { activeRadY = Mathf.Min(8, renderDistanceY); }
 
                 int dx = Mathf.Abs(coord.x - center.x);
                 int dz = Mathf.Abs(coord.z - center.z);

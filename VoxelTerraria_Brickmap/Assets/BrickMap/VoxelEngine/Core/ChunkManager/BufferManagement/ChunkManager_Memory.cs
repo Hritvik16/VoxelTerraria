@@ -34,11 +34,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         // NEW: Dynamic Memory Ceiling (Total active chunks + 20% buffer)
         dynamicMaxChunks = Mathf.CeilToInt(totalMapCapacity * 1.2f);
         
-        // Stratified Static Pool: Balanced for 60m radius on M1 8GB
-        int tier0Size = chunksPerLayer * 38000; // FIX: Padded to 38,000 to fix the off-by-8 floating gap bug!
-        int tier1Size = chunksPerLayer * 8192;  // FIX: High quality LOD 1
-        int tier2Size = chunksPerLayer * 256;   // Far distance placeholder
-        int POOL_SIZE = tier0Size + tier1Size + tier2Size;
+        // Stratified Static Pool: Dynamically scaled for infinite clipmap layers
+        int POOL_SIZE = 0;
+        for (int L = 0; L < clipmapLayers; L++) {
+            int cap = (L == 0) ? 38000 : ((L == 1) ? 8192 : 256);
+            POOL_SIZE += chunksPerLayer * cap;
+        }
 
         // THE FIX: Delete the `if (null)` checks. Force Unity to build fresh, correctly sized arrays!
         chunkMapArray = new ChunkData[totalMapCapacity];
