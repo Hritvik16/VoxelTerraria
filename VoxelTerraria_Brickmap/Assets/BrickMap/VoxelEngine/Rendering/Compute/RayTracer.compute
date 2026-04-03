@@ -1,6 +1,9 @@
 #pragma kernel CSMain
 #pragma multi_compile _ DUAL_STATE_1BIT
 
+// Inherit the Blueprint Buffers directly
+int _FeatureDebugView;
+#include "TerrainMath.hlsl" 
 
 #include "RaytracingModules/VoxelDataStructures.hlsl"
 #include "RaytracingModules/RayMath.hlsl"
@@ -105,6 +108,26 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             half noiseDetail = (half)((hash(finalBlockPos) - 0.5) * 0.08); 
             
             half3 baseColor = (half3)matData.albedo.rgb + noiseDetail;
+
+            // --- THE F3 FEATURE DEBUG VIEW ---
+            if (_FeatureDebugView == 1) {
+                // THE FIX: Use the exact ray hit world position. 
+                // Multiplying by _VoxelScale caused distant LOD chunks to fetch colors from the wrong coordinates!
+                float2 worldXZ = hitWorldPos.xz; 
+                float3 debugColor = float3(0.04, 0.92, 0.05); // Default Green (Hills)
+
+                for(int f = 0; f < _FeatureCount; f++) {
+                    FeatureAnchor anchor = _FeatureAnchorBuffer[f];
+                    if (distance(worldXZ, anchor.position) < anchor.radius) {
+                        if (anchor.topologyID == 10) debugColor = float3(1.0, 1.0, 1.0); // White Mountain
+                        else if (anchor.topologyID == 11) debugColor = float3(1.0, 0.5, 0.0); // Orange Plateau
+                        else if (anchor.topologyID == 12) debugColor = float3(0.8, 0.2, 0.2); // Red Dunes
+                        else if (anchor.topologyID == 13) debugColor = float3(0.5, 0.0, 0.8); // Purple Steppes
+                    }
+                }
+                baseColor = (half3)debugColor; 
+            }
+
             half3 lightingNormal = (half3)normalize(normal + float3(0, 0.65, 0));
             
             half faceShade = saturate(dot(lightingNormal, half3(0, 1, 0))) * 0.5h + saturate(abs(dot(lightingNormal, half3(1, 0, 0)))) * 0.2h + 0.45h;

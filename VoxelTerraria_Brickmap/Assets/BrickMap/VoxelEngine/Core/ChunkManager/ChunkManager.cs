@@ -9,6 +9,7 @@ using VoxelEngine;
 using VoxelEngine.Interfaces;
 using VoxelEngine.World; // FIX: Tell ChunkManager to look inside the World namespace!
 using System.Runtime.InteropServices;
+using UnityEngine.InputSystem; // NEW
 
 public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 {
@@ -56,6 +57,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
     [Header("Debug & Profiling")]
     public bool enableAntFarmSlice = false;
+    public bool enableFeatureDebugView = false; // NEW
 
     [StructLayout(LayoutKind.Sequential)]
     public struct BiomeAnchor {
@@ -308,6 +310,33 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     
     
     void Update() {
+        // --- THE FIX: DYNAMIC BIOME BUFFER CREATION ---
+        // Waits patiently until the WorldManager has successfully generated the features
+        if (biomeAnchorBuffer == null && VoxelEngine.WorldManager.Instance != null && VoxelEngine.WorldManager.Instance.mapFeatures != null && VoxelEngine.WorldManager.Instance.mapFeatures.Count > 0) {
+            List<BiomeAnchor> dynamicBiomes = new List<BiomeAnchor>();
+            foreach (var feature in VoxelEngine.WorldManager.Instance.mapFeatures) {
+                if (feature.topologyID == 0) { // It's a Biome!
+                    dynamicBiomes.Add(new BiomeAnchor { 
+                        position = new Vector3(feature.position.x, 0, feature.position.y), 
+                        radius = feature.radius, 
+                        biomeType = feature.biomeID 
+                    });
+                }
+            }
+            if (dynamicBiomes.Count > 0) {
+                biomeAnchorBuffer = new ComputeBuffer(dynamicBiomes.Count, 20); 
+                biomeAnchorBuffer.SetData(dynamicBiomes.ToArray());
+                Shader.SetGlobalBuffer("_BiomeAnchors", biomeAnchorBuffer);
+                Shader.SetGlobalInt("_BiomeAnchorCount", dynamicBiomes.Count);
+            }
+        }
+
+        // --- NEW: F3 Debug Toggle (Using New Input System) ---
+        if (Keyboard.current != null && Keyboard.current.f3Key.wasPressedThisFrame) {
+            enableFeatureDebugView = !enableFeatureDebugView;
+            Shader.SetGlobalInt("_FeatureDebugView", enableFeatureDebugView ? 1 : 0);
+        }
+
         deltaTime += (Time.unscaledDeltaTime - deltaTime) * 0.1f; 
         if (worldLoaders.Count == 0 || worldLoaders[0] == null) return;
 
@@ -446,7 +475,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             if (queuesEmpty && activeDispatches == 0) {
                 totalLoadTimer.Stop();
                 isWorldLoaded = true;
-                UnityEngine.Debug.LogWarning($"✅ WORLD LOADED IN {totalLoadTimer.ElapsedMilliseconds} ms ✅");            
+                UnityEngine.Debug.LogWarning($"✅ CLIPMAPS LOADED IN {totalLoadTimer.Elapsed.TotalSeconds:F2} seconds ✅");            
             }
         }
     // --- COMPUTE RASTERIZER DISPATCH (MUST RUN EVERY FRAME!) ---

@@ -31,78 +31,80 @@ namespace VoxelEngine.Generation
             // 3. Dynamic Quota Assignment based on World Size
             int pointIndex = 0;
             
-            int mountainCount = Mathf.RoundToInt(2 * sizeMultiplier);
-            int plateauCount = Mathf.RoundToInt(2 * sizeMultiplier);
-            int ravineCount = Mathf.RoundToInt(2 * sizeMultiplier);
-            int craterCount = Mathf.RoundToInt(1 * sizeMultiplier);
+            int mountainRanges = Mathf.RoundToInt(2 * sizeMultiplier);
+            int plateauClusters = Mathf.RoundToInt(2 * sizeMultiplier);
+            int steppeLines = Mathf.RoundToInt(2 * sizeMultiplier);
+            int duneFields = Mathf.RoundToInt(1 * sizeMultiplier);
 
-            // Mountains
-            for (int i = 0; i < mountainCount && pointIndex < rawPoints.Count; i++, pointIndex++)
-                mapFeatures.Add(CreateAnchor(rawPoints[pointIndex], 10, 0, Random.Range(150f, 200f), Random.Range(70f, 90f)));
+            // Mountains (ID 10) - Connected peaks forming a range
+            for (int i = 0; i < mountainRanges && pointIndex < rawPoints.Count; i++, pointIndex++)
+                GenerateSpine(mapFeatures, rawPoints[pointIndex], 10, Random.Range(4, 7), 50f, 40f, 70f, 60f, 100f);
 
-            // Plateaus
-            for (int i = 0; i < plateauCount && pointIndex < rawPoints.Count; i++, pointIndex++)
-                mapFeatures.Add(CreateAnchor(rawPoints[pointIndex], 11, 0, Random.Range(80f, 120f), Random.Range(25f, 35f)));
+            // Plateaus (ID 11) - Connected flat tops
+            for (int i = 0; i < plateauClusters && pointIndex < rawPoints.Count; i++, pointIndex++)
+                GenerateSpine(mapFeatures, rawPoints[pointIndex], 11, Random.Range(2, 4), 40f, 30f, 50f, 40f, 60f);
 
-            // Ravines
-            for (int i = 0; i < ravineCount && pointIndex < rawPoints.Count; i++, pointIndex++)
-                mapFeatures.Add(CreateAnchor(rawPoints[pointIndex], 13, 0, Random.Range(40f, 60f), Random.Range(-60f, -40f)));
+            // Dunes (ID 12) - Winding fields
+            for (int i = 0; i < duneFields && pointIndex < rawPoints.Count; i++, pointIndex++)
+                GenerateSpine(mapFeatures, rawPoints[pointIndex], 12, Random.Range(5, 9), 40f, 25f, 40f, 0f, 0f);
 
-            // Craters
-            for (int i = 0; i < craterCount && pointIndex < rawPoints.Count; i++, pointIndex++)
-                mapFeatures.Add(CreateAnchor(rawPoints[pointIndex], 12, 0, Random.Range(50f, 70f), -30f));
+            // Steppes (ID 13) - Overlapping broad tiers
+            for (int i = 0; i < steppeLines && pointIndex < rawPoints.Count; i++, pointIndex++)
+                GenerateSpine(mapFeatures, rawPoints[pointIndex], 13, Random.Range(3, 6), 50f, 40f, 60f, 0f, 0f);
 
-            // Biomes (Remaining)
-            int[] requiredBiomes = { 1, 2, 3, 4 }; 
-            int biomeIdx = 0;
-            while (pointIndex < rawPoints.Count)
+            // --- THE FIX: DEDICATED VORONOI BIOME SEEDS ---
+            // Generate a fresh, widely-spaced set of points purely for Biomes (no gaps!)
+            List<Vector2> biomePoints = PoissonDiskSampler.GeneratePoissonDisk(worldRadiusXZ, 500f, 20);
+            
+            int[] requiredBiomes = { 0, 1, 2, 3, 4 }; // Ensure at least one of every biome exists
+            for (int i = 0; i < biomePoints.Count; i++)
             {
-                int bID = (biomeIdx < requiredBiomes.Length) ? requiredBiomes[biomeIdx] : Random.Range(0, 5);
-                mapFeatures.Add(CreateAnchor(rawPoints[pointIndex], 0, bID, Random.Range(300f, 400f), 0));
-                pointIndex++;
-                biomeIdx++;
+                int bID = (i < requiredBiomes.Length) ? requiredBiomes[i] : Random.Range(0, 5);
+                
+                // Pack into mapFeatures to transport it, but give it a massive radius
+                mapFeatures.Add(CreateAnchor(biomePoints[i], 0, bID, 9999f, 0f));
             }
 
-            // 4. The "Plumb Bob" Drop Loop
+            // --- THE FIX: DECOUPLED & SUNK CAVE GENERATION ---
+            // Caves now use the original 30 scattered Poisson points, NOT the hundreds of tight spine anchors.
+            // Air caves are forced safely underground so they stop blowing the tops off the mountains!
             cavernNodes.Clear();
-            foreach (var feature in mapFeatures)
+            foreach (var point in rawPoints)
             {
-                if (feature.topologyID == 0) 
+                int drops = Random.Range(1, 3);
+                for (int i = 0; i < drops; i++)
                 {
-                    int drops = Random.Range(4, 7);
-                    for (int i = 0; i < drops; i++)
-                    {
-                        float jitterX = feature.position.x + Random.Range(-60f, 60f);
-                        float jitterZ = feature.position.y + Random.Range(-60f, 60f);
-                        float depthY = Random.Range(10f, -250f); 
-                        
-                        cavernNodes.Add(new CavernNode {
-                            position = new Vector3(jitterX, depthY, jitterZ),
-                            radius = Random.Range(60f, 100f),
-                            biomeID = feature.biomeID,
-                            cavernType = 0,
-                            pad0 = 0, pad1 = 0
-                        });
-                    }
+                    float jitterX = point.x + Random.Range(-40f, 40f);
+                    float jitterZ = point.y + Random.Range(-40f, 40f);
+                    float depthY = Random.Range(-20f, -250f); 
+                    
+                    cavernNodes.Add(new CavernNode {
+                        position = new Vector3(jitterX, depthY, jitterZ),
+                        radius = Random.Range(40f, 80f),
+                        biomeID = 0,
+                        cavernType = 0,
+                        pad0 = 0, pad1 = 0
+                    });
                 }
 
-                int airDrops = Random.Range(1, 4);
+                int airDrops = Random.Range(1, 3);
                 for (int i = 0; i < airDrops; i++)
                 {
-                    float jitterX = feature.position.x + Random.Range(-100f, 100f);
-                    float jitterZ = feature.position.y + Random.Range(-100f, 100f);
+                    float jitterX = point.x + Random.Range(-60f, 60f);
+                    float jitterZ = point.y + Random.Range(-60f, 60f);
                     
-                    float depthY = Random.Range(10f, -280f);
+                    // THE FIX: Highest possible air cave is at Y: -20 (safely below the base terrain)
+                    float depthY = Random.Range(-20f, -280f); 
                     float rad = 15f;
 
-                    if (depthY > -40f) rad = Random.Range(10f, 20f);         // Crust
+                    if (depthY > -60f) rad = Random.Range(10f, 20f);         // Crust
                     else if (depthY > -200f) rad = Random.Range(25f, 45f);   // Deep Caverns
                     else rad = Random.Range(50f, 70f);                       // Underworld
 
                     cavernNodes.Add(new CavernNode {
                         position = new Vector3(jitterX, depthY, jitterZ),
                         radius = rad,
-                        biomeID = 0, // Air doesn't need a biome paint
+                        biomeID = 0, 
                         cavernType = 1,
                         pad0 = 0, pad1 = 0
                     });
@@ -181,6 +183,25 @@ namespace VoxelEngine.Generation
             return new FeatureAnchor {
                 position = pos, topologyID = topID, biomeID = bioID, radius = rad, heightMod = hMod, pad0 = 0, pad1 = 0
             };
+        }
+
+        // --- NEW: The Spine Generator ---
+        private static void GenerateSpine(List<FeatureAnchor> mapFeatures, Vector2 startPoint, int topologyID, int nodeCount, float stepDistance, float minRad, float maxRad, float minHeight, float maxHeight)
+        {
+            Vector2 currentPoint = startPoint;
+            float currentAngle = Random.value * Mathf.PI * 2f; 
+
+            for (int i = 0; i < nodeCount; i++)
+            {
+                float rad = Random.Range(minRad, maxRad);
+                float hMod = Random.Range(minHeight, maxHeight);
+                
+                mapFeatures.Add(CreateAnchor(currentPoint, topologyID, 0, rad, hMod));
+
+                // Wander the angle for a natural curve
+                currentAngle += Random.Range(-Mathf.PI / 4f, Mathf.PI / 4f);
+                currentPoint += new Vector2(Mathf.Cos(currentAngle), Mathf.Sin(currentAngle)) * stepDistance;
+            }
         }
     }
 }

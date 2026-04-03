@@ -201,7 +201,7 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
         
         // float3 currentPos = ray.origin + ray.direction * t;
         float3 currentPos = ray.origin + safeDir * t;
-        if (currentPos.y > 130.0f && ray.direction.y > -0.05f) break;
+        if (currentPos.y > 400.0f && ray.direction.y > -0.05f) break;
 
         int layer = GetLayer(currentPos);
         if (layer >= _ClipmapLayers) break;

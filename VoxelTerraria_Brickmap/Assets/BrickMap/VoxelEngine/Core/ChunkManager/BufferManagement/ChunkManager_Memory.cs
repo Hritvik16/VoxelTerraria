@@ -122,25 +122,6 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
             denseChunkPoolBuffer.SetData(cpuDenseChunkPool);
 
-            // --- BIOME BLUEPRINT SYSTEM ---
-            if (biomeAnchorBuffer == null) {
-                // Let's create a huge map with 5 distinct Biome zones
-                BiomeAnchor[] anchors = new BiomeAnchor[5];
-                
-                // 0 = Forest, 1 = Desert, 2 = Winter, 3 = Jungle
-                anchors[0] = new BiomeAnchor { position = new Vector3(0, 0, 0), radius = 250f, biomeType = 0 };       // Spawn is Forest
-                anchors[1] = new BiomeAnchor { position = new Vector3(400, 0, 0), radius = 350f, biomeType = 1 };     // East is Desert
-                anchors[2] = new BiomeAnchor { position = new Vector3(-400, 0, 0), radius = 350f, biomeType = 2 };    // West is Snow
-                anchors[3] = new BiomeAnchor { position = new Vector3(0, 0, 400), radius = 350f, biomeType = 3 };     // North is Jungle
-                anchors[4] = new BiomeAnchor { position = new Vector3(250, 0, 250), radius = 200f, biomeType = 1 };   // Desert/Jungle intersection
-                
-                // 20 bytes per struct (12 + 4 + 4)
-                biomeAnchorBuffer = new ComputeBuffer(anchors.Length, 20);
-                biomeAnchorBuffer.SetData(anchors);
-                
-                Shader.SetGlobalBuffer("_BiomeAnchors", biomeAnchorBuffer);
-                Shader.SetGlobalInt("_BiomeAnchorCount", anchors.Length);
-            }
 
             if (argsBuffer == null) {
                 // The "Args" buffer tells the GPU how many triangles to draw.
@@ -187,6 +168,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         Shader.SetGlobalInt("_ClipmapLayers", clipmapLayers);
         Shader.SetGlobalVector("_RenderBounds", new Vector4(renderDistanceXZ, renderDistanceY, 0, 0));
         Shader.SetGlobalFloat("_VoxelScale", voxelScale);
+        totalLoadTimer.Start();
     }
 
     void OnDisable() {
@@ -246,7 +228,17 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             cs.SetInt("_BrushSize", brushSize);
             cs.SetInt("_BrushShape", brushShape);
             cs.SetFloat("_VoxelScale", voxelScale);
-            cs.SetBuffer(kernel, "_BiomeAnchors", biomeAnchorBuffer);
+            
+            // THE FIX: Only bind the buffer if the world has actually finished generating!
+            if (biomeAnchorBuffer != null) {
+                cs.SetBuffer(kernel, "_BiomeAnchors", biomeAnchorBuffer);
+            }
+
+            // --- NEW: Bind the Blueprint Features to the Raytracer ---
+            if (WorldManager.Instance != null && WorldManager.Instance.featureBuffer != null) {
+                cs.SetBuffer(kernel, "_FeatureAnchorBuffer", WorldManager.Instance.featureBuffer);
+                cs.SetInt("_FeatureCount", WorldManager.Instance.mapFeatures.Count);
+            }
         }
         if (macroGridBuffer != null) cs.SetBuffer(kernel, "_MacroGrid", macroGridBuffer);
         if (denseChunkPoolBuffer != null) cs.SetBuffer(kernel, "_DenseChunkPool", denseChunkPoolBuffer);
@@ -289,7 +281,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     }
 
     public bool IsReady() {
+        // THE FIX: Do not allow the camera to render until Metal is guaranteed to have all its buffers!
         return worldGenShader != null && worldGenUtilityShader != null && 
-               chunkMapBuffer != null && denseChunkPoolBuffer != null;
+               chunkMapBuffer != null && denseChunkPoolBuffer != null && 
+               biomeAnchorBuffer != null && 
+               (VoxelEngine.WorldManager.Instance != null && VoxelEngine.WorldManager.Instance.featureBuffer != null);
     }
 }

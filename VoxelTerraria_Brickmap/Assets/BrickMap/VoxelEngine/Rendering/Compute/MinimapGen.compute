@@ -3,10 +3,16 @@
 RWTexture2D<float4> Result;
 float _Zoom;
 float2 _Offset;
-
-// FeatureAnchor struct and buffers are now inherited directly from TerrainMath.hlsl
+int _FeatureDebugView; 
 
 #include "TerrainMath.hlsl"
+
+// A simple 2D hash to keep the shader self-contained
+float hash2D(float2 p) {
+    p = frac(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return frac(p.x * p.y * (p.x + p.y));
+}
 
 [numthreads(8,8,1)]
 void GenerateMinimap(uint3 id : SV_DispatchThreadID) {
@@ -20,25 +26,44 @@ void GenerateMinimap(uint3 id : SV_DispatchThreadID) {
     // Map UVs to world coordinates using the dynamic zoom
     float2 worldXZ = (uv * _Zoom) + _Offset;
     
-    float4 outputColor = float4(0.04, 0.92, 0.05, 1.0); // Default Green (Plains)
+    // --- 1. BIOME BACKGROUND (Perturbed Voronoi) ---
+    float closestDist = 999999.0;
+    int currentBiome = 0;
+    
+    // EXACT SAME MATH AS THE 3D SHADER!
+    float boundaryWarp = (hash2D(worldXZ * 0.005) - 0.5) * 150.0; 
 
     for(int i = 0; i < _FeatureCount; i++) {
         FeatureAnchor anchor = _FeatureAnchorBuffer[i];
-        float dist = distance(worldXZ, anchor.position);
-        
-        if (dist < anchor.radius) {
-            // Topology overrides Biomes
-            if (anchor.topologyID == 10) outputColor = float4(1.0, 1.0, 1.0, 1.0); // White Mountain
-            else if (anchor.topologyID == 11) outputColor = float4(1.0, 0.5, 0.0, 1.0); // Orange Plateau
-            else if (anchor.topologyID == 12) outputColor = float4(0.8, 0.2, 0.2, 1.0); // Red Crater
-            else if (anchor.topologyID == 13) outputColor = float4(0.5, 0.0, 0.8, 1.0); // Purple Ravine
-            
-            // Biomes
-            else if (anchor.topologyID == 0) {
-                if (anchor.biomeID == 1) outputColor = float4(0.9, 0.8, 0.2, 1.0); // Desert
-                else if (anchor.biomeID == 2) outputColor = float4(0.8, 0.9, 1.0, 1.0); // Snow
-                else if (anchor.biomeID == 3) outputColor = float4(0.0, 0.5, 0.1, 1.0); // Jungle
-                else if (anchor.biomeID == 4) outputColor = float4(0.3, 0.0, 0.4, 1.0); // Evil
+        if (anchor.topologyID == 0) { // It's a Biome!
+            float dist = distance(worldXZ, anchor.position) + boundaryWarp;
+            if (dist < closestDist) {
+                closestDist = dist;
+                currentBiome = anchor.biomeID;
+            }
+        }
+    }
+
+    // Set Background Biome Color
+    float4 outputColor = float4(0.04, 0.92, 0.05, 1.0); // Fallback Green
+    if (currentBiome == 0) outputColor = float4(0.04, 0.92, 0.05, 1.0);       // Forest
+    else if (currentBiome == 1) outputColor = float4(0.9, 0.8, 0.2, 1.0);     // Desert
+    else if (currentBiome == 2) outputColor = float4(0.8, 0.9, 1.0, 1.0);     // Snow
+    else if (currentBiome == 3) outputColor = float4(0.0, 0.5, 0.1, 1.0);     // Jungle
+    else if (currentBiome == 4) outputColor = float4(0.3, 0.0, 0.4, 1.0);     // Evil
+
+    // --- 2. TOPOLOGICAL FEATURES (Draw on top of Biomes) ---
+    if (_FeatureDebugView == 1) {
+        for(int j = 0; j < _FeatureCount; j++) {
+            FeatureAnchor anchor = _FeatureAnchorBuffer[j];
+            if (anchor.topologyID != 0) { // It's a Structural Feature!
+                float dist = distance(worldXZ, anchor.position);
+                if (dist < anchor.radius) {
+                    if (anchor.topologyID == 10) outputColor = float4(1.0, 1.0, 1.0, 1.0);      // White Mountain
+                    else if (anchor.topologyID == 11) outputColor = float4(1.0, 0.5, 0.0, 1.0); // Orange Plateau
+                    else if (anchor.topologyID == 12) outputColor = float4(0.8, 0.2, 0.2, 1.0); // Red Crater
+                    else if (anchor.topologyID == 13) outputColor = float4(0.5, 0.0, 0.8, 1.0); // Purple Steppe
+                }
             }
         }
     }

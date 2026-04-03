@@ -298,9 +298,14 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             for(int i = 0; i < dispatchesThisFrame; i++) persistentJobDataArray[i] = pendingJobsArray[i];
 
             var fList = VoxelEngine.WorldManager.Instance.mapFeatures;
-            int fCount = Mathf.Min(fList.Count, 5000);
-            for(int i = 0; i < fCount; i++) persistentFeatureArray[i] = fList[i]; 
-
+            int persistentIndex = 0;
+            foreach (var feature in fList) {
+                if (feature.topologyID != 0) { // It's a Topology Feature!
+                    persistentFeatureArray[persistentIndex++] = feature;
+                    if (persistentIndex >= 5000) break;
+                }
+            }
+            int fCount = persistentIndex;
             var cList = VoxelEngine.WorldManager.Instance.cavernNodes;
             int cCount = Mathf.Min(cList.Count, 5000);
             for(int i = 0; i < cCount; i++) persistentCavernArray[i] = cList[i];
@@ -323,9 +328,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     caverns = persistentCavernArray, tunnels = persistentTunnelArray,
                     denseChunkPool = cpuDenseChunkPool, macroMaskPool = cpuMacroMaskPool, 
                     chunkHeights = cpuChunkHeights,
-                    worldRadiusXZ = VoxelEngine.WorldManager.Instance.WorldRadiusXZ,
-                    worldSeed = VoxelEngine.WorldManager.Instance.worldSeed,
-                    featureCount = persistentFeatureArray.Length, cavernCount = persistentCavernArray.Length,
+                    // THE FIX: Pass the exact active counts (fCount, cCount, tCount) so the Burst Job 
+                    // doesn't read thousands of empty 0-byte structs at the end of the array!
+                    featureCount = fCount, cavernCount = cCount, tunnelCount = tCount, 
                     deltaMap = nativeDeltaMapArray // <-- THE MISSING LINK!
                 };
                 activeTerrainJobHandle = terrainJob.Schedule(dispatchesThisFrame, 1);
@@ -336,7 +341,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     denseChunkPool = cpuDenseChunkPool, macroMaskPool = cpuMacroMaskPool, 
                     worldRadiusXZ = VoxelEngine.WorldManager.Instance.WorldRadiusXZ,
                     worldSeed = VoxelEngine.WorldManager.Instance.worldSeed,
-                    featureCount = persistentFeatureArray.Length, cavernCount = persistentCavernArray.Length
+                    featureCount = fCount, cavernCount = cCount, tunnelCount = tCount 
                 };
                 activeTerrainJobHandle = terrainJob.Schedule(dispatchesThisFrame, 1);
             }

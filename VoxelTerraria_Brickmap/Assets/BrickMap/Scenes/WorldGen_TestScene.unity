@@ -736,9 +736,9 @@ MonoBehaviour:
   maxVertexCount: 6000000
   chunkSize: 32
   voxelScale: 0.1
-  clipmapLayers: 4
+  clipmapLayers: 8
   renderDistanceXZ: 10
-  renderDistanceY: 10
+  renderDistanceY: 7
   maxConcurrentJobs: 400
   gpuUpdateInterval: 0.05
   worldLoaders:
@@ -751,6 +751,7 @@ MonoBehaviour:
   brushSize: 0
   brushShape: 0
   enableAntFarmSlice: 0
+  enableFeatureDebugView: 0
   chunkTargetCoordArray: []
   dynamicMaxChunks: 0
   isTerrainJobRunning: 0
@@ -1223,7 +1224,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PlayerMovement
   walkSpeed: 5
-  flySpeed: 6
+  flySpeed: 30
   lookSensitivity: 2
   stepHeight: 0.21
   stepSharpness: 0.1
