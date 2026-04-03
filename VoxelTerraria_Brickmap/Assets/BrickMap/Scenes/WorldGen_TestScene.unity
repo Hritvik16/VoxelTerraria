@@ -119,6 +119,57 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
+--- !u!1 &5514200
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 5514202}
+  - component: {fileID: 5514201}
+  m_Layer: 0
+  m_Name: Environment Manager
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &5514201
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5514200}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 31be072d56caf4d77bbbd9d0ad59f4fc, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEnvironmentManager
+  zenithColor: {r: 0.2, g: 0.4, b: 0.8, a: 1}
+  horizonColor: {r: 0.75, g: 0.8, b: 0.85, a: 1}
+  sunHaloColor: {r: 1, g: 0.85, b: 0.6, a: 1}
+  hazeDensity: 1.5
+  directionalSun: {fileID: 1044288757}
+  ambientStrength: 0.6
+  shadowDarkness: 0.75
+--- !u!4 &5514202
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5514200}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 31.53135, y: 54.12, z: -111.06902}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &163741363
 GameObject:
   m_ObjectHideFlags: 0
@@ -423,13 +474,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1044288755}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.0017589463, y: 0.007850824, z: 0.0017315317, w: 0.99996614}
+  m_LocalRotation: {x: 0.19996412, y: -0.3736123, z: 0.08282785, w: 0.90198}
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0.2, y: 0.9, z: 0.2}
+  m_LocalEulerAnglesHint: {x: 25, y: -45, z: 0}
 --- !u!1 &1111590112
 GameObject:
   m_ObjectHideFlags: 0
@@ -446,7 +497,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1111590113
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -771,37 +822,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::VoxelDebugger
   debugModeActive: 0
   showRedWireframe: 0
---- !u!1 &1482229630
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1482229631}
-  m_Layer: 0
-  m_Name: Tester
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &1482229631
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1482229630}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 221.61719, y: 0, z: 209.47273}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1570784126
 GameObject:
   m_ObjectHideFlags: 0
@@ -1301,7 +1321,6 @@ SceneRoots:
   m_Roots:
   - {fileID: 1394159921}
   - {fileID: 1811667601}
-  - {fileID: 1482229631}
   - {fileID: 996611174}
   - {fileID: 1111590114}
   - {fileID: 1329300604}
@@ -1311,3 +1330,4 @@ SceneRoots:
   - {fileID: 1580258572}
   - {fileID: 1570784130}
   - {fileID: 1717579363}
+  - {fileID: 5514202}

@@ -3,6 +3,14 @@
 
 // Inherit the Blueprint Buffers directly
 int _FeatureDebugView;
+
+// --- ENVIRONMENT VARIABLES ---
+float4 _ZenithColor;
+float4 _HorizonColor;
+float4 _SunHaloColor;
+float _HazeDensity;
+float _AmbientStrength;
+float _ShadowDarkness;
 #include "TerrainMath.hlsl" 
 
 #include "RaytracingModules/VoxelDataStructures.hlsl"
@@ -21,10 +29,9 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     
     // RAISED TO 250m: Allows the camera to render mountains when flying high
     if (ray.origin.y > 250.0f && ray.direction.y >= 0.0f) {
-        float sunHighlight = pow(max(0.0f, dot(ray.direction, _SunDir)), 8.0f);
-        float3 baseSkyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
-        float3 sunHaloColor = float3(1.0, 0.9, 0.7);
-        float3 atmosphereColor = lerp(baseSkyColor, sunHaloColor, sunHighlight);
+        float sunHighlight = pow(max(0.0f, dot(ray.direction, _SunDir.xyz)), 8.0f);
+        float3 baseSkyColor = lerp(_HorizonColor.rgb, _ZenithColor.rgb, saturate(ray.direction.y * 0.5 + 0.5));
+        float3 atmosphereColor = lerp(baseSkyColor, _SunHaloColor.rgb, sunHighlight);
         Result[id.xy] = float4(atmosphereColor, 0);
         return;
     }
@@ -177,25 +184,33 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             float topAO    = lerp(c01, c11, faceUV.x);
             float vao      = lerp(bottomAO, topAO, faceUV.y);
             
-            // Soften the gradient curve for that "clay" look
-            vao = smoothstep(0.3, 1.0, vao);
+            // --- THE VAO & LIGHTING FIX ---
+            // 1. Fix the VAO Crush: Ensure the tightest corners still receive 40% of the ambient light.
+            vao = smoothstep(0.0, 1.0, vao); 
+            vao = lerp(0.4, 1.0, vao); 
 
-            // --- 1-BIT DIRECTIONAL SHADOWS (ACNE-FREE) ---
+            // --- 1-BIT MACRO SHADOWS & AMBIENT BOUNCE ---
             Ray shadowRay;
             float3 airBlockPos = finalBlockPos + normal;
             shadowRay.origin = (airBlockPos * finalVoxelSize) + (finalVoxelSize * 0.5f);
-            shadowRay.direction = _SunDir;
-            
+            shadowRay.direction = _SunDir.xyz;
             float s_t = 0; int3 s_mask = 0; uint s_mat = 0; 
             float s_size = 1.0; float3 s_pos = 0; int s_steps = 0;
             
-            bool inShadow = TraceVoxelRay(shadowRay, 4.0, true, s_t, s_mask, s_mat, s_size, s_pos, s_steps);
+            bool inShadow = TraceVoxelRay(shadowRay, 60.0, true, s_t, s_mask, s_mat, s_size, s_pos, s_steps);
             
-            float sunExposure = inShadow ? 0.25 : 1.0;
-            float ambient = 0.2;
+            // 2. Calculate Ambient Sky Bounce (Even back-faces get this beautiful blue tint)
+            float3 ambientColor = _HorizonColor.rgb * _AmbientStrength;
+            
+            // 3. Calculate Direct Sun (Only applies if not in shadow)
+            float sunExposure = inShadow ? (1.0 - _ShadowDarkness) : 1.0;
+            float3 directLight = sun_light * 2.5 * sunExposure * _SunHaloColor.rgb; 
+            
+            // 4. Lift the faceShade so the unlit side of the mountain isn't pitch black
+            float softenedFaceShade = lerp(0.5, 1.0, faceShade);
 
-            // Multiply base color by Shading, Sun, and our new VAO!
-            float3 colorWithLight = baseColor * faceShade * ((sun_light * 2.5 * sunExposure * vao) + (ambient * vao));
+            // Combine! Ambient acts as a base, Direct adds on top, VAO darkens the corners slightly.
+            float3 colorWithLight = baseColor * softenedFaceShade * ((directLight + ambientColor) * vao);
         #else
         // --- 32-BIT BRICKMAP RENDERING ---
             uint mat; float r_light, g_light, b_light, sun_light; uint bakedAO_mask;
@@ -289,23 +304,22 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             float3 colorWithLight = baseColor * faceShade * voxelLight * vao;
         #endif
 
-        // --- OPTIMIZED ANALYTICAL HAZE (Moiré Killer) ---
+        // --- TRUE RAYLEIGH DISTANCE HAZE ---
         int maxL = _ClipmapLayers - 1;
         float maxWorldDist = _RenderBounds.x * 32.0f * _ClipmapCenters[maxL].w;
         
-        // 1. Calculate how "thick" the air is based on distance
-        float fogDensity = 1.2f / maxWorldDist; 
-        float fogFactor = 1.0f - exp(-(t * fogDensity));
+        // 1. Exponential curve preserves foreground clarity while fading mountains gracefully
+        float depthCurve = pow(saturate(t / maxWorldDist), 2.0); 
+        float fogFactor = saturate(depthCurve * _HazeDensity);
 
-        // 2. Calculate the bright sun "halo" through the fog (Mie Fake)
-        float sunHighlight = pow(max(0.0f, dot(ray.direction, _SunDir)), 8.0f);
-
-        // 3. Sky gradient and Sun Halo mix
-        float3 baseSkyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
-        float3 sunHaloColor = float3(1.0, 0.9, 0.7);
-        float3 atmosphereColor = lerp(baseSkyColor, sunHaloColor, sunHighlight);
-
-        // 4. Wash out the voxel contrast to perfectly kill Moiré bands
+        // 2. Calculate the bright sun "halo" through the fog
+        float sunHighlight = pow(max(0.0f, dot(ray.direction, _SunDir.xyz)), 8.0f);
+        
+        // 3. Sky gradient and Sun Halo mix (Using our new Inspector sliders)
+        float3 baseSkyColor = lerp(_HorizonColor.rgb, _ZenithColor.rgb, saturate(ray.direction.y * 0.5 + 0.5));
+        float3 atmosphereColor = lerp(baseSkyColor, _SunHaloColor.rgb, sunHighlight);
+        
+        // 4. Wash out the voxel contrast smoothly
         float3 finalColor = lerp(colorWithLight, atmosphereColor, fogFactor);
 
         // --- DEBUG: SHARP VOXEL EDGES ---
@@ -468,10 +482,9 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float zDepth = t * dot(ray.direction, _CameraForward.xyz);
         Result[id.xy] = float4(finalColor, zDepth);
     } else {
-        float sunHighlight = pow(max(0.0f, dot(ray.direction, _SunDir)), 8.0f);
-        float3 baseSkyColor = lerp(float3(0.6, 0.8, 1.0), float3(0.2, 0.4, 0.8), saturate(ray.direction.y * 0.5 + 0.5));
-        float3 sunHaloColor = float3(1.0, 0.9, 0.7);
-        float3 atmosphereColor = lerp(baseSkyColor, sunHaloColor, sunHighlight);
+        float sunHighlight = pow(max(0.0f, dot(ray.direction, _SunDir.xyz)), 8.0f);
+        float3 baseSkyColor = lerp(_HorizonColor.rgb, _ZenithColor.rgb, saturate(ray.direction.y * 0.5 + 0.5));
+        float3 atmosphereColor = lerp(baseSkyColor, _SunHaloColor.rgb, sunHighlight);
 
         Result[id.xy] = float4(atmosphereColor, 0); 
     }
