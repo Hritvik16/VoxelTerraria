@@ -162,34 +162,50 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             // float faceShade = saturate(dot(lightingNormal, float3(0, 1, 0))) * 0.5 + saturate(abs(dot(lightingNormal, float3(1, 0, 0)))) * 0.2 + 0.45;
             // float sun_light = saturate(dot(normal, _SunDir.xyz) * 0.8 + 0.2);
 
-            half noiseLarge = (half)hash(floor(finalBlockPos * 0.1));
-            half noiseDetail = (half)((hash(finalBlockPos) - 0.5) * 0.08); 
-            
-            half3 baseColor = (half3)matData.albedo.rgb + noiseDetail;
+            // --- PROCEDURAL COLOR BLENDING (The "Lay of the Land" fix) ---
+            float noiseLarge = hash(floor(finalBlockPos * 0.1));
+            float noiseMedium = hash(floor(finalBlockPos * 0.5));
+            float noiseDetail = (hash(finalBlockPos) - 0.5) * 0.08; 
+
+            float3 baseColor = matData.albedo.rgb;
+            if (baseColor.g > baseColor.r && baseColor.g > baseColor.b) {
+                float3 colorLush = baseColor * float3(1.1, 1.1, 0.8);
+                float3 colorOlive = baseColor * float3(0.8, 0.9, 0.6);
+                float3 colorDeep = baseColor * float3(0.5, 0.7, 0.5);
+                
+                float blend1 = smoothstep(0.2, 0.8, noiseLarge);
+                float3 mixColor = lerp(colorLush, colorOlive, blend1);
+                
+                float blend2 = smoothstep(0.3, 0.9, noiseMedium);
+                mixColor = lerp(mixColor, colorDeep, blend2);
+                
+                baseColor = mixColor + noiseDetail;
+            } else {
+                baseColor += noiseDetail;
+            }
 
             // --- THE F3 FEATURE DEBUG VIEW ---
             if (_FeatureDebugView == 1) {
-                // THE FIX: Use the exact ray hit world position. 
-                // Multiplying by _VoxelScale caused distant LOD chunks to fetch colors from the wrong coordinates!
-                float2 worldXZ = hitWorldPos.xz; 
+                float2 worldXZ = hitWorldPos.xz;
                 float3 debugColor = float3(0.04, 0.92, 0.05); // Default Green (Hills)
 
                 for(int f = 0; f < _FeatureCount; f++) {
                     FeatureAnchor anchor = _FeatureAnchorBuffer[f];
                     if (distance(worldXZ, anchor.position) < anchor.radius) {
-                        if (anchor.topologyID == 10) debugColor = float3(1.0, 1.0, 1.0); // White Mountain
-                        else if (anchor.topologyID == 11) debugColor = float3(1.0, 0.5, 0.0); // Orange Plateau
-                        else if (anchor.topologyID == 12) debugColor = float3(0.8, 0.2, 0.2); // Red Dunes
-                        else if (anchor.topologyID == 13) debugColor = float3(0.5, 0.0, 0.8); // Purple Steppes
+                        if (anchor.topologyID == 10) debugColor = float3(1.0, 1.0, 1.0);
+                        else if (anchor.topologyID == 11) debugColor = float3(1.0, 0.5, 0.0);
+                        else if (anchor.topologyID == 12) debugColor = float3(0.8, 0.2, 0.2);
+                        else if (anchor.topologyID == 13) debugColor = float3(0.5, 0.0, 0.8);
                     }
                 }
-                baseColor = (half3)debugColor; 
+                baseColor = debugColor;
             }
 
             half3 lightingNormal = (half3)normalize(normal + float3(0, 0.65, 0));
-            
-            half faceShade = saturate(dot(lightingNormal, half3(0, 1, 0))) * 0.5h + saturate(abs(dot(lightingNormal, half3(1, 0, 0)))) * 0.2h + 0.45h;
-            half sun_light = saturate(dot((half3)normal, (half3)_SunDir.xyz) * 0.8h + 0.2h);
+            // Push the face shade so tops are bright, sides are distinct
+            half faceShade = saturate(dot(lightingNormal, half3(0, 1, 0))) * 0.6h + saturate(abs(dot(lightingNormal, half3(1, 0, 0)))) * 0.2h + 0.2h;
+            // Contrast the sun angle
+            half sun_light = saturate(dot((half3)normal, (half3)_SunDir.xyz)); 
 
             // --- REAL-TIME 1-BIT VOXEL AMBIENT OCCLUSION (VAO) ---
             int3 faceAirPos = finalBlockPos + (int3)normal;
@@ -202,13 +218,16 @@ void CSMain (uint3 id : SV_DispatchThreadID)
 
             // Determine the tangent axes based on the face normal
             if (abs(normal.x) > 0.5) {
-                t1 = int3(0, 1, 0); t2 = int3(0, 0, 1);
+                t1 = int3(0, 1, 0);
+                t2 = int3(0, 0, 1);
                 faceUV = localHitPos.yz;
             } else if (abs(normal.y) > 0.5) {
-                t1 = int3(1, 0, 0); t2 = int3(0, 0, 1);
+                t1 = int3(1, 0, 0);
+                t2 = int3(0, 0, 1);
                 faceUV = localHitPos.xz;
             } else {
-                t1 = int3(1, 0, 0); t2 = int3(0, 1, 0);
+                t1 = int3(1, 0, 0);
+                t2 = int3(0, 1, 0);
                 faceUV = localHitPos.xy;
             }
 
@@ -234,33 +253,32 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             float bottomAO = lerp(c00, c10, faceUV.x);
             float topAO    = lerp(c01, c11, faceUV.x);
             float vao      = lerp(bottomAO, topAO, faceUV.y);
-            
+
             // --- THE VAO & LIGHTING FIX ---
-            // 1. Fix the VAO Crush: Ensure the tightest corners still receive 40% of the ambient light.
             vao = smoothstep(0.0, 1.0, vao); 
-            vao = lerp(0.4, 1.0, vao); 
+            vao = pow(vao, 1.2); // Expand mid-tones of shadows
+            vao = lerp(0.15, 1.0, vao); // Deepen tight corners (15% instead of 40%)
 
             // --- 1-BIT MACRO SHADOWS & AMBIENT BOUNCE ---
             Ray shadowRay;
             float3 airBlockPos = finalBlockPos + normal;
             shadowRay.origin = (airBlockPos * finalVoxelSize) + (finalVoxelSize * 0.5f);
             shadowRay.direction = _SunDir.xyz;
+
             float s_t = 0; int3 s_mask = 0; uint s_mat = 0; 
-            float s_size = 1.0; float3 s_pos = 0; int s_steps = 0;
+            float s_size = 1.0; float3 s_pos = 0;
+            int s_steps = 0;
             
             bool inShadow = TraceVoxelRay(shadowRay, 60.0, true, s_t, s_mask, s_mat, s_size, s_pos, s_steps);
-            
-            // 2. Calculate Ambient Sky Bounce (Even back-faces get this beautiful blue tint)
-            float3 ambientColor = _HorizonColor.rgb * _AmbientStrength;
-            
-            // 3. Calculate Direct Sun (Only applies if not in shadow)
-            float sunExposure = inShadow ? (1.0 - _ShadowDarkness) : 1.0;
-            float3 directLight = sun_light * 2.5 * sunExposure * _SunHaloColor.rgb; 
-            
-            // 4. Lift the faceShade so the unlit side of the mountain isn't pitch black
-            float softenedFaceShade = lerp(0.5, 1.0, faceShade);
 
-            // Combine! Ambient acts as a base, Direct adds on top, VAO darkens the corners slightly.
+            float3 ambientColor = _HorizonColor.rgb * _AmbientStrength;
+            float sunExposure = inShadow ? (1.0 - _ShadowDarkness) : 1.0;
+            
+            // Lowered direct multiplier to 1.5 to prevent washing out colors
+            float3 directLight = (sun_light * 1.5 + 0.2) * sunExposure * _SunHaloColor.rgb;
+            
+            float softenedFaceShade = lerp(0.4, 1.0, faceShade);
+            
             float3 colorWithLight = baseColor * softenedFaceShade * ((directLight + ambientColor) * vao);
         #else
         // --- 32-BIT BRICKMAP RENDERING ---
