@@ -114,6 +114,16 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             chunkHeightBuffer = new ComputeBuffer(totalMapCapacity, sizeof(float));
             cpuChunkHeights = new NativeArray<float>(totalMapCapacity, Allocator.Persistent);
             Shader.SetGlobalBuffer("_ChunkHeightMap", chunkHeightBuffer);
+
+            // --- INITIALIZE PERSISTENCE BUFFERS ON STARTUP ---
+            // This ensures the Raytracer always has valid buffer references even if no edits exist yet!
+            if (deltaMapUploadBuffer == null) deltaMapUploadBuffer = new ComputeBuffer(500000, 8); 
+            if (chunkPointersBuffer == null) {
+                chunkPointersBuffer = new ComputeBuffer(totalMapCapacity, 8);
+                // Clear the pointers so they don't contain garbage VRAM data
+                Vector2Int[] zeros = new Vector2Int[totalMapCapacity];
+                chunkPointersBuffer.SetData(zeros);
+            }
             
             if (!persistentJobDataArray.IsCreated) persistentJobDataArray = new NativeArray<ChunkJobData>(maxConcurrentJobs, Allocator.Persistent);
             if (!persistentFeatureArray.IsCreated) persistentFeatureArray = new NativeArray<VoxelEngine.World.FeatureAnchor>(5000, Allocator.Persistent);
@@ -238,6 +248,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             if (WorldManager.Instance != null && WorldManager.Instance.featureBuffer != null) {
                 cs.SetBuffer(kernel, "_FeatureAnchorBuffer", WorldManager.Instance.featureBuffer);
                 cs.SetInt("_FeatureCount", WorldManager.Instance.mapFeatures.Count);
+            }
+
+            // --- NEW: Bind the Delta Map Persistence Buffers ---
+            if (deltaMapUploadBuffer != null && chunkPointersBuffer != null) {
+                cs.SetBuffer(kernel, "_DeltaMapBuffer", deltaMapUploadBuffer);
+                cs.SetBuffer(kernel, "_ChunkEditPointers", chunkPointersBuffer);
             }
         }
         if (macroGridBuffer != null) cs.SetBuffer(kernel, "_MacroGrid", macroGridBuffer);

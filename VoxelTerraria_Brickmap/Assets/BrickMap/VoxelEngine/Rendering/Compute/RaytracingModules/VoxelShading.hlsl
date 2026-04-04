@@ -9,7 +9,7 @@ uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, i
 
     // 2. SURFACE & SLOPE RULES
     bool isSurface = !FastIsSolid1Bit(voxelPos + int3(0, 1, 0), baseChunkCoord, denseBase, layer); 
-    bool isSteepSlope = macroNormal.y < 0.6; 
+    bool isSteepSlope = macroNormal.y < 0.3; 
 
     // 3. BIOME EVALUATION (Perturbed Voronoi)
     int currentBiome = 0;
@@ -58,6 +58,8 @@ uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, i
             if (isSteepSlope) return 13;      // Dark Slate (Index 13)
             if (isSurface) return 14;         // Glowing Red Lava (Index 14)
             return 11;                        // Dark Ash/Dirt (Index 11)
+        
+        default: return 3; // FALLBACK
     }
 
     return 3; 

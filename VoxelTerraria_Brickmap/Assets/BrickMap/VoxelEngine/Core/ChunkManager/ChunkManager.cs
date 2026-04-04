@@ -44,6 +44,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
     [Header("Physics & Entities")]
     public List<Transform> worldLoaders = new List<Transform>();
+    public ComputeShader raytracerShader;
     public ComputeShader worldGenShader;
     public ComputeShader worldGenUtilityShader;
     public ComputeShader voxelLightingShader;
@@ -139,6 +140,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
     // --- THE DIRTY FLAG JANITOR ---
     // private Queue<int> dirtyLightChunks = new Queue<int>();
+
+    private ComputeBuffer deltaMapUploadBuffer;
+    private ComputeBuffer chunkPointersBuffer;
 
     // private ComputeBuffer[] chunkMapBuffers = new ComputeBuffer[2]; // FIX: Ring-buffered map!
     // private ComputeBuffer macroGridBuffer;
@@ -439,6 +443,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         // 3. UPDATE SHADER BINDINGS
         if (anyAnchorChanged) {
             UpdateGPUBuffers(); 
+            RefreshDeltaMapPointers(); // <-- NEW: Refresh pointers when camera moves!
             totalLoadTimer.Restart();
             isWorldLoaded = false; 
         }
@@ -484,6 +489,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             Bounds renderBounds = new Bounds(worldLoaders[0].position, new Vector3(4000, 4000, 4000));
             Graphics.DrawProceduralIndirect(rasterVoxelMaterial, renderBounds, MeshTopology.Triangles, argsBuffer, 0, null, null, ShadowCastingMode.On, true, gameObject.layer);
         }
+
+        // --- NEW: STAMP EDITS ONTO NEWLY LOADED CHUNKS ---
+        CheckAndRestoreChunks();
     } 
 
 
@@ -496,5 +504,83 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         }
         // Use standard ToString() to prevent string interpolation memory leaks
         GUI.Label(new Rect(20, 20, 200, 40), "FPS: " + Mathf.RoundToInt(1.0f / deltaTime).ToString(), cachedFpsStyle);
+    }
+
+    // --- THE FIX: DUAL-STATE C# PREDICTION MATH ---
+    // Helper Hash function (Translating your HLSL hash to C#)
+    private float Hash(Unity.Mathematics.float3 p) {
+        p = Unity.Mathematics.math.frac(p * 0.3183099f + 0.1f);
+        p *= 17.0f;
+        return Unity.Mathematics.math.frac(p.x * p.y * p.z * (p.x + p.y + p.z));
+    }
+
+    public bool IsSolid(Vector3Int globalPos) {
+        Vector3Int chunkCoord = new Vector3Int(
+            Mathf.FloorToInt(globalPos.x / 32f),
+            Mathf.FloorToInt(globalPos.y / 32f),
+            Mathf.FloorToInt(globalPos.z / 32f)
+        );
+        int idx = GetMapIndex(0, chunkCoord);
+        if (idx < 0 || idx >= totalMapCapacity || chunkTargetCoordArray[idx] != chunkCoord) return false;
+
+        ChunkData cd = chunkMapArray[idx];
+        if ((cd.packedState & 1) == 0 || cd.densePoolIndex == 0xFFFFFFFF) return false;
+
+        int localX = globalPos.x - (chunkCoord.x * 32);
+        int localY = globalPos.y - (chunkCoord.y * 32);
+        int localZ = globalPos.z - (chunkCoord.z * 32);
+
+        if (localX < 0 || localX >= 32 || localY < 0 || localY >= 32 || localZ < 0 || localZ >= 32) return false;
+
+        int flatIdx = localX + (localY << 5) + (localZ << 10);
+        int uintIdx = flatIdx >> 5;
+        int bitIdx = flatIdx & 31;
+        int poolIndex = (int)(cd.densePoolIndex * 1024u) + uintIdx;
+
+        return (cpuDenseChunkPool[poolIndex] & (1u << bitIdx)) != 0;
+    }
+
+    private uint PredictProceduralMaterial(Vector3Int globalPos) {
+        // 1. IS IT THE SURFACE?
+        bool isSurface = !IsSolid(globalPos + Vector3Int.up);
+        
+        // 2. IS IT A STEEP CLIFF? 
+        float nx = (IsSolid(globalPos + Vector3Int.left) ? 1f : 0f) - (IsSolid(globalPos + Vector3Int.right) ? 1f : 0f);
+        float ny = (IsSolid(globalPos + Vector3Int.down) ? 1f : 0f) - (IsSolid(globalPos + Vector3Int.up) ? 1f : 0f);
+        float nz = (IsSolid(globalPos + Vector3Int.back) ? 1f : 0f) - (IsSolid(globalPos + Vector3Int.forward) ? 1f : 0f);
+        
+        Unity.Mathematics.float3 normal = Unity.Mathematics.math.normalize(new Unity.Mathematics.float3(nx, ny, nz));
+        bool isMassiveCliff = normal.y < 0.3f;
+
+        // 3. WHICH BIOME IS IT IN?
+        int currentBiome = 0;
+        float closestDist = float.MaxValue;
+        // Assuming voxelScale is accessible here (usually 0.1f)
+        // float voxelScale = 0.1f; 
+        Unity.Mathematics.float3 worldPos = new Unity.Mathematics.float3(globalPos.x, globalPos.y, globalPos.z) * voxelScale;
+        
+        float boundaryWarp = (Hash(worldPos * 0.005f) - 0.5f) * 150.0f;
+
+        // Access your Biome Anchors (Update reference if your singleton is different)
+        var anchors = VoxelEngine.WorldManager.Instance.mapFeatures;
+        foreach (var anchor in anchors) {
+            if (anchor.topologyID == 0) { 
+                float dist = Unity.Mathematics.math.distance(worldPos, new Unity.Mathematics.float3(anchor.position.x, 0, anchor.position.y)) + boundaryWarp;
+                if (dist < closestDist) {
+                    closestDist = dist;
+                    currentBiome = anchor.biomeID;
+                }
+            }
+        }
+
+        // 4. RETURN PALETTE ID
+        switch (currentBiome) {
+            case 0: return isMassiveCliff ? 3u : (isSurface ? 1u : 2u);   // FOREST
+            case 1: return isMassiveCliff ? 6u : (isSurface ? 4u : 5u);   // DESERT
+            case 2: return isMassiveCliff ? 8u : (isSurface ? 7u : 8u);   // SNOW
+            case 3: return isMassiveCliff ? 12u : (isSurface ? 10u : 12u);// JUNGLE
+            case 4: return isMassiveCliff ? 13u : (isSurface ? 14u : 11u);// VOLCANIC
+        }
+        return 3u; 
     }
 }

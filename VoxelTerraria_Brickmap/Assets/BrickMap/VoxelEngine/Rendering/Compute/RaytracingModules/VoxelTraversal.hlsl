@@ -103,9 +103,9 @@ ChunkData GetChunkData(int3 chunkCoord, int layer) {
     // int mx = (int)(((uint)(chunkCoord.x + 400000 * sideXZ)) % (uint)sideXZ);
     // int my = (int)(((uint)(chunkCoord.y + 400000 * sideY)) % (uint)sideY);
     // int mz = (int)(((uint)(chunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
-    int mx = (chunkCoord.x % sideXZ + sideXZ) % sideXZ;
-    int my = (chunkCoord.y % sideY + sideY) % sideY;
-    int mz = (chunkCoord.z % sideXZ + sideXZ) % sideXZ;
+    int mx = (int)(((uint)(chunkCoord.x + 400000 * sideXZ)) % (uint)sideXZ);
+    int my = (int)(((uint)(chunkCoord.y + 400000 * sideY)) % (uint)sideY);
+    int mz = (int)(((uint)(chunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
     
     ChunkData cd = _ChunkMap[(layer * _ChunkCount) + mx + mz * sideXZ + my * sideXZ * sideXZ];
     
@@ -260,9 +260,9 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
         // int mx = (int)(((uint)(chunkCoord.x + 400000 * sideXZ)) % (uint)sideXZ);
         // int my = (int)(((uint)(chunkCoord.y + 400000 * sideY)) % (uint)sideY);
         // int mz = (int)(((uint)(chunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
-        int mx = (chunkCoord.x % sideXZ + sideXZ) % sideXZ;
-        int my = (chunkCoord.y % sideY + sideY) % sideY;
-        int mz = (chunkCoord.z % sideXZ + sideXZ) % sideXZ;
+        int mx = (int)(((uint)(chunkCoord.x + 400000 * sideXZ)) % (uint)sideXZ);
+        int my = (int)(((uint)(chunkCoord.y + 400000 * sideY)) % (uint)sideY);
+        int mz = (int)(((uint)(chunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
         int mapIndex = (layer * _ChunkCount) + mx + mz * sideXZ + my * sideXZ * sideXZ;
 
         float chunkMaxY = _ChunkHeightMap[mapIndex];

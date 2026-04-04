@@ -181,6 +181,8 @@ public class PlayerMovement : MonoBehaviour
         
         float currentSpeed = rb.useGravity ? walkSpeed : flySpeed;
 
+        if (rb.isKinematic) return; // THE FIX: Prevent warnings and stuttering if the Physics Manager has locked us!
+
         if (rb.useGravity) {
             Vector3 targetVelocity = moveDir * currentSpeed;
             // Snappy assignment! No more weird Lerping inside FixedUpdate.
@@ -192,6 +194,7 @@ public class PlayerMovement : MonoBehaviour
 
     private void FlyUp()
     {
+        if (rb.isKinematic) return; 
         rb.linearVelocity = new Vector3(rb.linearVelocity.x, flySpeed, rb.linearVelocity.z);
     }
 
