@@ -473,24 +473,24 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
                 
                 // APPLE SILICON OPTIMIZATION: 16-Bit ALU Math
                 // Casting to 'half' explicitly forces the M1 GPU to use its double-speed 16-bit registers
-                // half3 tMaxV_h = (half3)tMaxV;
-                // half3 tDelta_h = (half3)tDelta;
+                half3 tMaxV_h = (half3)tMaxV;
+                half3 tDelta_h = (half3)tDelta;
                 
-                // if (tMaxV_h.x < tMaxV_h.y) {
-                //     if (tMaxV_h.x < tMaxV_h.z) { t = tMaxV.x; tMaxV.x += tDelta.x; mapPos.x += rayStep.x; mask = int3(1,0,0); }
-                //     else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
-                // } else {
-                //     if (tMaxV_h.y < tMaxV_h.z) { t = tMaxV.y; tMaxV.y += tDelta.y; mapPos.y += rayStep.y; mask = int3(0,1,0); }
-                //     else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
-                // }
-
-                if (tMaxV.x < tMaxV.y) {
-                    if (tMaxV.x < tMaxV.z) { t = tMaxV.x; tMaxV.x += tDelta.x; mapPos.x += rayStep.x; mask = int3(1,0,0); }
+                if (tMaxV_h.x < tMaxV_h.y) {
+                    if (tMaxV_h.x < tMaxV_h.z) { t = tMaxV.x; tMaxV.x += tDelta.x; mapPos.x += rayStep.x; mask = int3(1,0,0); }
                     else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
                 } else {
-                    if (tMaxV.y < tMaxV.z) { t = tMaxV.y; tMaxV.y += tDelta.y; mapPos.y += rayStep.y; mask = int3(0,1,0); }
+                    if (tMaxV_h.y < tMaxV_h.z) { t = tMaxV.y; tMaxV.y += tDelta.y; mapPos.y += rayStep.y; mask = int3(0,1,0); }
                     else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
                 }
+
+                // if (tMaxV.x < tMaxV.y) {
+                //     if (tMaxV.x < tMaxV.z) { t = tMaxV.x; tMaxV.x += tDelta.x; mapPos.x += rayStep.x; mask = int3(1,0,0); }
+                //     else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
+                // } else {
+                //     if (tMaxV.y < tMaxV.z) { t = tMaxV.y; tMaxV.y += tDelta.y; mapPos.y += rayStep.y; mask = int3(0,1,0); }
+                //     else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
+                // }
             }
             if (hitInside) return true;
         }

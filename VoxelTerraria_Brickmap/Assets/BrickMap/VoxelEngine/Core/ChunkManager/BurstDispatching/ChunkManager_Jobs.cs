@@ -160,6 +160,38 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     */
 
 
+    private LayerCoord ExtractClosestChunk(List<LayerCoord> queue, Vector3Int centerCoord) {
+        if (queue.Count == 1) {
+            LayerCoord lc = queue[0];
+            queue.RemoveAt(0);
+            return lc;
+        }
+
+        int closestIdx = -1;
+        int minDistance = int.MaxValue;
+        
+        for (int i = 0; i < queue.Count; i++) {
+            Vector3Int c = queue[i].coord;
+            int dx = c.x - centerCoord.x;
+            int dy = c.y - centerCoord.y;
+            int dz = c.z - centerCoord.z;
+            int distSq = (dx * dx) + (dy * dy) + (dz * dz);
+            
+            if (distSq < minDistance) {
+                minDistance = distSq;
+                closestIdx = i;
+            }
+        }
+        
+        LayerCoord closest = queue[closestIdx];
+        
+        int lastIdx = queue.Count - 1;
+        queue[closestIdx] = queue[lastIdx];
+        queue.RemoveAt(lastIdx);
+        
+        return closest;
+    }
+
     void DispatchNewJobs() {
         if (isTerrainJobRunning) return;
 
@@ -168,15 +200,6 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             Vector3 pPos = worldLoaders[0].position;
             Vector3 pVel = (pBody != null) ? pBody.linearVelocity : (Vector3.down * 50f); 
             Vector3 travelDir = pVel.magnitude > 1f ? pVel.normalized : Vector3.down;
-
-            // 1. THE ZERO-GC SORTING FIX
-            // 1. THE ZERO-GC SORTING FIX
-            for (int L = 0; L < clipmapLayers; L++) {
-                if (generationQueues[L].Count > 1 && Time.frameCount % 30 == 0) {
-                    chunkSorter.centerCoord = primaryAnchorChunks[L];
-                    generationQueues[L].Sort(chunkSorter); // Lightning fast integer sort
-                }
-            }
         }
 
 
@@ -190,21 +213,18 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             for (int L = 0; L < clipmapLayers; L++) {
                 if (dispatchesThisFrame >= maxConcurrentJobs) break;
                 while (generationQueues[L].Count > 0 && queueTimer.Elapsed.TotalMilliseconds < 4.0) {
-                    int lastQueueElement = generationQueues[L].Count - 1;
-                    LayerCoord lc = generationQueues[L][lastQueueElement];
-                    
-                    int idx = GetMapIndex(lc.layer, lc.coord);
-                    if (chunkTargetCoordArray[idx] != lc.coord) {
-                        generationQueues[L].RemoveAt(lastQueueElement); 
-                        continue;
-                    }
-
                     if (freeDenseIndices.Count == 0) {
                         jobsAvailable = false;
                         break; 
                     }
                     
-                    generationQueues[L].RemoveAt(lastQueueElement);
+                    LayerCoord lc = ExtractClosestChunk(generationQueues[L], primaryAnchorChunks[L]);
+                    
+                    int idx = GetMapIndex(lc.layer, lc.coord);
+                    if (chunkTargetCoordArray[idx] != lc.coord) {
+                        continue;
+                    }
+
                     uint denseIndex = freeDenseIndices.Dequeue();
 
                     float layerScale = voxelScale * (1 << lc.layer);
