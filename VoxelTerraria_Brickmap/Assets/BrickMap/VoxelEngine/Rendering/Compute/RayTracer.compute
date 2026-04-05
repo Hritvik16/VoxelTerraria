@@ -95,60 +95,9 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             ChunkData hitChunk = GetChunkData(baseChunkCoord, layer);
             uint denseBase = hitChunk.densePoolIndex * 1024u;
 
-            // --- THE DELTA MAP INTERCEPT ---
-            uint finalMaterialID = 0;
-            bool foundCustomEdit = false;
-
-            // ONLY check custom edits if we are rendering High-Detail LOD 0!
-            if (layer == 0) {
-                int3 localPos = (int3)finalBlockPos & 31;
-                uint localFlatIdx = localPos.x + (localPos.y << 5) + (localPos.z << 10);
-                
-                // Re-calculate the mapIndex from the final hit position
-                int baseRadXZ = (int)_RenderBounds.x;
-                int baseRadY  = (int)_RenderBounds.y; 
-                int sideXZ = 2 * baseRadXZ + 1;
-                int sideY = 2 * baseRadY + 1;
-                int mx = (int)(((uint)(baseChunkCoord.x + 400000 * sideXZ)) % (uint)sideXZ);
-                int my = (int)(((uint)(baseChunkCoord.y + 400000 * sideY)) % (uint)sideY);
-                int mz = (int)(((uint)(baseChunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
-                uint mapIndex = mx + mz * sideXZ + my * sideXZ * sideXZ;
-
-                int2 editPointer = _ChunkEditPointers[mapIndex];
-                int startIndex = editPointer.x;
-                int editCount = editPointer.y;
-
-                // LIGHTNING FAST GPU BINARY SEARCH (O(log N) instead of O(N))
-                if (editCount > 0) {
-                    int left = 0;
-                    int right = editCount - 1;
-                    
-                    // Cap the loop at 16 steps (can search up to 65,536 edits safely without stalling)
-                    [loop]
-                    for (int s = 0; s < 16; s++) {
-                        if (left > right) break;
-                        
-                        int mid = left + (right - left) / 2;
-                        VoxelEdit edit = _DeltaMapBuffer[startIndex + mid];
-                        
-                        if (edit.flatIndex == (int)localFlatIdx) {
-                            finalMaterialID = edit.material;
-                            foundCustomEdit = true;
-                            break;
-                        }
-                        if (edit.flatIndex < (int)localFlatIdx) {
-                            left = mid + 1;
-                        } else {
-                            right = mid - 1;
-                        }
-                    }
-                }
-            }
-
-            if (!foundCustomEdit) {
-                // If it's natural terrain, fall back to your procedural math!
-                finalMaterialID = GetProceduralMaterial(finalBlockPos, baseChunkCoord, denseBase, layer);
-            }
+            // --- THE RAM VAULT LOOKUP ---
+            // The C# CPU already ensures physical memory arrays perfectly mirror user edits!
+            uint finalMaterialID = GetProceduralMaterial(finalBlockPos, baseChunkCoord, denseBase, layer);
             
             uint matID = finalMaterialID;
             

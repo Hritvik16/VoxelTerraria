@@ -86,24 +86,24 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             for (int i = 0; i < 2; i++) {
                 tempChunkUploadBuffers[i] = new ComputeBuffer(totalVoxelCapacity, sizeof(uint));
                 jobQueueBuffers[i] = new ComputeBuffer(maxConcurrentJobs, 48);
-                tempMaskUploadBuffers[i] = new ComputeBuffer(maxConcurrentJobs * 19, sizeof(uint)); // CHANGED to 19
+                tempMaskUploadBuffers[i] = new ComputeBuffer(maxConcurrentJobs * 19, sizeof(uint)); 
+                tempMaterialUploadBuffers[i] = new ComputeBuffer(maxConcurrentJobs * 8192, sizeof(uint)); // NEW: 8-Bit Material Truck
             }
             
             // NEW: Native Unmanaged Pointers
             nativeChunkUpload = new NativeArray<uint>(totalVoxelCapacity, Allocator.Persistent);
             nativeMaskUpload = new NativeArray<uint>(maxConcurrentJobs * 19, Allocator.Persistent);
+            nativeMaterialUpload = new NativeArray<uint>(maxConcurrentJobs * 8192, Allocator.Persistent); // NEW: Material Pointer
         }
         
-        if (deltaMapBuffer == null) {
-            deltaMapBuffer = new ComputeBuffer(MAX_EDITS_PER_DISPATCH, 8);
-            deltaMapBuffer.SetData(new VoxelEdit[MAX_EDITS_PER_DISPATCH]); 
-        }
-
         if (crosshairBuffer == null) crosshairBuffer = new ComputeBuffer(2, 16);
 
         if (denseChunkPoolBuffer == null) {
             denseChunkPoolBuffer = new ComputeBuffer(dynamicMaxChunks * UINTS_PER_CHUNK, sizeof(uint));
             cpuDenseChunkPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_CHUNK, Allocator.Persistent);
+            
+            materialChunkPoolBuffer = new ComputeBuffer(dynamicMaxChunks * 8192, sizeof(uint)); // NEW: 8-Bit Ground Truth Pool
+            cpuMaterialChunkPool = new NativeArray<uint>(dynamicMaxChunks * 8192, Allocator.Persistent);
             // Allocate the 16-Bit RGB Light Array
             // illuminationPoolBuffer = new ComputeBuffer(dynamicMaxChunks * UINTS_PER_LIGHT_CHUNK, sizeof(uint));
             // cpuIlluminationPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_LIGHT_CHUNK, Allocator.Persistent);
@@ -115,15 +115,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             cpuChunkHeights = new NativeArray<float>(totalMapCapacity, Allocator.Persistent);
             Shader.SetGlobalBuffer("_ChunkHeightMap", chunkHeightBuffer);
 
-            // --- INITIALIZE PERSISTENCE BUFFERS ON STARTUP ---
-            // This ensures the Raytracer always has valid buffer references even if no edits exist yet!
-            if (deltaMapUploadBuffer == null) deltaMapUploadBuffer = new ComputeBuffer(500000, 8); 
-            if (chunkPointersBuffer == null) {
-                chunkPointersBuffer = new ComputeBuffer(totalMapCapacity, 8);
-                // Clear the pointers so they don't contain garbage VRAM data
-                Vector2Int[] zeros = new Vector2Int[totalMapCapacity];
-                chunkPointersBuffer.SetData(zeros);
-            }
+            // Pointers to the Delta Map deleted!
             
             if (!persistentJobDataArray.IsCreated) persistentJobDataArray = new NativeArray<ChunkJobData>(maxConcurrentJobs, Allocator.Persistent);
             if (!persistentFeatureArray.IsCreated) persistentFeatureArray = new NativeArray<VoxelEngine.World.FeatureAnchor>(5000, Allocator.Persistent);
@@ -144,10 +136,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                 vertexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxVertexCount, 16);
             }
 
-            // Shader.SetGlobalBuffer("_DenseChunkPool", denseChunkPoolBuffer);
-            // Shader.SetGlobalBuffer("_MacroMaskPool", macroMaskPoolBuffers[0]); 
             Shader.SetGlobalBuffer("_DenseChunkPool", denseChunkPoolBuffer);
             Shader.SetGlobalBuffer("_MacroMaskPool", macroMaskPoolBuffer); 
+            Shader.SetGlobalBuffer("_MaterialChunkPool", materialChunkPoolBuffer); // NEW: Bind the material pool
 
             if (macroGridBuffer == null) {
                 macroGridBuffer = new ComputeBuffer(totalMapCapacity, 8);
@@ -187,7 +178,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         }
         if (cpuDenseChunkPool.IsCreated) cpuDenseChunkPool.Dispose();
         if (cpuMacroMaskPool.IsCreated) cpuMacroMaskPool.Dispose(); 
+        if (cpuMaterialChunkPool.IsCreated) cpuMaterialChunkPool.Dispose();
         if (cpuChunkHeights.IsCreated) cpuChunkHeights.Dispose(); 
+        if (cpuBiomes.IsCreated) cpuBiomes.Dispose();
         chunkHeightBuffer?.Release();
 
         if (persistentJobDataArray.IsCreated) persistentJobDataArray.Dispose();
@@ -196,20 +189,22 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         if (persistentTunnelArray.IsCreated) persistentTunnelArray.Dispose();
         if (nativeChunkUpload.IsCreated) nativeChunkUpload.Dispose();
         if (nativeMaskUpload.IsCreated) nativeMaskUpload.Dispose();
+        if (nativeMaterialUpload.IsCreated) nativeMaterialUpload.Dispose();
         // if (cpuIlluminationPool.IsCreated) cpuIlluminationPool.Dispose();
 
         // illuminationPoolBuffer?.Release();
         
         macroGridBuffer?.Release();
-        deltaMapBuffer?.Release();
         materialBuffer?.Release();
         denseChunkPoolBuffer?.Release(); 
         crosshairBuffer?.Release();
         
+        materialChunkPoolBuffer?.Release();
         for (int i = 0; i < 2; i++) {
             tempChunkUploadBuffers[i]?.Release();
             jobQueueBuffers[i]?.Release();
             tempMaskUploadBuffers[i]?.Release();
+            tempMaterialUploadBuffers[i]?.Release();
         }
         biomeAnchorBuffer?.Release();
         biomeAnchorBuffer = null;
@@ -223,7 +218,6 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         macroGridBuffer = null;
         materialBuffer = null;
         denseChunkPoolBuffer = null;
-        deltaMapBuffer = null;
         crosshairBuffer = null;
     }
 
@@ -249,15 +243,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                 cs.SetBuffer(kernel, "_FeatureAnchorBuffer", WorldManager.Instance.featureBuffer);
                 cs.SetInt("_FeatureCount", WorldManager.Instance.mapFeatures.Count);
             }
-
-            // --- NEW: Bind the Delta Map Persistence Buffers ---
-            if (deltaMapUploadBuffer != null && chunkPointersBuffer != null) {
-                cs.SetBuffer(kernel, "_DeltaMapBuffer", deltaMapUploadBuffer);
-                cs.SetBuffer(kernel, "_ChunkEditPointers", chunkPointersBuffer);
-            }
         }
         if (macroGridBuffer != null) cs.SetBuffer(kernel, "_MacroGrid", macroGridBuffer);
         if (denseChunkPoolBuffer != null) cs.SetBuffer(kernel, "_DenseChunkPool", denseChunkPoolBuffer);
+        if (materialChunkPoolBuffer != null) cs.SetBuffer(kernel, "_MaterialChunkPool", materialChunkPoolBuffer); // NEW: Bind to Compute
         
         // FIX: Reverted [0] back to [ringIndex] so it reads the Grand Swap!
         if (macroMaskPoolBuffer != null) cs.SetBuffer(kernel, "_MacroMaskPool", macroMaskPoolBuffer);
@@ -271,8 +260,6 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     }
 
     public void BindMathData(ComputeShader cs, int kernel) {
-        if (deltaMapBuffer != null) cs.SetBuffer(kernel, "_DeltaMapBuffer", deltaMapBuffer);
-
         if (WorldManager.Instance != null) {
             if (WorldManager.Instance.featureBuffer != null) cs.SetBuffer(kernel, "_FeatureAnchorBuffer", WorldManager.Instance.featureBuffer);
             if (WorldManager.Instance.cavernBuffer != null) cs.SetBuffer(kernel, "_CavernNodeBuffer", WorldManager.Instance.cavernBuffer);

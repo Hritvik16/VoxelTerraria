@@ -18,18 +18,11 @@ int _BiomeAnchorCount;
 struct SVONode { uint childIndex; uint material; };
 struct ChunkData { uint packedState; uint densePoolIndex; };
 
-struct VoxelEdit {
-    int flatIndex;
-    uint material;
-};
-
 StructuredBuffer<SVONode> _SVOPool;
 StructuredBuffer<uint> _DenseChunkPool;
 StructuredBuffer<uint> _MacroMaskPool; 
 StructuredBuffer<float> _ChunkHeightMap;
 StructuredBuffer<ChunkData> _ChunkMap;
-StructuredBuffer<VoxelEdit> _DeltaMapBuffer;
-StructuredBuffer<int2> _ChunkEditPointers;
 
 int _ChunkCount;
 float4 _ClipmapCenters[8];

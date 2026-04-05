@@ -12,7 +12,6 @@ using System.Runtime.InteropServices;
 
 public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 {
-    private NativeArray<VoxelEdit> nativeDeltaMapArray; // The Zero-GC Edit Buffer
 
     void CompleteActiveJob() {
         activeTerrainJobHandle.Complete();
@@ -29,8 +28,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
             int maskOffset = (int)myDenseIndex * 19; // CHANGED to 19
             NativeArray<uint>.Copy(cpuMacroMaskPool, maskOffset, nativeMaskUpload, i * 19, 19);
-            
 
+            // NEW: Copy the written material slice back to the GPU Courier
+            NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)myDenseIndex * 8192, nativeMaterialUpload, i * 8192, 8192);
+            
             // Only update the map if the player hasn't moved away from this chunk!
             if (chunkMapArray[mapIndex].densePoolIndex == myDenseIndex) {
                 ChunkData cd = chunkMapArray[mapIndex];
@@ -63,9 +64,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
         // Upload to the CURRENT active ring buffer
         // The Zero-GC Instant Uploads!
-        tempChunkUploadBuffers[ringIndex].SetData(nativeChunkUpload, 0, 0, voxelCountThisDispatch);
+        tempChunkUploadBuffers[ringIndex].SetData(nativeChunkUpload, 0, 0, activeDispatches * 1024);
         jobQueueBuffers[ringIndex].SetData(persistentJobDataArray, 0, 0, activeDispatches);
         tempMaskUploadBuffers[ringIndex].SetData(nativeMaskUpload, 0, 0, activeDispatches * 19); // CHANGED to 19
+        
+        // Push the 8-bit material arrays to the GPU! (8192 uints per chunk)
+        tempMaterialUploadBuffers[ringIndex].SetData(nativeMaterialUpload, 0, 0, activeDispatches * 8192);
 
         chunkHeightBuffer.SetData(cpuChunkHeights);
 
@@ -80,6 +84,8 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         // NEW: Bind the destination and courier buffers
         worldGenUtilityShader.SetBuffer(commitKernel, "_MacroMaskPool", macroMaskPoolBuffer);
         worldGenUtilityShader.SetBuffer(commitKernel, "_TempMaskUpload", tempMaskUploadBuffers[ringIndex]);
+        worldGenUtilityShader.SetBuffer(commitKernel, "_MaterialChunkPool", materialChunkPoolBuffer); // NEW
+        worldGenUtilityShader.SetBuffer(commitKernel, "_TempMaterialUpload", tempMaterialUploadBuffers[ringIndex]); // NEW
         worldGenUtilityShader.SetBuffer(commitKernel, "_ChunkMap", chunkMapBuffer);
         
         int threadGroups = Mathf.CeilToInt((activeDispatches * UINTS_PER_CHUNK) / 256f);
@@ -173,12 +179,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             }
         }
 
-        if (!nativeDeltaMapArray.IsCreated) {
-            nativeDeltaMapArray = new NativeArray<VoxelEdit>(MAX_EDITS_PER_DISPATCH, Allocator.Persistent);
-        }
+
 
         int dispatchesThisFrame = 0;
-        int totalEditsThisDispatch = 0; // NEW: Tracks how many edits we've packed
         Stopwatch queueTimer = Stopwatch.StartNew(); 
         bool jobsAvailable = true;
         
@@ -218,45 +221,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     }
                     safeRootIndex += (uint)(chunkIndexInLayer * siloCap);
 
-                    // --- THE LOD SIEVE & DELTA PACKER ---
-                    int editStart = totalEditsThisDispatch;
-                    int editCount = 0;
-                    int step = 1 << lc.layer; // 1 for L0, 2 for L1, 4 for L2
-                    Vector3Int baseL0Coord = lc.coord * step;
-
-                    for (int dx = 0; dx < step; dx++) {
-                        for (int dy = 0; dy < step; dy++) {
-                            for (int dz = 0; dz < step; dz++) {
-                                Vector3Int l0Coord = baseL0Coord + new Vector3Int(dx, dy, dz);
-                                
-                                if (worldDeltaMap.TryGetValue(l0Coord, out var chunkEdits)) {
-                                    foreach (var kvp in chunkEdits) {
-                                        if (totalEditsThisDispatch >= MAX_EDITS_PER_DISPATCH) break;
-
-                                        int origFlat = kvp.Key;
-                                        uint mat = kvp.Value;
-
-                                        // Downsample to LOD local space
-                                        int lx = origFlat & 31;
-                                        int ly = (origFlat >> 5) & 31;
-                                        int lz = (origFlat >> 10) & 31;
-
-                                        int mappedX = (lx / step) + (dx * (32 / step));
-                                        int mappedY = (ly / step) + (dy * (32 / step));
-                                        int mappedZ = (lz / step) + (dz * (32 / step));
-
-                                        int mappedFlat = mappedX + (mappedY << 5) + (mappedZ << 10);
-
-                                        nativeDeltaMapArray[totalEditsThisDispatch] = new VoxelEdit {
-                                            flatIndex = mappedFlat,
-                                            material = mat
-                                        };
-                                        totalEditsThisDispatch++;
-                                        editCount++;
-                                    }
-                                }
-                            }
-                        }
+                    // --- THE RAM VAULT LOADER ---
+                    bool hasCache = (lc.layer == 0) && modifiedChunks.ContainsKey(lc.coord);
+                    if (hasCache) {
+                        RestoreFromVault(lc.coord, denseIndex);
                     }
 
                     pendingJobsArray[dispatchesThisFrame] = new ChunkJobData {
@@ -265,8 +233,8 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                         lodStep = targetLod,
                         layerScale = layerScale,
                         pad1 = safeRootIndex,
-                        editStartIndex = editStart, // Now accurately points to the buffer slice!
-                        editCount = editCount,      // Tells the generator how many edits to apply!
+                        editStartIndex = 0, // Unused
+                        editCount = hasCache ? 1 : 0, // Tells the generator to EXIT EARLY if cached!
                         pad2 = (int)denseIndex, 
                         pad3 = 0
                     };
@@ -287,11 +255,6 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
         if (dispatchesThisFrame > 0) {
             activeDispatches = dispatchesThisFrame;
-            
-            // Upload the packed Delta Map edits to the GPU!
-            if (totalEditsThisDispatch > 0 && deltaMapBuffer != null) {
-                deltaMapBuffer.SetData(nativeDeltaMapArray, 0, 0, totalEditsThisDispatch);
-            }
 
             ringIndex = (ringIndex + 1) % 2; 
             
@@ -321,17 +284,15 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             worldGenUtilityShader.SetBuffer(kernel_clear, "_JobQueue", jobQueueBuffers[ringIndex]);
             worldGenUtilityShader.Dispatch(kernel_clear, dispatchesThisFrame, 1, 1);
 
-            // Replace the 'TerrainGenJob terrainJob = new TerrainGenJob {...}' block with this:
             if (currentArchitecture == VoxelArchitecture.DualState1Bit) {
                 TerrainGenJob_1Bit terrainJob = new TerrainGenJob_1Bit {
                     jobQueue = persistentJobDataArray, features = persistentFeatureArray,
                     caverns = persistentCavernArray, tunnels = persistentTunnelArray,
                     denseChunkPool = cpuDenseChunkPool, macroMaskPool = cpuMacroMaskPool, 
                     chunkHeights = cpuChunkHeights,
-                    // THE FIX: Pass the exact active counts (fCount, cCount, tCount) so the Burst Job 
-                    // doesn't read thousands of empty 0-byte structs at the end of the array!
-                    featureCount = fCount, cavernCount = cCount, tunnelCount = tCount, 
-                    deltaMap = nativeDeltaMapArray // <-- THE MISSING LINK!
+                    cpuMaterialChunkPool = cpuMaterialChunkPool, // NEW: Bypassing NativeCourier!
+                    featureCount = fCount, cavernCount = cCount, tunnelCount = tCount,
+                    biomes = cpuBiomes, biomeCount = cpuBiomes.IsCreated ? cpuBiomes.Length : 0
                 };
                 activeTerrainJobHandle = terrainJob.Schedule(dispatchesThisFrame, 1);
             } else {

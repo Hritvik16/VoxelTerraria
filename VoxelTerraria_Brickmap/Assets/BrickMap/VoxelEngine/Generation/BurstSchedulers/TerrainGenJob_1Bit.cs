@@ -14,10 +14,6 @@ namespace VoxelEngine.World
         [ReadOnly] public NativeArray<FeatureAnchor> features;
         [ReadOnly] public NativeArray<CavernNode> caverns;
         [ReadOnly] public NativeArray<TunnelSpline> tunnels; 
-        
-        // --- NEW: The Delivery Truck ---
-        [ReadOnly] public NativeArray<ChunkManager.VoxelEdit> deltaMap;
-        
         public int featureCount;
         public int cavernCount;
         public int tunnelCount; 
@@ -27,11 +23,28 @@ namespace VoxelEngine.World
         [NativeDisableParallelForRestriction] public NativeArray<uint> denseChunkPool;
         [NativeDisableParallelForRestriction] public NativeArray<uint> macroMaskPool; 
         [NativeDisableParallelForRestriction] public NativeArray<float> chunkHeights; 
+        [NativeDisableParallelForRestriction] public NativeArray<uint> cpuMaterialChunkPool; // NEW: Direct to Master Array
+
+        [ReadOnly] public NativeArray<ChunkManager.BiomeAnchor> biomes;
+        public int biomeCount;
+
+        private float Hash(float3 p3) {
+            p3  = math.frac(p3 * 0.1031f);
+            p3 += math.dot(p3, new float3(p3.y, p3.z, p3.x) + 33.33f);
+            return math.frac((p3.x + p3.y) * p3.z);
+        }
 
         public void Execute(int jobIndex)
         {
             ChunkManager.ChunkJobData job = jobQueue[jobIndex];
             uint denseBase = (uint)job.pad2 * 1024u; 
+
+            // --- NEW: RAM VAULT BYPASS ---
+            if (job.editCount == 1) {
+                // Set bounds very high, because player edits could be anywhere!
+                chunkHeights[job.mapIndex] = (job.worldPos.y + 32f) * job.layerScale;
+                return; // THE GREAT PURGE: No Math! No Search! Just O(1) Instant Return!
+            }
 
             float wStartX = job.worldPos.x * job.layerScale;
             float wStartZ = job.worldPos.z * job.layerScale;
@@ -108,6 +121,7 @@ namespace VoxelEngine.World
             }
             activeFeatures.Dispose();
 
+
             // --- THE NEW EXACT CULLING ---
             float dynamicPad = 5f + (job.layerScale * 2f); // Padding can be much smaller now because we have EXACT max height!
             float minBH = exactMinH - dynamicPad;
@@ -130,35 +144,96 @@ namespace VoxelEngine.World
                     for (int i = 0; i < 19; i++) macroMaskPool[maskBase1 + i] = 0; 
                     
                     localHeights.Dispose(); // Cleanup the stack memory
+                    // Since localMaterials wasn't allocated yet, no need to dispose it here!
                     return; 
                 }
             }
 
             bool isDistantLOD = job.layerScale >= 0.8f;
 
+            // OPTIMIZATION: Temp array clears to 0 instantly. Zero GC.
+            NativeArray<uint> localMaterials = new NativeArray<uint>(8192, Allocator.Temp);
+
             if (isFullyUnderground) {
                 for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = uint.MaxValue; 
+                // OPTIMIZATION: 0x03030303 writes 4 Stone blocks (Index 3) in a single CPU cycle.
+                for (int i = 0; i < 8192; i++) localMaterials[i] = 0x03030303; 
+
                 if (!isDistantLOD) {
                     CaveCarverWorker.ApplyCavesAndTunnels_1Bit(ref denseChunkPool, denseBase, job.worldPos.x * job.layerScale, job.worldPos.y * job.layerScale, job.worldPos.z * job.layerScale, job.layerScale, caverns, cavernCount, tunnels, tunnelCount);
                 }
             } 
             else {
                 for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = 0; 
+                for (int i = 0; i < 8192; i++) localMaterials[i] = 0; // THE FIX: Clear Burst's Temp uninitialized garbage!
 
-                // 3. THE ZERO-MATH VOXEL LOOP
+                // 3. THE HIGHLY OPTIMIZED VOXEL LOOP
                 for (int z = 0; z < 32; z++) {
                     for (int x = 0; x < 32; x++) {
-                        float h = localHeights[x + (z << 5)]; // O(1) Lookup!
-
-                        for (int y = 0; y < 32; y++) {
-                            float yPos = wStartY + (y * job.layerScale); 
-                            
-                            if (yPos <= h) {
-                                int flatIdx = x + (y << 5) + (z << 10);
-                                int uintIdx = flatIdx >> 5;
-                                int bitIdx = flatIdx & 31;
-                                denseChunkPool[(int)denseBase + uintIdx] |= (1u << bitIdx);
+                        float h = localHeights[x + (z << 5)];
+                        
+                        // BIOME LOOKUP (Once per XZ column! Extremely fast compared to doing it per voxel!)
+                        float worldX = job.worldPos.x * job.layerScale + x * job.layerScale;
+                        float worldZ = job.worldPos.z * job.layerScale + z * job.layerScale;
+                        float3 worldPos2D = new float3(worldX, 0, worldZ); 
+                        float boundaryWarp = (Hash(worldPos2D * 0.005f) - 0.5f) * 150.0f;
+                        
+                        int currentBiome = 0;
+                        float closestDist = 999999.0f;
+                        for (int b = 0; b < biomeCount; b++) {
+                            float dist = math.distance(worldPos2D, new float3(biomes[b].position.x, 0, biomes[b].position.z)) + boundaryWarp;
+                            if (dist < closestDist) {
+                                closestDist = dist;
+                                currentBiome = biomes[b].biomeType;
                             }
+                        }
+
+                        // INTEGER BOUNDARY OPTIMIZATION: Zero floats in the Y-loop!
+                        int trueYMax = (int)((h - wStartY) / job.layerScale);
+                        int trueYDirt = (int)((h - 20.0f - wStartY) / job.layerScale);
+                        int loopYMax = math.clamp(trueYMax, -1, 31);
+
+                        for (int y = 0; y <= loopYMax; y++) {
+                            int flatIdx = x + (y << 5) + (z << 10);
+                            
+                            // 1-Bit Shape Fast-Write
+                            denseChunkPool[(int)denseBase + (flatIdx >> 5)] |= (1u << (flatIdx & 31));
+
+                            // 8-Bit Material Fast-Write 
+                            uint matID = 3; 
+
+                            if (y == trueYMax) {
+                                switch (currentBiome) {
+                                    case 0: matID = 1u; break;   // FOREST Grass
+                                    case 1: matID = 4u; break;   // DESERT Sand
+                                    case 2: matID = 7u; break;   // SNOW Snow
+                                    case 3: matID = 10u; break;  // JUNGLE Dark Grass
+                                    case 4: matID = 14u; break;  // VOLCANIC Lava
+                                    default: matID = 1u; break;
+                                }
+                            } else if (y > trueYDirt) {
+                                switch (currentBiome) {
+                                    case 0: matID = 2u; break;   // FOREST Dirt
+                                    case 1: matID = 5u; break;   // DESERT Soft Sandstone
+                                    case 2: matID = 8u; break;   // SNOW Ice
+                                    case 3: matID = 12u; break;  // JUNGLE Mud
+                                    case 4: matID = 11u; break;  // VOLCANIC Ash
+                                    default: matID = 2u; break;
+                                }
+                            } else {
+                                switch (currentBiome) {
+                                    case 0: matID = 3u; break;   // FOREST Stone
+                                    case 1: matID = 6u; break;   // DESERT Hard Sandstone
+                                    case 2: matID = 3u; break;   // SNOW Stone
+                                    case 3: matID = 3u; break;   // JUNGLE Stone
+                                    case 4: matID = 13u; break;  // VOLCANIC Dark Slate
+                                    default: matID = 3u; break;
+                                }
+                            }
+
+                            int mUintIdx = flatIdx >> 2; 
+                            int shift = (flatIdx & 3) << 3; 
+                            localMaterials[mUintIdx] |= (matID << shift);
                         }
                     }
                 }
@@ -170,23 +245,12 @@ namespace VoxelEngine.World
             
             localHeights.Dispose(); // Cleanup the stack memory
 
-            // --- THE DELTA OVERWRITE (Absolute Authority) ---
-            if (job.editCount > 0) {
-                for (int e = 0; e < job.editCount; e++) {
-                    ChunkManager.VoxelEdit edit = deltaMap[job.editStartIndex + e];
-                    
-                    int flatIdx = edit.flatIndex;
-                    int uintIdx = flatIdx >> 5;
-                    int bitIdx = flatIdx & 31;
-
-                    // 1-Bit Architecture: Material > 0 means Solid (1), Material == 0 means Air (0)
-                    if (edit.material > 0) {
-                        denseChunkPool[(int)denseBase + uintIdx] |= (1u << bitIdx); 
-                    } else {
-                        denseChunkPool[(int)denseBase + uintIdx] &= ~(1u << bitIdx); 
-                    }
-                }
+            // Blast the local cache DIRECTLY to the CPU Master Array!
+            int matBase = job.pad2 * 8192;
+            for (int i = 0; i < 8192; i++) {
+                cpuMaterialChunkPool[matBase + i] = localMaterials[i];
             }
+            localMaterials.Dispose();
 
             int maskBase = job.pad2 * 19;
             MacroMaskBaker.Bake1Bit(ref denseChunkPool, denseBase, ref macroMaskPool, maskBase);

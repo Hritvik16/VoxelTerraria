@@ -96,11 +96,6 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         public Vector3Int coord;
     }
 
-    public struct VoxelEdit {
-        public int flatIndex;
-        public uint material;
-    }
-
     private class ChunkPriorityComparer : IComparer<LayerCoord> {
         public Vector3Int centerCoord;
         
@@ -121,10 +116,29 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     }
     private ChunkPriorityComparer chunkSorter = new ChunkPriorityComparer();
 
-    private ComputeBuffer deltaMapBuffer;
-    private const int MAX_EDITS_PER_DISPATCH = 16384; 
-    private Dictionary<Vector3Int, Dictionary<int, uint>> worldDeltaMap = new Dictionary<Vector3Int, Dictionary<int, uint>>();
-    
+    // --- THE RAM VAULT ---
+    public struct CachedChunk {
+        public uint[] shape;
+        public uint[] mask;
+        public uint[] material;
+    }
+    public Dictionary<Vector3Int, CachedChunk> modifiedChunks = new Dictionary<Vector3Int, CachedChunk>();
+    public HashSet<Vector3Int> editedChunkCoords = new HashSet<Vector3Int>();
+
+    public void SaveToVault(Vector3Int coord, uint denseIndex) {
+        CachedChunk cache = new CachedChunk { shape = new uint[1024], mask = new uint[19], material = new uint[8192] };
+        NativeArray<uint>.Copy(cpuDenseChunkPool, (int)denseIndex * 1024, cache.shape, 0, 1024);
+        NativeArray<uint>.Copy(cpuMacroMaskPool, (int)denseIndex * 19, cache.mask, 0, 19);
+        NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)denseIndex * 8192, cache.material, 0, 8192);
+        modifiedChunks[coord] = cache;
+    }
+
+    public void RestoreFromVault(Vector3Int coord, uint denseIndex) {
+        CachedChunk cache = modifiedChunks[coord];
+        NativeArray<uint>.Copy(cache.shape, 0, cpuDenseChunkPool, (int)denseIndex * 1024, 1024);
+        NativeArray<uint>.Copy(cache.mask, 0, cpuMacroMaskPool, (int)denseIndex * 19, 19);
+        NativeArray<uint>.Copy(cache.material, 0, cpuMaterialChunkPool, (int)denseIndex * 8192, 8192);
+    }
     
     public ChunkData[] chunkMapArray;
     public Vector3Int[] chunkTargetCoordArray;
@@ -140,9 +154,6 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
     // --- THE DIRTY FLAG JANITOR ---
     // private Queue<int> dirtyLightChunks = new Queue<int>();
-
-    private ComputeBuffer deltaMapUploadBuffer;
-    private ComputeBuffer chunkPointersBuffer;
 
     // private ComputeBuffer[] chunkMapBuffers = new ComputeBuffer[2]; // FIX: Ring-buffered map!
     // private ComputeBuffer macroGridBuffer;
@@ -174,6 +185,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     // --- NEW: Pre-allocated Managed Arrays (Anti-GC) ---
     // private uint[] preallocatedChunkUpload;
     private ComputeBuffer denseChunkPoolBuffer;
+    public ComputeBuffer materialChunkPoolBuffer;
+    public ComputeBuffer[] tempMaterialUploadBuffers = new ComputeBuffer[2];
+    public NativeArray<uint> nativeMaterialUpload;
 
     private NativeArray<uint> nativeChunkUpload;
     private NativeArray<uint> nativeMaskUpload;
@@ -182,7 +196,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     [HideInInspector] public int dynamicMaxChunks; 
     public NativeArray<uint> cpuDenseChunkPool;
     public NativeArray<uint> cpuMacroMaskPool; 
+    public NativeArray<uint> cpuMaterialChunkPool; // NEW: The CPU Material Mirror
     public NativeArray<float> cpuChunkHeights; // NEW
+    public NativeArray<BiomeAnchor> cpuBiomes; // NEW: Burst Biome Math
     private ComputeBuffer chunkHeightBuffer;   // NEW
 
     // NEW: Async Job Tracking
@@ -332,6 +348,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                 biomeAnchorBuffer.SetData(dynamicBiomes.ToArray());
                 Shader.SetGlobalBuffer("_BiomeAnchors", biomeAnchorBuffer);
                 Shader.SetGlobalInt("_BiomeAnchorCount", dynamicBiomes.Count);
+                
+                if (cpuBiomes.IsCreated) cpuBiomes.Dispose();
+                cpuBiomes = new NativeArray<BiomeAnchor>(dynamicBiomes.ToArray(), Allocator.Persistent);
             }
         }
 
@@ -417,6 +436,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     if (chunkTargetCoordArray[idx] != coord) {
                         ChunkData oldCd = chunkMapArray[idx];
                         if (oldCd.densePoolIndex != 0xFFFFFFFF) {
+                            if (L == 0 && editedChunkCoords.Contains(chunkTargetCoordArray[idx])) SaveToVault(chunkTargetCoordArray[idx], oldCd.densePoolIndex);
                             freeDenseIndices.Enqueue(oldCd.densePoolIndex);
                             oldCd.packedState = 0; oldCd.densePoolIndex = 0xFFFFFFFF; 
                             // oldCd.position = new Vector4(-99999f, -99999f, -99999f, 0f); 
@@ -429,6 +449,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     if (chunkTargetCoordArray[idx] == coord) {
                         ChunkData oldCd = chunkMapArray[idx];
                         if (oldCd.densePoolIndex != 0xFFFFFFFF) {
+                            if (L == 0 && editedChunkCoords.Contains(coord)) {
+                                SaveToVault(coord, oldCd.densePoolIndex);
+                            }
                             freeDenseIndices.Enqueue(oldCd.densePoolIndex);
                             oldCd.packedState = 0; oldCd.densePoolIndex = 0xFFFFFFFF; 
                             // oldCd.position = new Vector4(-99999f, -99999f, -99999f, 0f); 
@@ -443,7 +466,6 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         // 3. UPDATE SHADER BINDINGS
         if (anyAnchorChanged) {
             UpdateGPUBuffers(); 
-            RefreshDeltaMapPointers(); // <-- NEW: Refresh pointers when camera moves!
             totalLoadTimer.Restart();
             isWorldLoaded = false; 
         }
@@ -483,15 +505,11 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                 UnityEngine.Debug.LogWarning($"✅ CLIPMAPS LOADED IN {totalLoadTimer.Elapsed.TotalSeconds:F2} seconds ✅");            
             }
         }
-    // --- COMPUTE RASTERIZER DISPATCH (MUST RUN EVERY FRAME!) ---
         if (currentRenderer == RenderBackend.ComputeRasterizer && rasterVoxelMaterial != null) {
             rasterVoxelMaterial.SetBuffer("_VertexBuffer", vertexBuffer);
             Bounds renderBounds = new Bounds(worldLoaders[0].position, new Vector3(4000, 4000, 4000));
             Graphics.DrawProceduralIndirect(rasterVoxelMaterial, renderBounds, MeshTopology.Triangles, argsBuffer, 0, null, null, ShadowCastingMode.On, true, gameObject.layer);
         }
-
-        // --- NEW: STAMP EDITS ONTO NEWLY LOADED CHUNKS ---
-        CheckAndRestoreChunks();
     } 
 
 

@@ -18,18 +18,15 @@ struct ChunkJobData {
     int pad3;           
 };
 
-struct VoxelEdit {
-    int flatIndex;
-    uint material;
-};
 
-StructuredBuffer<VoxelEdit> _DeltaMapBuffer;
 RWStructuredBuffer<ChunkData> _ChunkMap;
 StructuredBuffer<ChunkJobData> _JobQueue; 
 RWStructuredBuffer<uint> _DenseChunkPool;
 RWStructuredBuffer<uint> _DenseLogicPool;
 RWStructuredBuffer<uint> _MacroMaskPool;   // NEW
 StructuredBuffer<uint> _TempMaskUpload;    // NEW
+RWStructuredBuffer<uint> _MaterialChunkPool; // NEW
+StructuredBuffer<uint> _TempMaterialUpload;  // NEW
 
 int _ChunkSize;
 int _JobCount;
@@ -148,6 +145,14 @@ void CommitUploadBuffers(uint3 id : SV_DispatchThreadID) {
 
     // Copy the chunk data
     _DenseChunkPool[denseBase + flatIdx] = _TempChunkUpload[id.x];
+    
+    uint matDestBase = denseBase * 8;      // Where it lives permanently in VRAM
+    uint matSrcBase = jobIndex * 8192;     // Where it lives in the temp delivery truck
+        
+    for (uint m = 0; m < 8; m++) {
+        uint localMatOffset = (flatIdx * 8) + m; 
+        _MaterialChunkPool[matDestBase + localMatOffset] = _TempMaterialUpload[matSrcBase + localMatOffset];
+    }
 
     // Natively patch the Table of Contents on the GPU!
     if (flatIdx < 19) {

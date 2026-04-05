@@ -15,9 +15,11 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
     // --- THE COURIER BUFFERS ---
     private ComputeBuffer editorChunkUploadBuffer;
     private ComputeBuffer editorMaskUploadBuffer;
+    private ComputeBuffer editorMaterialUploadBuffer; // NEW
     private ComputeBuffer editorJobQueueBuffer;
     private NativeArray<uint> editorChunkArray;
     private NativeArray<uint> editorMaskArray;
+    private NativeArray<uint> editorMaterialArray; // NEW
     private NativeArray<ChunkJobData> editorJobArray;
     private bool editorBuffersInitialized = false;
 
@@ -26,10 +28,12 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         int capacity = 128; // Can comfortably handle brush sizes up to 10
         editorChunkUploadBuffer = new ComputeBuffer(capacity * 1024, sizeof(uint));
         editorMaskUploadBuffer = new ComputeBuffer(capacity * 19, sizeof(uint));
+        editorMaterialUploadBuffer = new ComputeBuffer(capacity * 8192, sizeof(uint)); // NEW
         editorJobQueueBuffer = new ComputeBuffer(capacity, 48); 
         
         editorChunkArray = new NativeArray<uint>(capacity * 1024, Allocator.Persistent);
         editorMaskArray = new NativeArray<uint>(capacity * 19, Allocator.Persistent);
+        editorMaterialArray = new NativeArray<uint>(capacity * 8192, Allocator.Persistent); // NEW
         editorJobArray = new NativeArray<ChunkJobData>(capacity, Allocator.Persistent);
 
         editorBuffersInitialized = true;
@@ -39,14 +43,13 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         if (editorBuffersInitialized) {
             editorChunkUploadBuffer?.Release();
             editorMaskUploadBuffer?.Release();
+            editorMaterialUploadBuffer?.Release(); // NEW
             editorJobQueueBuffer?.Release();
-            deltaMapUploadBuffer?.Release();
-            chunkPointersBuffer?.Release();
 
             if (editorChunkArray.IsCreated) editorChunkArray.Dispose();
             if (editorMaskArray.IsCreated) editorMaskArray.Dispose();
+            if (editorMaterialArray.IsCreated) editorMaterialArray.Dispose(); // NEW
             if (editorJobArray.IsCreated) editorJobArray.Dispose();
-            if (nativeDeltaMapArray.IsCreated) nativeDeltaMapArray.Dispose(); // NEW: Cleanup 'The Sieve'
         }
     }
 
@@ -96,13 +99,19 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         int bitIdx = flatIdx & 31;
         int poolIndex = (int)(denseIndex * 1024u) + uintIdx;
 
-        // 1. Persistence Tracking (Material-Aware)
-        if (!worldDeltaMap.ContainsKey(chunkCoord)) worldDeltaMap[chunkCoord] = new Dictionary<int, uint>();
-        worldDeltaMap[chunkCoord][flatIdx] = material;
-
         // 2. Physics & Visual Dense Memory
         if (material > 0) cpuDenseChunkPool[poolIndex] |= (1u << bitIdx);
         else cpuDenseChunkPool[poolIndex] &= ~(1u << bitIdx);
+
+        // --- NEW: 8-BIT MATERIAL CACHE UPDATE ---
+        int matUintIdx = flatIdx >> 2;
+        int shift = (flatIdx & 3) << 3;
+        uint matMask = ~(255u << shift);
+        int matPoolIndex = (int)(denseIndex * 8192) + matUintIdx;
+        cpuMaterialChunkPool[matPoolIndex] = (cpuMaterialChunkPool[matPoolIndex] & matMask) | (material << shift);
+
+        // Flag for the Vault!
+        editedChunkCoords.Add(chunkCoord);
 
         // 3. Lightning Fast O(1) Shadow Mask Updates
         if (material > 0) {
@@ -122,7 +131,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
 
     private void DispatchCourier() {
         int dirtyCount = editorDirtyChunks.Count;
-        if (dirtyCount == 0 && worldDeltaMap.Count == 0) return; // Keep going if delta map needs flattening
+        if (dirtyCount == 0) return; 
 
         InitEditorBuffers();
 
@@ -137,6 +146,8 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
                 
                 // Pack the 76-Byte Mask Data
                 NativeArray<uint>.Copy(cpuMacroMaskPool, (int)denseIndex * 19, editorMaskArray, i * 19, 19);
+                // NEW: Pack the 32KB Material Data
+                NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)denseIndex * 8192, editorMaterialArray, i * 8192, 8192);
 
                 // Construct the Job Data so the GPU knows exactly where to paste it!
                 ChunkJobData jobData = new ChunkJobData {
@@ -152,6 +163,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
             // Upload the tiny payload (Zero PCIe Stalls!)
             editorChunkUploadBuffer.SetData(editorChunkArray, 0, 0, dirtyCount * 1024);
             editorMaskUploadBuffer.SetData(editorMaskArray, 0, 0, dirtyCount * 19);
+            editorMaterialUploadBuffer.SetData(editorMaterialArray, 0, 0, dirtyCount * 8192);
             editorJobQueueBuffer.SetData(editorJobArray, 0, 0, dirtyCount);
 
             // Command the GPU to natively copy the data into the Master Pools
@@ -163,58 +175,16 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
             worldGenUtilityShader.SetBuffer(kernel_commit, "_JobQueue", editorJobQueueBuffer); 
             worldGenUtilityShader.SetBuffer(kernel_commit, "_MacroMaskPool", macroMaskPoolBuffer);
             worldGenUtilityShader.SetBuffer(kernel_commit, "_TempMaskUpload", editorMaskUploadBuffer);
+            worldGenUtilityShader.SetBuffer(kernel_commit, "_MaterialChunkPool", materialChunkPoolBuffer);
+            worldGenUtilityShader.SetBuffer(kernel_commit, "_TempMaterialUpload", editorMaterialUploadBuffer);
             worldGenUtilityShader.SetBuffer(kernel_commit, "_ChunkMap", chunkMapBuffer);
 
             int threadGroups = Mathf.CeilToInt((dirtyCount * 1024f) / 256f);
             worldGenUtilityShader.Dispatch(kernel_commit, threadGroups, 1, 1);
         }
 
-        RefreshDeltaMapPointers();
+        editorDirtyChunks.Clear();
     }
-
-    public void RefreshDeltaMapPointers() {
-        if (chunkPointersBuffer == null) return;
-
-        List<VoxelEdit> flatEdits = new List<VoxelEdit>();
-        Vector2Int[] chunkPointers = new Vector2Int[totalMapCapacity]; 
-        for(int j=0; j < totalMapCapacity; j++) chunkPointers[j] = new Vector2Int(0, 0);
-
-        foreach (var kvp in worldDeltaMap) {
-            Vector3Int chunkCoord = kvp.Key;
-            
-            // 1. Get the current ring-buffer slot for this chunk (LOD 0 only)
-            int mapIdx = GetMapIndex(0, chunkCoord); 
-            
-            // 2. STALE POINTER FIX: If the chunk is unloaded or out of range, skip binding!
-            if (mapIdx < 0 || mapIdx >= totalMapCapacity || chunkTargetCoordArray[mapIdx] != chunkCoord) continue;
-
-            int startIndex = flatEdits.Count;
-            int editCount = kvp.Value.Count;
-
-            // 3. THE BINARY SEARCH PREP: Sort the edits by their flatIndex!
-            List<KeyValuePair<int, uint>> sortedEdits = new List<KeyValuePair<int, uint>>(kvp.Value);
-            sortedEdits.Sort((a, b) => a.Key.CompareTo(b.Key));
-
-            foreach (var edit in sortedEdits) {
-                flatEdits.Add(new VoxelEdit { flatIndex = edit.Key, material = edit.Value });
-            }
-
-            chunkPointers[mapIdx] = new Vector2Int(startIndex, editCount);
-        }
-
-        if (flatEdits.Count > 0) {
-            deltaMapUploadBuffer.SetData(flatEdits.ToArray());
-        }
-        chunkPointersBuffer.SetData(chunkPointers);
-
-        // Bind these directly to your Raytracer so it can read them!
-        if (raytracerShader != null) {
-            int kernel_render = raytracerShader.FindKernel("CSMain");
-            raytracerShader.SetBuffer(kernel_render, "_DeltaMapBuffer", deltaMapUploadBuffer);
-            raytracerShader.SetBuffer(kernel_render, "_ChunkEditPointers", chunkPointersBuffer);
-        }
-    }
-
     public void EditVoxel(Vector3Int globalVoxelPos, uint newMaterial, int brushSize = 0, int brushShape = 0) {
         editorDirtyChunks.Clear();
 
@@ -296,13 +266,10 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
             int localZ = crustPos.z - (cCoord.z * 32);
             int flatIdx = localX + (localY << 5) + (localZ << 10);
             
-            // Only bake if the player hasn't already explicitly built something here
-            if (!worldDeltaMap.ContainsKey(cCoord) || !worldDeltaMap[cCoord].ContainsKey(flatIdx)) {
-                uint bakedMaterial = PredictProceduralMaterial(crustPos); 
-                uint dirtyIdx = TrackEditOnCPU(crustPos, bakedMaterial, out Vector3Int bakedCoord, out int bakedIdx);
-                if (dirtyIdx != 0xFFFFFFFF && !editorDirtyChunks.ContainsKey(dirtyIdx)) {
-                    editorDirtyChunks[dirtyIdx] = new EditedChunkInfo { coord = bakedCoord, mapIndex = bakedIdx };
-                }
+            uint bakedMaterial = PredictProceduralMaterial(crustPos); 
+            uint dirtyIdx = TrackEditOnCPU(crustPos, bakedMaterial, out Vector3Int bakedCoord, out int bakedIdx);
+            if (dirtyIdx != 0xFFFFFFFF && !editorDirtyChunks.ContainsKey(dirtyIdx)) {
+                editorDirtyChunks[dirtyIdx] = new EditedChunkInfo { coord = bakedCoord, mapIndex = bakedIdx };
             }
         }
 
@@ -316,94 +283,5 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         else OnVoxelChanged?.Invoke(globalVoxelPos, 0);
     }
 
-    // Tracks which physical memory blocks have already been stamped with their edits
-    private Dictionary<Vector3Int, uint> chunkLoadSignatures = new Dictionary<Vector3Int, uint>();
-
-    public void CheckAndRestoreChunks() {
-        bool requiresCourier = false;
-
-        foreach (var kvp in worldDeltaMap) {
-            Vector3Int chunkCoord = kvp.Key;
-            
-            // We only need to restore LOD 0 (the physical interaction layer)
-            int mapIdx = GetMapIndex(0, chunkCoord);
-            if (mapIdx < 0 || mapIdx >= totalMapCapacity) continue;
-
-            // Is this chunk currently loaded in the player's view?
-            if (chunkTargetCoordArray[mapIdx] == chunkCoord) {
-                ChunkData cd = chunkMapArray[mapIdx];
-                
-                // Is the chunk completely finished generating and ready?
-                if (cd.densePoolIndex != 0xFFFFFFFF && (cd.packedState & 1) != 0) {
-                    
-                    // Check if we have already restored this specific memory block
-                    bool needsRestore = true;
-                    if (chunkLoadSignatures.TryGetValue(chunkCoord, out uint lastDense)) {
-                        if (lastDense == cd.densePoolIndex) needsRestore = false;
-                    }
-
-                    if (needsRestore) {
-                        RestoreChunkEdits(chunkCoord, mapIdx, cd.densePoolIndex);
-                        chunkLoadSignatures[chunkCoord] = cd.densePoolIndex;
-                        requiresCourier = true;
-                    }
-                }
-            } else {
-                // The chunk unloaded! Forget its signature so we restore it next time it loads.
-                chunkLoadSignatures.Remove(chunkCoord);
-            }
-        }
-
-        // If we stamped any chunks, fire the Courier to update the GPU instantly!
-        if (requiresCourier) DispatchCourier();
-    }
-
-    private void RestoreChunkEdits(Vector3Int chunkCoord, int mapIdx, uint denseIndex) {
-        if (!worldDeltaMap.ContainsKey(chunkCoord)) return;
-
-        bool needsUpload = false;
-        foreach (var kvp in worldDeltaMap[chunkCoord]) {
-            int flatIdx = kvp.Key;
-            uint material = kvp.Value;
-            
-            int localX = flatIdx & 31;
-            int localY = (flatIdx >> 5) & 31;
-            int localZ = (flatIdx >> 10) & 31;
-
-            int uintIdx = flatIdx >> 5;
-            int bitIdx = flatIdx & 31;
-            int poolIndex = (int)(denseIndex * 1024u) + uintIdx;
-
-            bool isCurrentlySolid = (cpuDenseChunkPool[poolIndex] & (1u << bitIdx)) != 0;
-            bool shouldBeSolid = material > 0;
-
-            // Only stamp if the procedural generation got it wrong!
-            if (isCurrentlySolid != shouldBeSolid) {
-                
-                // 1. OVERRIDE THE PHYSICS POOL
-                if (shouldBeSolid) cpuDenseChunkPool[poolIndex] |= (1u << bitIdx);
-                else cpuDenseChunkPool[poolIndex] &= ~(1u << bitIdx);
-
-                // 2. OVERRIDE THE RAYTRACER ACCELERATION MASKS
-                int maskBase = (int)denseIndex * 19;
-                int subIndex = (localX >> 2) + ((localY >> 2) << 3) + ((localZ >> 2) << 6);
-                int mip1Index = (localX >> 3) + ((localY >> 3) << 2) + ((localZ >> 3) << 4);
-                int mip2Index = (localX >> 4) + ((localY >> 4) << 1) + ((localZ >> 4) << 2);
-
-                if (shouldBeSolid) {
-                    cpuMacroMaskPool[maskBase + (subIndex >> 5)] |= (1u << (subIndex & 31));
-                    cpuMacroMaskPool[maskBase + 16 + (mip1Index >> 5)] |= (1u << (mip1Index & 31));
-                    cpuMacroMaskPool[maskBase + 18] |= (1u << mip2Index);
-                } else {
-                    cpuMacroMaskPool[maskBase + (subIndex >> 5)] &= ~(1u << (subIndex & 31));
-                }
-                needsUpload = true;
-            }
-        }
-
-        if (needsUpload) {
-            // Add to the dirty list so the Courier packs it and sends it
-            editorDirtyChunks[denseIndex] = new EditedChunkInfo { coord = chunkCoord, mapIndex = mapIdx };
-        }
-    }
+    // CheckAndRestoreChunks purged as RAM Vault handles it.
 }

@@ -412,7 +412,7 @@ Light:
   serializedVersion: 12
   m_Type: 1
   m_Color: {r: 1, g: 0.9411765, b: 0.83137256, a: 1}
-  m_Intensity: 1
+  m_Intensity: 0.1
   m_Range: 10
   m_SpotAngle: 30
   m_InnerSpotAngle: 21.80208
@@ -794,6 +794,7 @@ MonoBehaviour:
   gpuUpdateInterval: 0.05
   worldLoaders:
   - {fileID: 1329300604}
+  raytracerShader: {fileID: 0}
   worldGenShader: {fileID: 7200000, guid: 09ee54e00eb244d598548896fdeb988a, type: 3}
   worldGenUtilityShader: {fileID: 7200000, guid: 9f56ad5db214c4a288af48fbd3e9ffcb, type: 3}
   voxelLightingShader: {fileID: 7200000, guid: 082b3c84c600b4fa7bdc35773f169e92, type: 3}
@@ -955,7 +956,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.World.WorldManager
   worldSize: 0
-  worldSeed: 1251
+  worldSeed: 1291
   mapFeatures: []
   cavernNodes: []
   tunnelSplines: []
