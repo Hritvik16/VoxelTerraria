@@ -64,8 +64,6 @@ namespace VoxelEngine.World
             float exactMinH = 99999f;
             float exactMaxH = -99999f;
 
-            // --- THE BUG FIX: CHUNK-LEVEL CULLING ---
-            // Find all features touching THIS chunk exactly ONCE, saving millions of loops!
             NativeArray<FeatureAnchor> activeFeatures = new NativeArray<FeatureAnchor>(128, Allocator.Temp);
             int activeFeatureCount = 0;
             for (int f = 0; f < featureCount; f++) {
@@ -76,6 +74,31 @@ namespace VoxelEngine.World
                         activeFeatureCount++;
                     }
                 }
+            }
+
+            // --- THE NEW FIX: BIOME CULLING ---
+            NativeArray<ChunkManager.BiomeAnchor> activeBiomes = new NativeArray<ChunkManager.BiomeAnchor>(32, Allocator.Temp);
+            int activeBiomeCount = 0;
+            
+            float minChunkDist = 999999.0f;
+            for (int b = 0; b < biomeCount; b++) {
+                float dist = math.distance(new float2(chunkCenterX, chunkCenterZ), new float2(biomes[b].position.x, biomes[b].position.z));
+                if (dist < minChunkDist) minChunkDist = dist;
+            }
+            
+            float biomeSearchRadius = minChunkDist + 350.0f + (32f * job.layerScale);
+            for (int b = 0; b < biomeCount; b++) {
+                float dist = math.distance(new float2(chunkCenterX, chunkCenterZ), new float2(biomes[b].position.x, biomes[b].position.z));
+                if (dist <= biomeSearchRadius && activeBiomeCount < 32) {
+                    activeBiomes[activeBiomeCount] = biomes[b];
+                    activeBiomeCount++;
+                }
+            }
+            
+            // Fallback (just in case)
+            if (activeBiomeCount == 0 && biomeCount > 0) {
+                activeBiomes[0] = biomes[0];
+                activeBiomeCount = 1;
             }
 
             // 2. THE DIRECTED FILTER EVALUATION
@@ -142,8 +165,8 @@ namespace VoxelEngine.World
                     
                     int maskBase1 = job.pad2 * 19;
                     for (int i = 0; i < 19; i++) macroMaskPool[maskBase1 + i] = 0; 
-                    
                     localHeights.Dispose(); // Cleanup the stack memory
+                    activeBiomes.Dispose(); // Cleanup the biome array memory
                     // Since localMaterials wasn't allocated yet, no need to dispose it here!
                     return; 
                 }
@@ -180,11 +203,11 @@ namespace VoxelEngine.World
                         
                         int currentBiome = 0;
                         float closestDist = 999999.0f;
-                        for (int b = 0; b < biomeCount; b++) {
-                            float dist = math.distance(worldPos2D, new float3(biomes[b].position.x, 0, biomes[b].position.z)) + boundaryWarp;
+                        for (int b = 0; b < activeBiomeCount; b++) {
+                            float dist = math.distance(worldPos2D, new float3(activeBiomes[b].position.x, 0, activeBiomes[b].position.z)) + boundaryWarp;
                             if (dist < closestDist) {
                                 closestDist = dist;
-                                currentBiome = biomes[b].biomeType;
+                                currentBiome = activeBiomes[b].biomeType;
                             }
                         }
 
@@ -244,6 +267,7 @@ namespace VoxelEngine.World
             }
             
             localHeights.Dispose(); // Cleanup the stack memory
+            activeBiomes.Dispose(); // Cleanup the biome array memory
 
             // Blast the local cache DIRECTLY to the CPU Master Array!
             int matBase = job.pad2 * 8192;
