@@ -74,9 +74,16 @@ void GetSurfaceTopology(float2 worldXZ, out float baseHeight, out int activeBiom
     float distFromCenter = length(worldXZ);
     float coastDist = GetCoastDistance(worldXZ);
     
-    // Default Continental Swell
-    float n = perlin2D(worldXZ * 0.002);
-    baseHeight = 15.0 + (n * 20.0);
+    // 1. THE MACRO-SCALE "FLATNESS" MASK (Very slow frequency)
+    // Matches the CPU frequency exactly at 0.0001
+    float flatness = perlin2D(worldXZ * 0.0001) * 0.5 + 0.5;
+    flatness = smoothstep(0.3, 0.7, flatness);
+
+    // 2. THE SMOOTH ROLLING BASE (Broad Frequency)
+    baseHeight = 0.0;
+    baseHeight += perlin2D(worldXZ * 0.0012) * (5.0 + flatness * 40.0);
+    baseHeight += perlin2D(worldXZ * 0.0020) * (2.0 + flatness * 12.0);
+
     activeBiome = 1; // Default Forest
     
     if (distFromCenter > coastDist) {

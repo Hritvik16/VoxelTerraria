@@ -54,6 +54,8 @@ void GenerateMinimap(uint3 id : SV_DispatchThreadID) {
 
     // --- 2. TOPOLOGICAL FEATURES (Draw on top of Biomes) ---
     if (_FeatureDebugView == 1) {
+        outputColor = float4(0.04, 0.92, 0.05, 1.0); // THE FIX: Discard biomes, show Hills Green baseline
+        
         for(int j = 0; j < _FeatureCount; j++) {
             FeatureAnchor anchor = _FeatureAnchorBuffer[j];
             if (anchor.topologyID != 0) { // It's a Structural Feature!

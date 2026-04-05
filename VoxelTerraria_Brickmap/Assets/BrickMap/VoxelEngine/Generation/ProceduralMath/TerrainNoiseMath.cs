@@ -7,12 +7,17 @@ namespace VoxelEngine.Generation
         // 0: Base Terrain (Rolling Hills)
         public static float GetBaseHeight(float x, float z) {
             float2 pos = new float2(x, z);
-            // THE FIX: Sea level is now exactly 0.
+            
+            // 1. THE MACRO-SCALE "FLATNESS" MASK (Very slow frequency)
+            // Values near 1.0 = Highlands, values near 0.0 = Prairies
+            float flatness = noise.snoise(pos * 0.0001f) * 0.5f + 0.5f;
+            flatness = math.smoothstep(0.3f, 0.7f, flatness); // Sharpen the transition between biomes
+
+            // 2. THE SMOOTH ROLLING BASE (Broad Frequency)
             float h = 0f; 
-            h += noise.snoise(pos * 0.002f) * 40f;  
-            h += noise.snoise(pos * 0.01f) * 15f;   
-            h += noise.snoise(pos * 0.05f) * 4f;    
-            h += noise.snoise(pos * 0.4f) * 0.6f;   
+            h += noise.snoise(pos * 0.0012f) * (5.0f + flatness * 40.0f); // 5m in Prairies, 45m in Highlands
+            h += noise.snoise(pos * 0.0020f) * (2.0f + flatness * 12.0f); // Subtle secondary rolling
+            
             return h;
         }
 
@@ -62,7 +67,7 @@ namespace VoxelEngine.Generation
 
         // 13: Terraced Steppes
         public static float GetSteppeHeight(float baseHeight) {
-            float terraceHeight = 0.8f; 
+            float terraceHeight = 16.0f; // 16 blocks tall for grand, climbable stairs
             return math.floor(baseHeight / terraceHeight) * terraceHeight;
         }
 

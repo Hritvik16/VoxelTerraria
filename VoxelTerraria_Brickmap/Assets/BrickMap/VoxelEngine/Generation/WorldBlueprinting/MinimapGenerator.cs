@@ -49,6 +49,11 @@ namespace VoxelEngine
 
             minimapShader.SetBuffer(kernel, "_FeatureAnchorBuffer", WorldManager.Instance.featureBuffer);
             minimapShader.SetInt("_FeatureCount", WorldManager.Instance.mapFeatures.Count);
+            
+            // THE FIX: Sync the debug view state from the ChunkManager
+            if (ChunkManager.Instance != null) {
+                minimapShader.SetInt("_FeatureDebugView", ChunkManager.Instance.enableFeatureDebugView ? 1 : 0);
+            }
 
             minimapShader.Dispatch(kernel, Mathf.CeilToInt(currentWidth / 8f), Mathf.CeilToInt(currentHeight / 8f), 1);
         }
