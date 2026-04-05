@@ -236,40 +236,11 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
             }
         }
 
-        // 2. THE CRUST EXTRACTION PASS
-        HashSet<Vector3Int> crustCandidates = new HashSet<Vector3Int>();
-        Vector3Int[] neighbors = { Vector3Int.up, Vector3Int.down, Vector3Int.left, Vector3Int.right, Vector3Int.forward, Vector3Int.back };
-
-        foreach (Vector3Int dyingBlock in blocksToDestroy) {
-            foreach (var offset in neighbors) {
-                Vector3Int neighborPos = dyingBlock + offset;
-                // If it's solid and NOT on death row, it's the new crust!
-                if (IsSolid(neighborPos) && !blocksToDestroy.Contains(neighborPos)) {
-                    crustCandidates.Add(neighborPos);
-                }
-            }
-        }
-
-        // 3. EXECUTE EDITS
+        // 2. EXECUTE EDITS (Destruction)
         foreach (Vector3Int doomedBlock in blocksToDestroy) {
             uint dirtyIdx = TrackEditOnCPU(doomedBlock, 0, out Vector3Int cCoord, out int mIdx);
             if (dirtyIdx != 0xFFFFFFFF && !editorDirtyChunks.ContainsKey(dirtyIdx)) {
                 editorDirtyChunks[dirtyIdx] = new EditedChunkInfo { coord = cCoord, mapIndex = mIdx };
-            }
-        }
-
-        // 4. BAKE THE CRUST
-        foreach (Vector3Int crustPos in crustCandidates) {
-            Vector3Int cCoord = new Vector3Int(Mathf.FloorToInt(crustPos.x / 32f), Mathf.FloorToInt(crustPos.y / 32f), Mathf.FloorToInt(crustPos.z / 32f));
-            int localX = crustPos.x - (cCoord.x * 32);
-            int localY = crustPos.y - (cCoord.y * 32);
-            int localZ = crustPos.z - (cCoord.z * 32);
-            int flatIdx = localX + (localY << 5) + (localZ << 10);
-            
-            uint bakedMaterial = PredictProceduralMaterial(crustPos); 
-            uint dirtyIdx = TrackEditOnCPU(crustPos, bakedMaterial, out Vector3Int bakedCoord, out int bakedIdx);
-            if (dirtyIdx != 0xFFFFFFFF && !editorDirtyChunks.ContainsKey(dirtyIdx)) {
-                editorDirtyChunks[dirtyIdx] = new EditedChunkInfo { coord = bakedCoord, mapIndex = bakedIdx };
             }
         }
 
