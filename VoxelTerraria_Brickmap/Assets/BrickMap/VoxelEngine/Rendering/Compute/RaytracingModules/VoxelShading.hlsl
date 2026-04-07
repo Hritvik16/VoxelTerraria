@@ -1,6 +1,8 @@
 StructuredBuffer<uint> _MaterialChunkPool;
+StructuredBuffer<uint> _SurfaceMaskPool; 
+StructuredBuffer<uint> _SurfacePrefixPool; // NEW
 
-// O(1) Absolute Memory Lookup
+// Compressed Memory Lookup via countbits()
 uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, int layer) {
     
     // ---------------------------------------------------------
@@ -18,12 +20,24 @@ uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, i
     
     uint flatIdx = localX + (localY << 5) + (localZ << 10);
     
-    // Fast bitwise indexing for the 8-bit offset
-    uint uintIdx = flatIdx >> 2; 
-    uint byteOffset = (flatIdx & 3) << 3;
+    uint surfaceUintIdx = flatIdx >> 5;
+    uint bitIdx = flatIdx & 31;
     
-    // Read the chunk's dedicated material array. denseBase is the 1024 offset, so we multiply by 8 for the 8192 offset.
-    uint packedMaterials = _MaterialChunkPool[(denseBase * 8) + uintIdx];
+    // --- O(1) PREFIX SUM LOOKUP ---
+    // Zero Loops. Zero Compiler Bugs. Instant Math.
+    uint prefixCount = _SurfacePrefixPool[denseBase + surfaceUintIdx];
+    uint finalMask = _SurfaceMaskPool[denseBase + surfaceUintIdx];
+    
+    // THE M1 SAFE BITMASK: Guaranteed not to overflow Apple Silicon registers
+    uint maskedBits = finalMask & ~(0xFFFFFFFFu << bitIdx);
+    uint surfaceCount = prefixCount + countbits(maskedBits);
+    // --- COMPRESSED ARRAY LOOKUP ---
+    // surfaceCount is now our exact 1D index on the compacted bookshelf!
+    uint matUintIdx = surfaceCount >> 2;
+    uint byteOffset = (surfaceCount & 3) << 3;
+    
+    // denseBase is the 1024 offset. Our compacted array is 4096, so we multiply by 4.
+    uint packedMaterials = _MaterialChunkPool[(denseBase * 4) + matUintIdx];
     
     return (packedMaterials >> byteOffset) & 0xFF;
 }

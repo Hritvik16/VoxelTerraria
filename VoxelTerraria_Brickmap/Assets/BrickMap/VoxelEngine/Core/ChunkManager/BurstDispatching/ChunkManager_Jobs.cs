@@ -29,8 +29,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             int maskOffset = (int)myDenseIndex * 19; // CHANGED to 19
             NativeArray<uint>.Copy(cpuMacroMaskPool, maskOffset, nativeMaskUpload, i * 19, 19);
 
-            // NEW: Copy the written material slice back to the GPU Courier
-            NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)myDenseIndex * 8192, nativeMaterialUpload, i * 8192, 8192);
+            // THE FIX: Copy the 4096 slice back to the GPU Courier
+            NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)myDenseIndex * 4096, nativeMaterialUpload, i * 4096, 4096);
+            
+            // NEW: Copy the 1-bit Surface Mask & Prefix Sum
+            NativeArray<uint>.Copy(cpuSurfaceMaskPool, (int)myDenseIndex * 1024, nativeSurfaceUpload, i * 1024, 1024);
+            NativeArray<uint>.Copy(cpuSurfacePrefixPool, (int)myDenseIndex * 1024, nativePrefixUpload, i * 1024, 1024);
             
             // Only update the map if the player hasn't moved away from this chunk!
             if (chunkMapArray[mapIndex].densePoolIndex == myDenseIndex) {
@@ -68,8 +72,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         jobQueueBuffers[ringIndex].SetData(persistentJobDataArray, 0, 0, activeDispatches);
         tempMaskUploadBuffers[ringIndex].SetData(nativeMaskUpload, 0, 0, activeDispatches * 19); // CHANGED to 19
         
-        // Push the 8-bit material arrays to the GPU! (8192 uints per chunk)
-        tempMaterialUploadBuffers[ringIndex].SetData(nativeMaterialUpload, 0, 0, activeDispatches * 8192);
+        // THE FIX: Push the 8-bit material arrays to the GPU! (4096 uints per chunk)
+        tempMaterialUploadBuffers[ringIndex].SetData(nativeMaterialUpload, 0, 0, activeDispatches * 4096);
+        
+        // NEW: Push the Surface Mask & Prefix Sum to the GPU
+        tempSurfaceUploadBuffers[ringIndex].SetData(nativeSurfaceUpload, 0, 0, activeDispatches * 1024);
+        tempPrefixUploadBuffers[ringIndex].SetData(nativePrefixUpload, 0, 0, activeDispatches * 1024);
 
         chunkHeightBuffer.SetData(cpuChunkHeights);
 
@@ -84,8 +92,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         // NEW: Bind the destination and courier buffers
         worldGenUtilityShader.SetBuffer(commitKernel, "_MacroMaskPool", macroMaskPoolBuffer);
         worldGenUtilityShader.SetBuffer(commitKernel, "_TempMaskUpload", tempMaskUploadBuffers[ringIndex]);
-        worldGenUtilityShader.SetBuffer(commitKernel, "_MaterialChunkPool", materialChunkPoolBuffer); // NEW
-        worldGenUtilityShader.SetBuffer(commitKernel, "_TempMaterialUpload", tempMaterialUploadBuffers[ringIndex]); // NEW
+        worldGenUtilityShader.SetBuffer(commitKernel, "_MaterialChunkPool", materialChunkPoolBuffer); 
+        worldGenUtilityShader.SetBuffer(commitKernel, "_TempMaterialUpload", tempMaterialUploadBuffers[ringIndex]); 
+        worldGenUtilityShader.SetBuffer(commitKernel, "_SurfaceMaskPool", surfaceMaskPoolBuffer); 
+        worldGenUtilityShader.SetBuffer(commitKernel, "_TempSurfaceUpload", tempSurfaceUploadBuffers[ringIndex]); 
+        worldGenUtilityShader.SetBuffer(commitKernel, "_SurfacePrefixPool", surfacePrefixPoolBuffer); // NEW
+        worldGenUtilityShader.SetBuffer(commitKernel, "_TempPrefixUpload", tempPrefixUploadBuffers[ringIndex]); // NEW
         worldGenUtilityShader.SetBuffer(commitKernel, "_ChunkMap", chunkMapBuffer);
         
         int threadGroups = Mathf.CeilToInt((activeDispatches * UINTS_PER_CHUNK) / 256f);
@@ -310,7 +322,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     caverns = persistentCavernArray, tunnels = persistentTunnelArray,
                     denseChunkPool = cpuDenseChunkPool, macroMaskPool = cpuMacroMaskPool, 
                     chunkHeights = cpuChunkHeights,
-                    cpuMaterialChunkPool = cpuMaterialChunkPool, // NEW: Bypassing NativeCourier!
+                    cpuMaterialChunkPool = cpuMaterialChunkPool, 
+                    cpuSurfaceMaskPool = cpuSurfaceMaskPool, 
+                    cpuSurfacePrefixPool = cpuSurfacePrefixPool, 
+                    cpuShadowRAMPool = cpuShadowRAMPool, // NEW
                     featureCount = fCount, cavernCount = cCount, tunnelCount = tCount,
                     biomes = cpuBiomes, biomeCount = cpuBiomes.IsCreated ? cpuBiomes.Length : 0
                 };

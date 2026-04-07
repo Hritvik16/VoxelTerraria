@@ -2,6 +2,8 @@ using Unity.Collections;
 using Unity.Mathematics;
 using System.Collections.Generic;
 using UnityEngine;
+using Unity.Burst;
+using Unity.Jobs;
 
 public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxelWorld
 {
@@ -13,27 +15,35 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
     private Dictionary<uint, EditedChunkInfo> editorDirtyChunks = new Dictionary<uint, EditedChunkInfo>();
     
     // --- THE COURIER BUFFERS ---
-    private ComputeBuffer editorChunkUploadBuffer;
-    private ComputeBuffer editorMaskUploadBuffer;
-    private ComputeBuffer editorMaterialUploadBuffer; // NEW
+    private ComputeBuffer editorChunkUploadBuffer; // RESTORED
+    private ComputeBuffer editorMaskUploadBuffer;  // RESTORED
+    private ComputeBuffer editorMaterialUploadBuffer; 
+    private ComputeBuffer editorSurfaceUploadBuffer; 
+    private ComputeBuffer editorPrefixUploadBuffer;  
     private ComputeBuffer editorJobQueueBuffer;
     private NativeArray<uint> editorChunkArray;
     private NativeArray<uint> editorMaskArray;
-    private NativeArray<uint> editorMaterialArray; // NEW
+    private NativeArray<uint> editorMaterialArray; 
+    private NativeArray<uint> editorSurfaceArray;    // NEW
+    private NativeArray<uint> editorPrefixArray;     // NEW
     private NativeArray<ChunkJobData> editorJobArray;
     private bool editorBuffersInitialized = false;
 
     private void InitEditorBuffers() {
         if (editorBuffersInitialized) return;
         int capacity = 128; // Can comfortably handle brush sizes up to 10
-        editorChunkUploadBuffer = new ComputeBuffer(capacity * 1024, sizeof(uint));
-        editorMaskUploadBuffer = new ComputeBuffer(capacity * 19, sizeof(uint));
-        editorMaterialUploadBuffer = new ComputeBuffer(capacity * 8192, sizeof(uint)); // NEW
+        editorChunkUploadBuffer = new ComputeBuffer(capacity * 1024, sizeof(uint)); // RESTORED
+        editorMaskUploadBuffer = new ComputeBuffer(capacity * 19, sizeof(uint));    // RESTORED
+        editorMaterialUploadBuffer = new ComputeBuffer(capacity * 4096, sizeof(uint)); 
+        editorSurfaceUploadBuffer = new ComputeBuffer(capacity * 1024, sizeof(uint)); 
+        editorPrefixUploadBuffer = new ComputeBuffer(capacity * 1024, sizeof(uint));  
         editorJobQueueBuffer = new ComputeBuffer(capacity, 48); 
         
         editorChunkArray = new NativeArray<uint>(capacity * 1024, Allocator.Persistent);
         editorMaskArray = new NativeArray<uint>(capacity * 19, Allocator.Persistent);
-        editorMaterialArray = new NativeArray<uint>(capacity * 8192, Allocator.Persistent); // NEW
+        editorMaterialArray = new NativeArray<uint>(capacity * 4096, Allocator.Persistent); 
+        editorSurfaceArray = new NativeArray<uint>(capacity * 1024, Allocator.Persistent); // NEW
+        editorPrefixArray = new NativeArray<uint>(capacity * 1024, Allocator.Persistent);  // NEW
         editorJobArray = new NativeArray<ChunkJobData>(capacity, Allocator.Persistent);
 
         editorBuffersInitialized = true;
@@ -41,14 +51,18 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
 
     private void OnDestroy() {
         if (editorBuffersInitialized) {
-            editorChunkUploadBuffer?.Release();
-            editorMaskUploadBuffer?.Release();
-            editorMaterialUploadBuffer?.Release(); // NEW
+            editorChunkUploadBuffer?.Release();    // RESTORED
+            editorMaskUploadBuffer?.Release();     // RESTORED
+            editorMaterialUploadBuffer?.Release(); 
+            editorSurfaceUploadBuffer?.Release(); 
+            editorPrefixUploadBuffer?.Release();  
             editorJobQueueBuffer?.Release();
 
             if (editorChunkArray.IsCreated) editorChunkArray.Dispose();
             if (editorMaskArray.IsCreated) editorMaskArray.Dispose();
-            if (editorMaterialArray.IsCreated) editorMaterialArray.Dispose(); // NEW
+            if (editorMaterialArray.IsCreated) editorMaterialArray.Dispose(); 
+            if (editorSurfaceArray.IsCreated) editorSurfaceArray.Dispose(); // NEW
+            if (editorPrefixArray.IsCreated) editorPrefixArray.Dispose();   // NEW
             if (editorJobArray.IsCreated) editorJobArray.Dispose();
         }
     }
@@ -103,12 +117,11 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         if (material > 0) cpuDenseChunkPool[poolIndex] |= (1u << bitIdx);
         else cpuDenseChunkPool[poolIndex] &= ~(1u << bitIdx);
 
-        // --- NEW: 8-BIT MATERIAL CACHE UPDATE ---
-        int matUintIdx = flatIdx >> 2;
-        int shift = (flatIdx & 3) << 3;
-        uint matMask = ~(255u << shift);
-        int matPoolIndex = (int)(denseIndex * 8192) + matUintIdx;
-        cpuMaterialChunkPool[matPoolIndex] = (cpuMaterialChunkPool[matPoolIndex] & matMask) | (material << shift);
+        // --- NEW: UPDATE GROUND TRUTH SHADOW RAM ---
+        int shadowIndex = (int)(denseIndex * 8192) + (flatIdx >> 2); // THE FIX
+        int shadowShift = (flatIdx & 3) << 3;
+        uint shadowMask = ~(255u << shadowShift);
+        cpuShadowRAMPool[shadowIndex] = (cpuShadowRAMPool[shadowIndex] & shadowMask) | (material << shadowShift);
 
         // Flag for the Vault!
         editedChunkCoords.Add(chunkCoord);
@@ -135,6 +148,23 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
 
         InitEditorBuffers();
 
+        // --- THE FIX: CHAIN THE JOB HANDLES TO PREVENT ARRAY COLLISIONS ---
+        JobHandle rebuildChain = default;
+        foreach (var kvp in editorDirtyChunks) {
+            EditorRebuildJob rebuildJob = new EditorRebuildJob {
+                denseIndex = kvp.Key,
+                cpuDenseChunkPool = cpuDenseChunkPool,
+                cpuShadowRAMPool = cpuShadowRAMPool,
+                cpuMaterialChunkPool = cpuMaterialChunkPool,
+                cpuSurfaceMaskPool = cpuSurfaceMaskPool,
+                cpuSurfacePrefixPool = cpuSurfacePrefixPool
+            };
+            // Tell Unity's Job System to run these sequentially, passing the previous job as a dependency!
+            rebuildChain = rebuildJob.Schedule(rebuildChain);
+        }
+        // Force the main thread to wait for the chain to finish repacking the arrays!
+        rebuildChain.Complete();
+
         if (dirtyCount > 0) {
             int i = 0;
             foreach (var kvp in editorDirtyChunks) {
@@ -146,8 +176,11 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
                 
                 // Pack the 76-Byte Mask Data
                 NativeArray<uint>.Copy(cpuMacroMaskPool, (int)denseIndex * 19, editorMaskArray, i * 19, 19);
-                // NEW: Pack the 32KB Material Data
-                NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)denseIndex * 8192, editorMaterialArray, i * 8192, 8192);
+                NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)denseIndex * 4096, editorMaterialArray, i * 4096, 4096);
+                
+                // NEW: Pack the Surface Mask and Prefix Sum!
+                NativeArray<uint>.Copy(cpuSurfaceMaskPool, (int)denseIndex * 1024, editorSurfaceArray, i * 1024, 1024);
+                NativeArray<uint>.Copy(cpuSurfacePrefixPool, (int)denseIndex * 1024, editorPrefixArray, i * 1024, 1024);
 
                 // Construct the Job Data so the GPU knows exactly where to paste it!
                 ChunkJobData jobData = new ChunkJobData {
@@ -163,7 +196,9 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
             // Upload the tiny payload (Zero PCIe Stalls!)
             editorChunkUploadBuffer.SetData(editorChunkArray, 0, 0, dirtyCount * 1024);
             editorMaskUploadBuffer.SetData(editorMaskArray, 0, 0, dirtyCount * 19);
-            editorMaterialUploadBuffer.SetData(editorMaterialArray, 0, 0, dirtyCount * 8192);
+            editorMaterialUploadBuffer.SetData(editorMaterialArray, 0, 0, dirtyCount * 4096);
+            editorSurfaceUploadBuffer.SetData(editorSurfaceArray, 0, 0, dirtyCount * 1024); // NEW
+            editorPrefixUploadBuffer.SetData(editorPrefixArray, 0, 0, dirtyCount * 1024);   // NEW
             editorJobQueueBuffer.SetData(editorJobArray, 0, 0, dirtyCount);
 
             // Command the GPU to natively copy the data into the Master Pools
@@ -177,6 +212,13 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
             worldGenUtilityShader.SetBuffer(kernel_commit, "_TempMaskUpload", editorMaskUploadBuffer);
             worldGenUtilityShader.SetBuffer(kernel_commit, "_MaterialChunkPool", materialChunkPoolBuffer);
             worldGenUtilityShader.SetBuffer(kernel_commit, "_TempMaterialUpload", editorMaterialUploadBuffer);
+            
+            // NEW: Bind the missing Surface buffers so the GPU doesn't read garbage!
+            worldGenUtilityShader.SetBuffer(kernel_commit, "_SurfaceMaskPool", surfaceMaskPoolBuffer);
+            worldGenUtilityShader.SetBuffer(kernel_commit, "_TempSurfaceUpload", editorSurfaceUploadBuffer);
+            worldGenUtilityShader.SetBuffer(kernel_commit, "_SurfacePrefixPool", surfacePrefixPoolBuffer);
+            worldGenUtilityShader.SetBuffer(kernel_commit, "_TempPrefixUpload", editorPrefixUploadBuffer);
+            
             worldGenUtilityShader.SetBuffer(kernel_commit, "_ChunkMap", chunkMapBuffer);
 
             int threadGroups = Mathf.CeilToInt((dirtyCount * 1024f) / 256f);
@@ -255,4 +297,91 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
     }
 
     // CheckAndRestoreChunks purged as RAM Vault handles it.
+}
+[BurstCompile(CompileSynchronously = true)]
+public struct EditorRebuildJob : IJob
+{
+    public uint denseIndex;
+    
+    [ReadOnly] public NativeArray<uint> cpuDenseChunkPool;
+    [ReadOnly] public NativeArray<uint> cpuShadowRAMPool;
+    
+    [NativeDisableParallelForRestriction] public NativeArray<uint> cpuMaterialChunkPool;
+    [NativeDisableParallelForRestriction] public NativeArray<uint> cpuSurfaceMaskPool;
+    [NativeDisableParallelForRestriction] public NativeArray<uint> cpuSurfacePrefixPool;
+
+    public void Execute()
+    {
+        uint denseBase = denseIndex * 1024u;
+        int shadowBase = (int)denseIndex * 8192; // THE FIX
+        int packedBase = (int)denseIndex * 4096;
+        int maskBase = (int)denseIndex * 1024;
+
+        NativeArray<uint> localSurfaceMask = new NativeArray<uint>(1024, Allocator.Temp);
+        NativeArray<uint> packedMaterials = new NativeArray<uint>(4096, Allocator.Temp);
+        
+        for (int i = 0; i < 4096; i++) packedMaterials[i] = 0;
+        for (int i = 0; i < 1024; i++) localSurfaceMask[i] = 0;
+
+        int packedCount = 0;
+
+        for (int flatIdx = 0; flatIdx < 32768; flatIdx++) {
+            int uintIdx = flatIdx >> 5;
+            int bitIdx = flatIdx & 31;
+            
+            if ((cpuDenseChunkPool[(int)denseBase + uintIdx] & (1u << bitIdx)) != 0) {
+                int x = flatIdx & 31;
+                int y = (flatIdx >> 5) & 31;
+                int z = (flatIdx >> 10) & 31;
+                
+                bool isSurface = false;
+                if (x == 0 || x == 31 || y == 0 || y == 31 || z == 0 || z == 31) {
+                    isSurface = true;
+                } else {
+                    int nx = flatIdx - 1;      int px = flatIdx + 1;
+                    int ny = flatIdx - 32;     int py = flatIdx + 32;
+                    int nz = flatIdx - 1024;   int pz = flatIdx + 1024;
+                    
+                    if ((cpuDenseChunkPool[(int)denseBase + (nx >> 5)] & (1u << (nx & 31))) == 0 ||
+                        (cpuDenseChunkPool[(int)denseBase + (px >> 5)] & (1u << (px & 31))) == 0 ||
+                        (cpuDenseChunkPool[(int)denseBase + (ny >> 5)] & (1u << (ny & 31))) == 0 ||
+                        (cpuDenseChunkPool[(int)denseBase + (py >> 5)] & (1u << (py & 31))) == 0 ||
+                        (cpuDenseChunkPool[(int)denseBase + (nz >> 5)] & (1u << (nz & 31))) == 0 ||
+                        (cpuDenseChunkPool[(int)denseBase + (pz >> 5)] & (1u << (pz & 31))) == 0) {
+                        isSurface = true;
+                    }
+                }
+                
+                if (isSurface && packedCount < 16384) { 
+                    localSurfaceMask[uintIdx] |= (1u << bitIdx);
+                    
+                    // GRAB THE GROUND TRUTH COLOR FROM SHADOW RAM!
+                    int mUintIdx = flatIdx >> 2;
+                    int mShift = (flatIdx & 3) << 3;
+                    uint matID = (cpuShadowRAMPool[shadowBase + mUintIdx] >> mShift) & 0xFF;
+                    
+                    int pUintIdx = packedCount >> 2;
+                    int pShift = (packedCount & 3) << 3;
+                    packedMaterials[pUintIdx] |= (matID << pShift);
+                    
+                    packedCount++;
+                }
+            }
+        }
+
+        int runningPrefix = 0;
+        for (int i = 0; i < 1024; i++) {
+            cpuSurfacePrefixPool[maskBase + i] = (uint)runningPrefix;
+            runningPrefix += math.countbits(localSurfaceMask[i]);
+            
+            cpuSurfaceMaskPool[maskBase + i] = localSurfaceMask[i];
+        }
+
+        for (int i = 0; i < 4096; i++) {
+            cpuMaterialChunkPool[packedBase + i] = packedMaterials[i];
+        }
+
+        localSurfaceMask.Dispose();
+        packedMaterials.Dispose();
+    }
 }

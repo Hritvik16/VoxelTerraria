@@ -121,15 +121,28 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         public uint[] shape;
         public uint[] mask;
         public uint[] material;
+        public uint[] surface; 
+        public uint[] prefix; 
+        public uint[] shadow; // THE FIX: Save the Ground Truth to the Vault!
     }
     public Dictionary<Vector3Int, CachedChunk> modifiedChunks = new Dictionary<Vector3Int, CachedChunk>();
     public HashSet<Vector3Int> editedChunkCoords = new HashSet<Vector3Int>();
 
     public void SaveToVault(Vector3Int coord, uint denseIndex) {
-        CachedChunk cache = new CachedChunk { shape = new uint[1024], mask = new uint[19], material = new uint[8192] };
+        CachedChunk cache = new CachedChunk { 
+            shape = new uint[1024], 
+            mask = new uint[19], 
+            material = new uint[4096], 
+            surface = new uint[1024],
+            prefix = new uint[1024],
+            shadow = new uint[8192] // THE FIX
+        };
         NativeArray<uint>.Copy(cpuDenseChunkPool, (int)denseIndex * 1024, cache.shape, 0, 1024);
         NativeArray<uint>.Copy(cpuMacroMaskPool, (int)denseIndex * 19, cache.mask, 0, 19);
-        NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)denseIndex * 8192, cache.material, 0, 8192);
+        NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)denseIndex * 4096, cache.material, 0, 4096);
+        NativeArray<uint>.Copy(cpuSurfaceMaskPool, (int)denseIndex * 1024, cache.surface, 0, 1024);
+        NativeArray<uint>.Copy(cpuSurfacePrefixPool, (int)denseIndex * 1024, cache.prefix, 0, 1024); 
+        NativeArray<uint>.Copy(cpuShadowRAMPool, (int)denseIndex * 8192, cache.shadow, 0, 8192); // THE FIX
         modifiedChunks[coord] = cache;
     }
 
@@ -137,7 +150,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         CachedChunk cache = modifiedChunks[coord];
         NativeArray<uint>.Copy(cache.shape, 0, cpuDenseChunkPool, (int)denseIndex * 1024, 1024);
         NativeArray<uint>.Copy(cache.mask, 0, cpuMacroMaskPool, (int)denseIndex * 19, 19);
-        NativeArray<uint>.Copy(cache.material, 0, cpuMaterialChunkPool, (int)denseIndex * 8192, 8192);
+        NativeArray<uint>.Copy(cache.material, 0, cpuMaterialChunkPool, (int)denseIndex * 4096, 4096);
+        NativeArray<uint>.Copy(cache.surface, 0, cpuSurfaceMaskPool, (int)denseIndex * 1024, 1024);
+        NativeArray<uint>.Copy(cache.prefix, 0, cpuSurfacePrefixPool, (int)denseIndex * 1024, 1024); 
+        NativeArray<uint>.Copy(cache.shadow, 0, cpuShadowRAMPool, (int)denseIndex * 8192, 8192); // THE FIX
     }
     
     public ChunkData[] chunkMapArray;
@@ -189,6 +205,14 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     public ComputeBuffer[] tempMaterialUploadBuffers = new ComputeBuffer[2];
     public NativeArray<uint> nativeMaterialUpload;
 
+    public ComputeBuffer surfaceMaskPoolBuffer; 
+    public ComputeBuffer[] tempSurfaceUploadBuffers = new ComputeBuffer[2];
+    public NativeArray<uint> nativeSurfaceUpload;
+
+    public ComputeBuffer surfacePrefixPoolBuffer; // NEW: O(1) Math lookup
+    public ComputeBuffer[] tempPrefixUploadBuffers = new ComputeBuffer[2];
+    public NativeArray<uint> nativePrefixUpload;
+
     private NativeArray<uint> nativeChunkUpload;
     private NativeArray<uint> nativeMaskUpload;
     
@@ -196,8 +220,11 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     [HideInInspector] public int dynamicMaxChunks; 
     public NativeArray<uint> cpuDenseChunkPool;
     public NativeArray<uint> cpuMacroMaskPool; 
-    public NativeArray<uint> cpuMaterialChunkPool; // NEW: The CPU Material Mirror
-    public NativeArray<float> cpuChunkHeights; // NEW
+    public NativeArray<uint> cpuMaterialChunkPool; 
+    public NativeArray<uint> cpuSurfaceMaskPool; 
+    public NativeArray<uint> cpuSurfacePrefixPool; 
+    public NativeArray<uint> cpuShadowRAMPool; // NEW: The Ground Truth (8192 bytes per chunk)
+    public NativeArray<float> cpuChunkHeights; 
     public NativeArray<BiomeAnchor> cpuBiomes; // NEW: Burst Biome Math
     private ComputeBuffer chunkHeightBuffer;   // NEW
 

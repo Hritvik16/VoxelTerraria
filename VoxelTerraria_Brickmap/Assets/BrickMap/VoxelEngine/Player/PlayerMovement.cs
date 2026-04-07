@@ -145,7 +145,8 @@ public class PlayerMovement : MonoBehaviour
                             if (brushSize == 0 && VoxelEngine.MetadataManager.Instance != null && VoxelEngine.MetadataManager.Instance.TryGetEntity(gridPos, out var entity)) {
                                 entity.OnDamaged(25);
                             } else {
-                                ChunkManager.World.DamageVoxel(gridPos, 25, brushSize, brushShape);
+                                // THE FIX: Push the center of the destruction into the ground to match the Hologram!
+                                ChunkManager.World.DamageVoxel(gridPos - (normal * brushSize), 25, brushSize, brushShape);
                             }
                         } else {
                             ChunkManager.World.EditVoxel(gridPos + (normal * (brushSize + 1)), selectedMaterial, brushSize, brushShape);

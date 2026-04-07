@@ -24,9 +24,13 @@ StructuredBuffer<ChunkJobData> _JobQueue;
 RWStructuredBuffer<uint> _DenseChunkPool;
 RWStructuredBuffer<uint> _DenseLogicPool;
 RWStructuredBuffer<uint> _MacroMaskPool;   // NEW
-StructuredBuffer<uint> _TempMaskUpload;    // NEW
-RWStructuredBuffer<uint> _MaterialChunkPool; // NEW
-StructuredBuffer<uint> _TempMaterialUpload;  // NEW
+StructuredBuffer<uint> _TempMaskUpload;    
+RWStructuredBuffer<uint> _MaterialChunkPool; 
+StructuredBuffer<uint> _TempMaterialUpload;  
+RWStructuredBuffer<uint> _SurfaceMaskPool; 
+StructuredBuffer<uint> _TempSurfaceUpload; 
+RWStructuredBuffer<uint> _SurfacePrefixPool; // NEW
+StructuredBuffer<uint> _TempPrefixUpload; // NEW
 
 int _ChunkSize;
 int _JobCount;
@@ -146,11 +150,16 @@ void CommitUploadBuffers(uint3 id : SV_DispatchThreadID) {
     // Copy the chunk data
     _DenseChunkPool[denseBase + flatIdx] = _TempChunkUpload[id.x];
     
-    uint matDestBase = denseBase * 8;      // Where it lives permanently in VRAM
-    uint matSrcBase = jobIndex * 8192;     // Where it lives in the temp delivery truck
+    // Copy the 1-bit Surface Mask & Prefix Sum
+    _SurfaceMaskPool[denseBase + flatIdx] = _TempSurfaceUpload[id.x];
+    _SurfacePrefixPool[denseBase + flatIdx] = _TempPrefixUpload[id.x];
+
+    // THE FIX: Copy the compressed 8-bit material data (4096 max)
+    uint matDestBase = denseBase * 4;      // 4096 per chunk permanently
+    uint matSrcBase = jobIndex * 4096;     // 4096 per chunk in the delivery truck
         
-    for (uint m = 0; m < 8; m++) {
-        uint localMatOffset = (flatIdx * 8) + m; 
+    for (uint m = 0; m < 4; m++) {
+        uint localMatOffset = (flatIdx * 4) + m;
         _MaterialChunkPool[matDestBase + localMatOffset] = _TempMaterialUpload[matSrcBase + localMatOffset];
     }
 

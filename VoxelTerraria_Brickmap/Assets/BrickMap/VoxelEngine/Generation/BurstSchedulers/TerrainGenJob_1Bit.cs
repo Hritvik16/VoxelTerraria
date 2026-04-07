@@ -23,7 +23,10 @@ namespace VoxelEngine.World
         [NativeDisableParallelForRestriction] public NativeArray<uint> denseChunkPool;
         [NativeDisableParallelForRestriction] public NativeArray<uint> macroMaskPool; 
         [NativeDisableParallelForRestriction] public NativeArray<float> chunkHeights; 
-        [NativeDisableParallelForRestriction] public NativeArray<uint> cpuMaterialChunkPool; // NEW: Direct to Master Array
+        [NativeDisableParallelForRestriction] public NativeArray<uint> cpuMaterialChunkPool; 
+        [NativeDisableParallelForRestriction] public NativeArray<uint> cpuSurfaceMaskPool; 
+        [NativeDisableParallelForRestriction] public NativeArray<uint> cpuSurfacePrefixPool; 
+        [NativeDisableParallelForRestriction] public NativeArray<uint> cpuShadowRAMPool; // NEW
 
         [ReadOnly] public NativeArray<ChunkManager.BiomeAnchor> biomes;
         public int biomeCount;
@@ -175,12 +178,22 @@ namespace VoxelEngine.World
             bool isDistantLOD = job.layerScale >= 0.8f;
 
             // OPTIMIZATION: Temp array clears to 0 instantly. Zero GC.
-            NativeArray<uint> localMaterials = new NativeArray<uint>(8192, Allocator.Temp);
+            NativeArray<uint> tempRawMaterials = new NativeArray<uint>(8192, Allocator.Temp);
+            NativeArray<uint> packedMaterials = new NativeArray<uint>(4096, Allocator.Temp); 
+            NativeArray<uint> localSurfaceMask = new NativeArray<uint>(1024, Allocator.Temp);
+            NativeArray<uint> localSurfacePrefix = new NativeArray<uint>(1024, Allocator.Temp);
+
+            // THE FIX: Explicitly zero-out Burst's uninitialized stack memory!
+            for (int i = 0; i < 4096; i++) packedMaterials[i] = 0;
+            for (int i = 0; i < 1024; i++) {
+                localSurfaceMask[i] = 0;
+                localSurfacePrefix[i] = 0;
+            }
 
             if (isFullyUnderground) {
                 for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = uint.MaxValue; 
                 // OPTIMIZATION: 0x03030303 writes 4 Stone blocks (Index 3) in a single CPU cycle.
-                for (int i = 0; i < 8192; i++) localMaterials[i] = 0x03030303; 
+                for (int i = 0; i < 8192; i++) tempRawMaterials[i] = 0x03030303; 
 
                 if (!isDistantLOD) {
                     CaveCarverWorker.ApplyCavesAndTunnels_1Bit(ref denseChunkPool, denseBase, job.worldPos.x * job.layerScale, job.worldPos.y * job.layerScale, job.worldPos.z * job.layerScale, job.layerScale, caverns, cavernCount, tunnels, tunnelCount);
@@ -188,7 +201,7 @@ namespace VoxelEngine.World
             } 
             else {
                 for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = 0; 
-                for (int i = 0; i < 8192; i++) localMaterials[i] = 0; // THE FIX: Clear Burst's Temp uninitialized garbage!
+                for (int i = 0; i < 8192; i++) tempRawMaterials[i] = 0; // THE FIX: Clear Burst's Temp uninitialized garbage!
 
                 // 3. THE HIGHLY OPTIMIZED VOXEL LOOP
                 for (int z = 0; z < 32; z++) {
@@ -256,7 +269,7 @@ namespace VoxelEngine.World
 
                             int mUintIdx = flatIdx >> 2; 
                             int shift = (flatIdx & 3) << 3; 
-                            localMaterials[mUintIdx] |= (matID << shift);
+                            tempRawMaterials[mUintIdx] |= (matID << shift);
                         }
                     }
                 }
@@ -269,12 +282,89 @@ namespace VoxelEngine.World
             localHeights.Dispose(); // Cleanup the stack memory
             activeBiomes.Dispose(); // Cleanup the biome array memory
 
-            // Blast the local cache DIRECTLY to the CPU Master Array!
-            int matBase = job.pad2 * 8192;
-            for (int i = 0; i < 8192; i++) {
-                cpuMaterialChunkPool[matBase + i] = localMaterials[i];
+            // --- NEW: THE BURST SURFACE PACKER (O(N) single pass) ---
+            int packedCount = 0;
+            for (int flatIdx = 0; flatIdx < 32768; flatIdx++) {
+                int uintIdx = flatIdx >> 5;
+                int bitIdx = flatIdx & 31;
+                
+                // If voxel is solid
+                if ((denseChunkPool[(int)denseBase + uintIdx] & (1u << bitIdx)) != 0) {
+                    int x = flatIdx & 31;
+                    int y = (flatIdx >> 5) & 31;
+                    int z = (flatIdx >> 10) & 31;
+                    
+                    bool isSurface = false;
+                    
+                    // Boundary check
+                    if (x == 0 || x == 31 || y == 0 || y == 31 || z == 0 || z == 31) {
+                        isSurface = true;
+                    } else {
+                        // Fast 6-way internal neighbor check
+                        int nx = flatIdx - 1;      int px = flatIdx + 1;
+                        int ny = flatIdx - 32;     int py = flatIdx + 32;
+                        int nz = flatIdx - 1024;   int pz = flatIdx + 1024;
+                        
+                        if ((denseChunkPool[(int)denseBase + (nx >> 5)] & (1u << (nx & 31))) == 0 ||
+                            (denseChunkPool[(int)denseBase + (px >> 5)] & (1u << (px & 31))) == 0 ||
+                            (denseChunkPool[(int)denseBase + (ny >> 5)] & (1u << (ny & 31))) == 0 ||
+                            (denseChunkPool[(int)denseBase + (py >> 5)] & (1u << (py & 31))) == 0 ||
+                            (denseChunkPool[(int)denseBase + (nz >> 5)] & (1u << (nz & 31))) == 0 ||
+                            (denseChunkPool[(int)denseBase + (pz >> 5)] & (1u << (pz & 31))) == 0) {
+                            isSurface = true;
+                        }
+                    }
+                    
+                    if (isSurface) {
+                        // THE DESYNC FIX: Only flag the mask IF we have budget for the material!
+                        if (packedCount < 16384) { 
+                            localSurfaceMask[uintIdx] |= (1u << bitIdx);
+                            
+                            // Extract material from tempRawMaterials
+                            int mUintIdx = flatIdx >> 2;
+                            int mShift = (flatIdx & 3) << 3;
+                            uint matID = (tempRawMaterials[mUintIdx] >> mShift) & 0xFF;
+                            
+                            // Pack it directly into the new compacted array
+                            int pUintIdx = packedCount >> 2;
+                            int pShift = (packedCount & 3) << 3;
+                            packedMaterials[pUintIdx] |= (matID << pShift);
+                            
+                            packedCount++;
+                        }
+                    }
+                }
             }
-            localMaterials.Dispose();
+
+            // --- NEW: SAVE TO SHADOW RAM ---
+            // THE FIX: Save all 8192 uints!
+            int shadowBase = job.pad2 * 8192;
+            for (int i = 0; i < 8192; i++) {
+                cpuShadowRAMPool[shadowBase + i] = tempRawMaterials[i];
+            }
+
+            // --- NEW: CALCULATE THE PREFIX SUM ---
+            int runningPrefix = 0;
+            for (int i = 0; i < 1024; i++) {
+                localSurfacePrefix[i] = (uint)runningPrefix;
+                runningPrefix += math.countbits(localSurfaceMask[i]);
+            }
+
+            // Blast the compacted cache DIRECTLY to the CPU Master Array!
+            int matBase = job.pad2 * 4096; // THE FIX
+            for (int i = 0; i < 4096; i++) cpuMaterialChunkPool[matBase + i] = packedMaterials[i];
+            
+            // Upload the new 1-bit Surface Vault AND Prefix Sum
+            int maskBaseNew = job.pad2 * 1024;
+            for (int i = 0; i < 1024; i++) {
+                cpuSurfaceMaskPool[maskBaseNew + i] = localSurfaceMask[i];
+                cpuSurfacePrefixPool[maskBaseNew + i] = localSurfacePrefix[i];
+            }
+
+            tempRawMaterials.Dispose();
+            packedMaterials.Dispose();
+            localSurfaceMask.Dispose();
+            localSurfacePrefix.Dispose();
 
             int maskBase = job.pad2 * 19;
             MacroMaskBaker.Bake1Bit(ref denseChunkPool, denseBase, ref macroMaskPool, maskBase);
