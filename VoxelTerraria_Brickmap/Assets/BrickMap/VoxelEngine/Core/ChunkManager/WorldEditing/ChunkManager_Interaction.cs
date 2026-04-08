@@ -150,9 +150,24 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
 
         // --- THE FIX: CHAIN THE JOB HANDLES TO PREVENT ARRAY COLLISIONS ---
         JobHandle rebuildChain = default;
+        // --- NEW: WE MUST EXTRACT TICKETS BEFORE THE JOBS RUN ---
+        Dictionary<uint, uint> chunkTickets = new Dictionary<uint, uint>();
+
         foreach (var kvp in editorDirtyChunks) {
+            uint denseIndex = kvp.Key;
+            EditedChunkInfo info = kvp.Value;
+            uint ticket = cpuMaterialPointers[info.mapIndex];
+
+            // If the player edits a solid chunk without a ticket, grab one instantly!
+            if (ticket == 0xFFFFFFFF && freeMaterialIndices.Count > 0) {
+                ticket = freeMaterialIndices.Dequeue();
+                cpuMaterialPointers[info.mapIndex] = ticket;
+            }
+            chunkTickets[denseIndex] = ticket;
+
             EditorRebuildJob rebuildJob = new EditorRebuildJob {
-                denseIndex = kvp.Key,
+                denseIndex = denseIndex,
+                ticketIndex = ticket, // Pass the ticket to the Job
                 cpuDenseChunkPool = cpuDenseChunkPool,
                 cpuShadowRAMPool = cpuShadowRAMPool,
                 cpuMaterialChunkPool = cpuMaterialChunkPool,
@@ -176,7 +191,14 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
                 
                 // Pack the 76-Byte Mask Data
                 NativeArray<uint>.Copy(cpuMacroMaskPool, (int)denseIndex * 19, editorMaskArray, i * 19, 19);
-                NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)denseIndex * 4096, editorMaterialArray, i * 4096, 4096);
+                
+                uint ticket = chunkTickets[denseIndex];
+                // THE FIX: Pack materials using the Sparse Ticket!
+                if (ticket != 0xFFFFFFFF) {
+                    NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)ticket * 4096, editorMaterialArray, i * 4096, 4096);
+                } else {
+                    for(int m = 0; m < 4096; m++) editorMaterialArray[i * 4096 + m] = 0;
+                }
                 
                 // NEW: Pack the Surface Mask and Prefix Sum!
                 NativeArray<uint>.Copy(cpuSurfaceMaskPool, (int)denseIndex * 1024, editorSurfaceArray, i * 1024, 1024);
@@ -186,6 +208,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
                 ChunkJobData jobData = new ChunkJobData {
                     worldPos = new Vector4(info.coord.x * 32, info.coord.y * 32, info.coord.z * 32, 0),
                     mapIndex = info.mapIndex,
+                    editStartIndex = (int)ticket, // THE FIX: Hand the ticket to the GPU Courier!
                     pad2 = (int)denseIndex,
                     pad3 = 0 // 0 = Solid. This allows the GPU to successfully write the Spatial Anti-Ghosting Tag!
                 };
@@ -220,6 +243,9 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
             worldGenUtilityShader.SetBuffer(kernel_commit, "_TempPrefixUpload", editorPrefixUploadBuffer);
             
             worldGenUtilityShader.SetBuffer(kernel_commit, "_ChunkMap", chunkMapBuffer);
+
+            // --- NEW: Sync the GPU Pointers in case the player triggered a new ticket! ---
+            materialPointersBuffer.SetData(cpuMaterialPointers);
 
             int threadGroups = Mathf.CeilToInt((dirtyCount * 1024f) / 256f);
             worldGenUtilityShader.Dispatch(kernel_commit, threadGroups, 1, 1);
@@ -302,6 +328,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
 public struct EditorRebuildJob : IJob
 {
     public uint denseIndex;
+    public uint ticketIndex; // NEW: The Sparse Material Ticket
     
     [ReadOnly] public NativeArray<uint> cpuDenseChunkPool;
     [ReadOnly] public NativeArray<uint> cpuShadowRAMPool;
@@ -314,7 +341,6 @@ public struct EditorRebuildJob : IJob
     {
         uint denseBase = denseIndex * 1024u;
         int shadowBase = (int)denseIndex * 8192; // THE FIX
-        int packedBase = (int)denseIndex * 4096;
         int maskBase = (int)denseIndex * 1024;
 
         NativeArray<uint> localSurfaceMask = new NativeArray<uint>(1024, Allocator.Temp);
@@ -377,8 +403,12 @@ public struct EditorRebuildJob : IJob
             cpuSurfaceMaskPool[maskBase + i] = localSurfaceMask[i];
         }
 
-        for (int i = 0; i < 4096; i++) {
-            cpuMaterialChunkPool[packedBase + i] = packedMaterials[i];
+        // THE FIX: Only write to the Master Pool if we actually have a Ticket!
+        if (ticketIndex != 0xFFFFFFFF) {
+            int packedBase = (int)ticketIndex * 4096;
+            for (int i = 0; i < 4096; i++) {
+                cpuMaterialChunkPool[packedBase + i] = packedMaterials[i];
+            }
         }
 
         localSurfaceMask.Dispose();

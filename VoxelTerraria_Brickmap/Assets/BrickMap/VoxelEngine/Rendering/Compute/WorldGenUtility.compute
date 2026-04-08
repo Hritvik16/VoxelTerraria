@@ -154,13 +154,17 @@ void CommitUploadBuffers(uint3 id : SV_DispatchThreadID) {
     _SurfaceMaskPool[denseBase + flatIdx] = _TempSurfaceUpload[id.x];
     _SurfacePrefixPool[denseBase + flatIdx] = _TempPrefixUpload[id.x];
 
-    // THE FIX: Copy the compressed 8-bit material data (4096 max)
-    uint matDestBase = denseBase * 4;      // 4096 per chunk permanently
-    uint matSrcBase = jobIndex * 4096;     // 4096 per chunk in the delivery truck
-        
-    for (uint m = 0; m < 4; m++) {
-        uint localMatOffset = (flatIdx * 4) + m;
-        _MaterialChunkPool[matDestBase + localMatOffset] = _TempMaterialUpload[matSrcBase + localMatOffset];
+    // THE FIX: Use the Sparse Ticket provided by the CPU!
+    uint ticket = (uint)_JobQueue[jobIndex].editStartIndex;
+    
+    if (ticket != 0xFFFFFFFF) {
+        uint matDestBase = ticket * 4096; // 4096 per Ticket!
+        uint matSrcBase = jobIndex * 4096; // Delivery truck
+            
+        for (uint m = 0; m < 4; m++) {
+            uint localMatOffset = (flatIdx * 4) + m;
+            _MaterialChunkPool[matDestBase + localMatOffset] = _TempMaterialUpload[matSrcBase + localMatOffset];
+        }
     }
 
     // Natively patch the Table of Contents on the GPU!

@@ -1,9 +1,32 @@
 StructuredBuffer<uint> _MaterialChunkPool;
+StructuredBuffer<uint> _ChunkMaterialPointers; // NEW: The Sparse Material Ticket Bank
 StructuredBuffer<uint> _SurfaceMaskPool; 
-StructuredBuffer<uint> _SurfacePrefixPool; // NEW
+StructuredBuffer<uint> _SurfacePrefixPool; 
 
 // Compressed Memory Lookup via countbits()
 uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, int layer) {
+    
+    // 1. Calculate the mapIndex to find our Ticket
+    int baseRadXZ = (int)_RenderBounds.x;
+    int baseRadY  = (int)_RenderBounds.y; 
+    int sideXZ = 2 * baseRadXZ + 1;
+    int sideY = 2 * baseRadY + 1;
+    int mx = (int)(((uint)(baseChunkCoord.x + 400000 * sideXZ)) % (uint)sideXZ);
+    int my = (int)(((uint)(baseChunkCoord.y + 400000 * sideY)) % (uint)sideY);
+    int mz = (int)(((uint)(baseChunkCoord.z + 400000 * sideXZ)) % (uint)sideXZ);
+    uint mapIndex = (layer * _ChunkCount) + mx + mz * sideXZ + my * sideXZ * sideXZ;
+
+    uint ticket = _ChunkMaterialPointers[mapIndex];
+
+    // --- THE 1-FRAME FALLBACK ---
+    // If the player blows a hole in a 100% solid chunk, the Courier takes 1-2 frames to fetch a ticket.
+    // During those 2 frames, the GPU mathematically guesses the material to prevent black flashes!
+    if (ticket == 0xFFFFFFFF) {
+        float worldY = voxelPos.y * _ClipmapCenters[layer].w; 
+        if (worldY > 20.0) return 1; // Grass
+        if (worldY > -10.0) return 2; // Dirt
+        return 3;                     // Stone
+    }
     
     // ---------------------------------------------------------
     // --- PERFORMANCE DEBUG TOGGLE ---
@@ -36,8 +59,9 @@ uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, i
     uint matUintIdx = surfaceCount >> 2;
     uint byteOffset = (surfaceCount & 3) << 3;
     
-    // denseBase is the 1024 offset. Our compacted array is 4096, so we multiply by 4.
-    uint packedMaterials = _MaterialChunkPool[(denseBase * 4) + matUintIdx];
+    // THE FIX: Read from the Sparse Ticket, NOT the dense geometry!
+    // 4096 is the size of the array, so we multiply the ticket by 4096.
+    uint packedMaterials = _MaterialChunkPool[(ticket * 4096) + matUintIdx];
     
     return (packedMaterials >> byteOffset) & 0xFF;
 }

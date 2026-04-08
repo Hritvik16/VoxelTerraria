@@ -29,12 +29,46 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             int maskOffset = (int)myDenseIndex * 19; // CHANGED to 19
             NativeArray<uint>.Copy(cpuMacroMaskPool, maskOffset, nativeMaskUpload, i * 19, 19);
 
-            // THE FIX: Copy the 4096 slice back to the GPU Courier
-            NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)myDenseIndex * 4096, nativeMaterialUpload, i * 4096, 4096);
-            
             // NEW: Copy the 1-bit Surface Mask & Prefix Sum
             NativeArray<uint>.Copy(cpuSurfaceMaskPool, (int)myDenseIndex * 1024, nativeSurfaceUpload, i * 1024, 1024);
             NativeArray<uint>.Copy(cpuSurfacePrefixPool, (int)myDenseIndex * 1024, nativePrefixUpload, i * 1024, 1024);
+
+            // --- NEW: THE SPARSE TICKET ASSIGNMENT ---
+            bool fromVault = persistentJobDataArray[i].editCount == 1;
+            uint ticket = cpuMaterialPointers[mapIndex];
+
+            if (!fromVault) {
+                int surfaceCount = persistentJobDataArray[i].editStartIndex; // Burst passed this back!
+                
+                if (surfaceCount > 0) {
+                    if (ticket == 0xFFFFFFFF && freeMaterialIndices.Count > 0) {
+                        ticket = freeMaterialIndices.Dequeue();
+                        cpuMaterialPointers[mapIndex] = ticket;
+                    }
+                    if (ticket != 0xFFFFFFFF) {
+                        // Copy from Courier (Burst) TO Master CPU Pool
+                        NativeArray<uint>.Copy(nativeMaterialUpload, i * 4096, cpuMaterialChunkPool, (int)ticket * 4096, 4096);
+                    }
+                } else {
+                    if (ticket != 0xFFFFFFFF) {
+                        freeMaterialIndices.Enqueue(ticket);
+                        ticket = 0xFFFFFFFF;
+                        cpuMaterialPointers[mapIndex] = ticket;
+                    }
+                }
+            } else {
+                // If loaded from Vault (Phase 3 will fix the Vault array alignment)
+                if (ticket != 0xFFFFFFFF) {
+                    NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)ticket * 4096, nativeMaterialUpload, i * 4096, 4096);
+                } else {
+                    for(int m=0; m<4096; m++) nativeMaterialUpload[i * 4096 + m] = 0;
+                }
+            }
+
+            // Repack the ticket into the job so the GPU Courier knows exactly where to put it!
+            ChunkJobData modifiedJob = persistentJobDataArray[i];
+            modifiedJob.editStartIndex = (int)ticket;
+            persistentJobDataArray[i] = modifiedJob;
             
             // Only update the map if the player hasn't moved away from this chunk!
             if (chunkMapArray[mapIndex].densePoolIndex == myDenseIndex) {
@@ -80,6 +114,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         tempPrefixUploadBuffers[ringIndex].SetData(nativePrefixUpload, 0, 0, activeDispatches * 1024);
 
         chunkHeightBuffer.SetData(cpuChunkHeights);
+        
+        // Push the new Ticket assignments to the Raytracer!
+        materialPointersBuffer.SetData(cpuMaterialPointers);
 
         int commitKernel = worldGenUtilityShader.FindKernel("CommitUploadBuffers"); 
         worldGenUtilityShader.SetInt("_JobCount", activeDispatches);
@@ -322,7 +359,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     caverns = persistentCavernArray, tunnels = persistentTunnelArray,
                     denseChunkPool = cpuDenseChunkPool, macroMaskPool = cpuMacroMaskPool, 
                     chunkHeights = cpuChunkHeights,
-                    cpuMaterialChunkPool = cpuMaterialChunkPool, 
+                    jobMaterialUpload = nativeMaterialUpload, // THE FIX: Hand Burst the Courier Array
                     cpuSurfaceMaskPool = cpuSurfaceMaskPool, 
                     cpuSurfacePrefixPool = cpuSurfacePrefixPool, 
                     cpuShadowRAMPool = cpuShadowRAMPool, // NEW

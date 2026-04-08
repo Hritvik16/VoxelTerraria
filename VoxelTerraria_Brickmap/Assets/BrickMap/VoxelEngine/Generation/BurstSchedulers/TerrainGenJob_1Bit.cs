@@ -23,7 +23,7 @@ namespace VoxelEngine.World
         [NativeDisableParallelForRestriction] public NativeArray<uint> denseChunkPool;
         [NativeDisableParallelForRestriction] public NativeArray<uint> macroMaskPool; 
         [NativeDisableParallelForRestriction] public NativeArray<float> chunkHeights; 
-        [NativeDisableParallelForRestriction] public NativeArray<uint> cpuMaterialChunkPool; 
+        [NativeDisableParallelForRestriction] public NativeArray<uint> jobMaterialUpload; // THE FIX: Burst writes to Courier, not Master!
         [NativeDisableParallelForRestriction] public NativeArray<uint> cpuSurfaceMaskPool; 
         [NativeDisableParallelForRestriction] public NativeArray<uint> cpuSurfacePrefixPool; 
         [NativeDisableParallelForRestriction] public NativeArray<uint> cpuShadowRAMPool; // NEW
@@ -350,9 +350,14 @@ namespace VoxelEngine.World
                 runningPrefix += math.countbits(localSurfaceMask[i]);
             }
 
-            // Blast the compacted cache DIRECTLY to the CPU Master Array!
-            int matBase = job.pad2 * 4096; // THE FIX
-            for (int i = 0; i < 4096; i++) cpuMaterialChunkPool[matBase + i] = packedMaterials[i];
+            // --- NEW: Blast the compacted cache to the Courier Array! ---
+            int courierMatBase = jobIndex * 4096;
+            for (int i = 0; i < 4096; i++) jobMaterialUpload[courierMatBase + i] = packedMaterials[i];
+            
+            // Tell the Main Thread exactly how many surface voxels we packed!
+            var completedJob = jobQueue[jobIndex];
+            completedJob.editStartIndex = packedCount; 
+            jobQueue[jobIndex] = completedJob;
             
             // Upload the new 1-bit Surface Vault AND Prefix Sum
             int maskBaseNew = job.pad2 * 1024;

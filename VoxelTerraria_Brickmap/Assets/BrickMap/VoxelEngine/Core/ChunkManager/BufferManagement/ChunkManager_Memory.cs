@@ -105,8 +105,16 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             denseChunkPoolBuffer = new ComputeBuffer(dynamicMaxChunks * UINTS_PER_CHUNK, sizeof(uint));
             cpuDenseChunkPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_CHUNK, Allocator.Persistent);
             
-            materialChunkPoolBuffer = new ComputeBuffer(dynamicMaxChunks * 4096, sizeof(uint)); // THE FIX: 50% VRAM Savings, 100% Safe
-            cpuMaterialChunkPool = new NativeArray<uint>(dynamicMaxChunks * 4096, Allocator.Persistent);
+            // --- NEW: THE HARDWARE-CAPPED SPARSE POOL ---
+            materialChunkPoolBuffer = new ComputeBuffer(maxMaterialTickets * 4096, sizeof(uint)); 
+            cpuMaterialChunkPool = new NativeArray<uint>(maxMaterialTickets * 4096, Allocator.Persistent);
+            
+            cpuMaterialPointers = new NativeArray<uint>(totalMapCapacity, Allocator.Persistent);
+            materialPointersBuffer = new ComputeBuffer(totalMapCapacity, sizeof(uint));
+            
+            // Initialize all pointers to 0xFFFFFFFF (Solid/No Ticket)
+            for (int i = 0; i < totalMapCapacity; i++) cpuMaterialPointers[i] = 0xFFFFFFFF;
+            materialPointersBuffer.SetData(cpuMaterialPointers);
             
             surfaceMaskPoolBuffer = new ComputeBuffer(dynamicMaxChunks * 1024, sizeof(uint)); 
             cpuSurfaceMaskPool = new NativeArray<uint>(dynamicMaxChunks * 1024, Allocator.Persistent);
@@ -151,8 +159,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             Shader.SetGlobalBuffer("_DenseChunkPool", denseChunkPoolBuffer);
             Shader.SetGlobalBuffer("_MacroMaskPool", macroMaskPoolBuffer); 
             Shader.SetGlobalBuffer("_MaterialChunkPool", materialChunkPoolBuffer);
+            Shader.SetGlobalBuffer("_ChunkMaterialPointers", materialPointersBuffer); // NEW GPU LOOKUP
             Shader.SetGlobalBuffer("_SurfaceMaskPool", surfaceMaskPoolBuffer); 
             Shader.SetGlobalBuffer("_SurfacePrefixPool", surfacePrefixPoolBuffer); // NEW
+
+            freeMaterialIndices.Clear();
+            for (uint i = 0; i < maxMaterialTickets; i++) freeMaterialIndices.Enqueue(i);
 
             if (macroGridBuffer == null) {
                 macroGridBuffer = new ComputeBuffer(totalMapCapacity, 8);
@@ -236,6 +248,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         vertexBuffer = null;
         argsBuffer = null;
 
+        if (cpuMaterialPointers.IsCreated) cpuMaterialPointers.Dispose();
+        materialPointersBuffer?.Release();
+
         macroGridBuffer = null;
         materialBuffer = null;
         denseChunkPoolBuffer = null;
@@ -270,6 +285,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         if (materialChunkPoolBuffer != null) cs.SetBuffer(kernel, "_MaterialChunkPool", materialChunkPoolBuffer);
         if (surfaceMaskPoolBuffer != null) cs.SetBuffer(kernel, "_SurfaceMaskPool", surfaceMaskPoolBuffer);
         
+        // --- NEW: BIND THE SPARSE MEMORY CACHE ---
+        if (materialPointersBuffer != null) cs.SetBuffer(kernel, "_ChunkMaterialPointers", materialPointersBuffer);
+        if (surfacePrefixPoolBuffer != null) cs.SetBuffer(kernel, "_SurfacePrefixPool", surfacePrefixPoolBuffer);
+
         // FIX: Reverted [0] back to [ringIndex] so it reads the Grand Swap!
         if (macroMaskPoolBuffer != null) cs.SetBuffer(kernel, "_MacroMaskPool", macroMaskPoolBuffer);
         cs.SetBuffer(kernel, "_ChunkMap", chunkMapBuffer);

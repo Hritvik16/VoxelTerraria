@@ -205,6 +205,13 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     public ComputeBuffer[] tempMaterialUploadBuffers = new ComputeBuffer[2];
     public NativeArray<uint> nativeMaterialUpload;
 
+    // --- NEW: THE SPARSE MATERIAL CACHE ---
+    [Header("Material Cache")]
+    public int maxMaterialTickets = 16384; // Strict Hardware Limit (~250 MB VRAM)
+    public Queue<uint> freeMaterialIndices = new Queue<uint>();
+    public NativeArray<uint> cpuMaterialPointers; // Maps mapIndex -> Material Ticket
+    public ComputeBuffer materialPointersBuffer;  // The GPU Lookup Table
+
     public ComputeBuffer surfaceMaskPoolBuffer; 
     public ComputeBuffer[] tempSurfaceUploadBuffers = new ComputeBuffer[2];
     public NativeArray<uint> nativeSurfaceUpload;
@@ -464,7 +471,15 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                         ChunkData oldCd = chunkMapArray[idx];
                         if (oldCd.densePoolIndex != 0xFFFFFFFF) {
                             if (L == 0 && editedChunkCoords.Contains(chunkTargetCoordArray[idx])) SaveToVault(chunkTargetCoordArray[idx], oldCd.densePoolIndex);
+                            
                             freeDenseIndices.Enqueue(oldCd.densePoolIndex);
+                            
+                            // --- NEW: RETURN THE TICKET ---
+                            if (cpuMaterialPointers[idx] != 0xFFFFFFFF) {
+                                freeMaterialIndices.Enqueue(cpuMaterialPointers[idx]);
+                                cpuMaterialPointers[idx] = 0xFFFFFFFF;
+                            }
+                            
                             oldCd.packedState = 0; oldCd.densePoolIndex = 0xFFFFFFFF; 
                             // oldCd.position = new Vector4(-99999f, -99999f, -99999f, 0f); 
                             chunkMapArray[idx] = oldCd;
@@ -476,10 +491,16 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     if (chunkTargetCoordArray[idx] == coord) {
                         ChunkData oldCd = chunkMapArray[idx];
                         if (oldCd.densePoolIndex != 0xFFFFFFFF) {
-                            if (L == 0 && editedChunkCoords.Contains(coord)) {
-                                SaveToVault(coord, oldCd.densePoolIndex);
-                            }
+                            if (L == 0 && editedChunkCoords.Contains(coord)) SaveToVault(coord, oldCd.densePoolIndex);
+                            
                             freeDenseIndices.Enqueue(oldCd.densePoolIndex);
+                            
+                            // --- NEW: RETURN THE TICKET ---
+                            if (cpuMaterialPointers[idx] != 0xFFFFFFFF) {
+                                freeMaterialIndices.Enqueue(cpuMaterialPointers[idx]);
+                                cpuMaterialPointers[idx] = 0xFFFFFFFF;
+                            }
+                            
                             oldCd.packedState = 0; oldCd.densePoolIndex = 0xFFFFFFFF; 
                             // oldCd.position = new Vector4(-99999f, -99999f, -99999f, 0f); 
                             chunkMapArray[idx] = oldCd;
