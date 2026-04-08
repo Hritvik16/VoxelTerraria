@@ -282,56 +282,61 @@ namespace VoxelEngine.World
             localHeights.Dispose(); // Cleanup the stack memory
             activeBiomes.Dispose(); // Cleanup the biome array memory
 
-            // --- NEW: THE BURST SURFACE PACKER (O(N) single pass) ---
+            // --- NEW: ULTRA-FAST BITWISE SURFACE PACKER ---
+            // Processes 32 voxels per CPU clock cycle. 1024 iterations instead of 32768.
             int packedCount = 0;
-            for (int flatIdx = 0; flatIdx < 32768; flatIdx++) {
-                int uintIdx = flatIdx >> 5;
-                int bitIdx = flatIdx & 31;
-                
-                // If voxel is solid
-                if ((denseChunkPool[(int)denseBase + uintIdx] & (1u << bitIdx)) != 0) {
-                    int x = flatIdx & 31;
-                    int y = (flatIdx >> 5) & 31;
-                    int z = (flatIdx >> 10) & 31;
+            
+            for (int uintIdx = 0; uintIdx < 1024; uintIdx++) {
+                uint row = denseChunkPool[(int)denseBase + uintIdx];
+                if (row == 0) continue; // Entire row is pure air. Skip instantly!
+
+                int y = uintIdx & 31;
+                int z = uintIdx >> 5;
+                uint surfaceMask = 0;
+
+                // The outer chunk shell is always flagged as surface
+                if (y == 0 || y == 31 || z == 0 || z == 31) {
+                    surfaceMask = row;
+                } else {
+                    // Check Left/Right neighbors using bit-shifts
+                    uint nx = (row << 1) | 1u;
+                    uint px = (row >> 1) | 0x80000000u;
                     
-                    bool isSurface = false;
+                    // Check Up/Down/Forward/Back using adjacent memory addresses
+                    uint ny = denseChunkPool[(int)denseBase + uintIdx - 1];
+                    uint py = denseChunkPool[(int)denseBase + uintIdx + 1];
+                    uint nz = denseChunkPool[(int)denseBase + uintIdx - 32];
+                    uint pz = denseChunkPool[(int)denseBase + uintIdx + 32];
                     
-                    // Boundary check
-                    if (x == 0 || x == 31 || y == 0 || y == 31 || z == 0 || z == 31) {
-                        isSurface = true;
-                    } else {
-                        // Fast 6-way internal neighbor check
-                        int nx = flatIdx - 1;      int px = flatIdx + 1;
-                        int ny = flatIdx - 32;     int py = flatIdx + 32;
-                        int nz = flatIdx - 1024;   int pz = flatIdx + 1024;
+                    // If a voxel has 6 solid neighbors, the bit in this mask will be 1
+                    uint neighborsSolid = nx & px & ny & py & nz & pz;
+                    
+                    // Surface = Solid AND (Has an air neighbor OR touches X boundary)
+                    surfaceMask = row & (~neighborsSolid | 0x80000001u);
+                }
+
+                if (surfaceMask != 0) {
+                    localSurfaceMask[uintIdx] = surfaceMask;
+                    uint tempMask = surfaceMask;
+                    
+                    // Extract exactly the set bits with zero loop overhead
+                    while (tempMask != 0 && packedCount < 16384) {
+                        int bitIdx = math.tzcnt(tempMask); // Instantly finds the next surface block
+                        tempMask ^= (1u << bitIdx);        // Clears it from the queue
                         
-                        if ((denseChunkPool[(int)denseBase + (nx >> 5)] & (1u << (nx & 31))) == 0 ||
-                            (denseChunkPool[(int)denseBase + (px >> 5)] & (1u << (px & 31))) == 0 ||
-                            (denseChunkPool[(int)denseBase + (ny >> 5)] & (1u << (ny & 31))) == 0 ||
-                            (denseChunkPool[(int)denseBase + (py >> 5)] & (1u << (py & 31))) == 0 ||
-                            (denseChunkPool[(int)denseBase + (nz >> 5)] & (1u << (nz & 31))) == 0 ||
-                            (denseChunkPool[(int)denseBase + (pz >> 5)] & (1u << (pz & 31))) == 0) {
-                            isSurface = true;
-                        }
-                    }
-                    
-                    if (isSurface) {
-                        // THE DESYNC FIX: Only flag the mask IF we have budget for the material!
-                        if (packedCount < 16384) { 
-                            localSurfaceMask[uintIdx] |= (1u << bitIdx);
-                            
-                            // Extract material from tempRawMaterials
-                            int mUintIdx = flatIdx >> 2;
-                            int mShift = (flatIdx & 3) << 3;
-                            uint matID = (tempRawMaterials[mUintIdx] >> mShift) & 0xFF;
-                            
-                            // Pack it directly into the new compacted array
-                            int pUintIdx = packedCount >> 2;
-                            int pShift = (packedCount & 3) << 3;
-                            packedMaterials[pUintIdx] |= (matID << pShift);
-                            
-                            packedCount++;
-                        }
+                        int flatIdx = (uintIdx << 5) | bitIdx;
+                        
+                        // Extract material from 8-bit temp pool
+                        int mUintIdx = flatIdx >> 2;
+                        int mShift = (flatIdx & 3) << 3;
+                        uint matID = (tempRawMaterials[mUintIdx] >> mShift) & 0xFF;
+                        
+                        // Compact it into the 4096-sized array
+                        int pUintIdx = packedCount >> 2;
+                        int pShift = (packedCount & 3) << 3;
+                        packedMaterials[pUintIdx] |= (matID << pShift);
+                        
+                        packedCount++;
                     }
                 }
             }
