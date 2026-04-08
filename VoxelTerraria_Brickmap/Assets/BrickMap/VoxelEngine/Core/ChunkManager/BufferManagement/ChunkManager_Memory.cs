@@ -158,13 +158,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                 macroGridBuffer = new ComputeBuffer(totalMapCapacity, 8);
                 Shader.SetGlobalBuffer("_MacroGrid", macroGridBuffer);
             }
-            Shader.SetGlobalBuffer("_ChunkMap", chunkMapBuffer); // <--- Removed [0]
+            Shader.SetGlobalBuffer("_ChunkMap", chunkMapBuffer);
             
             freeDenseIndices.Clear();
             for (uint i = 0; i < dynamicMaxChunks; i++) freeDenseIndices.Enqueue(i);
-            
-            float vramMB = (dynamicMaxChunks * UINTS_PER_CHUNK * 4.0f) / (1024f * 1024f);
-            UnityEngine.Debug.Log($"[ChunkManager] Allocated {dynamicMaxChunks} chunks dynamically. Est. VRAM: {vramMB:F2} MB");
         }
 
         if (macroGridBuffer == null) {
@@ -184,6 +181,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         Shader.SetGlobalVector("_RenderBounds", new Vector4(renderDistanceXZ, renderDistanceY, 0, 0));
         Shader.SetGlobalFloat("_VoxelScale", voxelScale);
         totalLoadTimer.Start();
+        ReportMemoryUsage();
     }
 
     void OnDisable() {
