@@ -62,8 +62,13 @@ class RayTracingPass : ScriptableRenderPass
         UniversalResourceData resourceData = frameData.Get<UniversalResourceData>();
         if (cameraData.cameraType != CameraType.Game) return;
 
-        int rw = cameraData.cameraTargetDescriptor.width / downsample;
-        int rh = cameraData.cameraTargetDescriptor.height / downsample;
+        // --- THE M1 UPSCALER FIX ---
+        // Clamp the maximum base resolution to 1080p to prevent Retina displays from melting the GPU bandwidth!
+        int baseWidth = Mathf.Min(cameraData.cameraTargetDescriptor.width, 1920);
+        int baseHeight = Mathf.Min(cameraData.cameraTargetDescriptor.height, 1080);
+
+        int rw = baseWidth / downsample;
+        int rh = baseHeight / downsample;
 
         TextureDesc texDesc = new TextureDesc(rw, rh);
         texDesc.format = GraphicsFormat.R16G16B16A16_SFloat;
