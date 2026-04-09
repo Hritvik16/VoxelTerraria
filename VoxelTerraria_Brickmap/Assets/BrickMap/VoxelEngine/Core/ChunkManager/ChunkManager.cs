@@ -492,77 +492,81 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
         // The Radar Dish: Sweeps 4,000 coordinates per frame (~1.5s for a full 100m scan)
         int radarSpeed = 4000;
-        for (int i = 0; i < radarSpeed; i++) {
-            if (scanOffsets == null || scanOffsets.Length == 0) break;
-            
-            radarIndex = (radarIndex + 1) % scanOffsets.Length;
-            Vector3Int offset = scanOffsets[radarIndex];
+        
+        // THE FIX: Pause the radar sweep if the background thread is currently locking the master arrays!
+        if (!isTerrainJobRunning) {
+            for (int i = 0; i < radarSpeed; i++) {
+                if (scanOffsets == null || scanOffsets.Length == 0) break;
+                
+                radarIndex = (radarIndex + 1) % scanOffsets.Length;
+                Vector3Int offset = scanOffsets[radarIndex];
 
-            for (int L = 0; L < clipmapLayers; L++) {
-                Vector3Int center = primaryAnchorChunks[L];
-                Vector3Int coord = center + offset;
-                
-                int activeRadXZ = Mathf.Max(2, renderDistanceXZ - L); 
-                int activeRadY = renderDistanceY;   
-                
-                if (L == 0) { activeRadY = Mathf.Min(4, renderDistanceY); } 
-                else if (L == 1) { activeRadY = Mathf.Min(6, renderDistanceY); } 
-                else if (L == 2) { activeRadY = Mathf.Min(8, renderDistanceY); }
+                for (int L = 0; L < clipmapLayers; L++) {
+                    Vector3Int center = primaryAnchorChunks[L];
+                    Vector3Int coord = center + offset;
+                    
+                    int activeRadXZ = Mathf.Max(2, renderDistanceXZ - L); 
+                    int activeRadY = renderDistanceY;   
+                    
+                    if (L == 0) { activeRadY = Mathf.Min(4, renderDistanceY); } 
+                    else if (L == 1) { activeRadY = Mathf.Min(6, renderDistanceY); } 
+                    else if (L == 2) { activeRadY = Mathf.Min(8, renderDistanceY); }
 
-                int dx = Mathf.Abs(coord.x - center.x);
-                int dz = Mathf.Abs(coord.z - center.z);
-                bool isInsideActiveRadius = (Mathf.Max(dx, dz) <= activeRadXZ) && (Mathf.Abs(coord.y - center.y) <= activeRadY);
-                
-                int idx = GetMapIndex(L, coord);
-                
-                if (isInsideActiveRadius) {
-                    if (chunkTargetCoordArray[idx] != coord) {
-                        ChunkData oldCd = chunkMapArray[idx];
-                        if (oldCd.densePoolIndex != 0xFFFFFFFF) {
-                            if (L == 0 && editedChunkCoords.Contains(chunkTargetCoordArray[idx])) SaveToVault(chunkTargetCoordArray[idx], oldCd.densePoolIndex, idx);
-                            
-                            freeDenseIndices.Enqueue(oldCd.densePoolIndex);
-                            
-                            // --- NEW: RETURN THE TICKET ---
-                            if (cpuMaterialPointers[idx] != 0xFFFFFFFF) {
-                                uint t = cpuMaterialPointers[idx];
-                                freeMaterialIndices.Enqueue(t);
-                                ticketToMapIndex[t] = -1; // Clear tracking
-                                cpuMaterialPointers[idx] = 0xFFFFFFFF;
+                    int dx = Mathf.Abs(coord.x - center.x);
+                    int dz = Mathf.Abs(coord.z - center.z);
+                    bool isInsideActiveRadius = (Mathf.Max(dx, dz) <= activeRadXZ) && (Mathf.Abs(coord.y - center.y) <= activeRadY);
+                    
+                    int idx = GetMapIndex(L, coord);
+                    
+                    if (isInsideActiveRadius) {
+                        if (chunkTargetCoordArray[idx] != coord) {
+                            ChunkData oldCd = chunkMapArray[idx];
+                            if (oldCd.densePoolIndex != 0xFFFFFFFF) {
+                                if (L == 0 && editedChunkCoords.Contains(chunkTargetCoordArray[idx])) SaveToVault(chunkTargetCoordArray[idx], oldCd.densePoolIndex, idx);
+                                
+                                freeDenseIndices.Enqueue(oldCd.densePoolIndex);
+                                
+                                // --- NEW: RETURN THE TICKET ---
+                                if (cpuMaterialPointers[idx] != 0xFFFFFFFF) {
+                                    uint t = cpuMaterialPointers[idx];
+                                    freeMaterialIndices.Enqueue(t);
+                                    ticketToMapIndex[t] = -1; // Clear tracking
+                                    cpuMaterialPointers[idx] = 0xFFFFFFFF;
+                                }
+                                
+                                oldCd.packedState = 0; oldCd.densePoolIndex = 0xFFFFFFFF; 
+                                // oldCd.position = new Vector4(-99999f, -99999f, -99999f, 0f); 
+                                chunkMapArray[idx] = oldCd;
                             }
-                            
-                            oldCd.packedState = 0; oldCd.densePoolIndex = 0xFFFFFFFF; 
-                            // oldCd.position = new Vector4(-99999f, -99999f, -99999f, 0f); 
-                            chunkMapArray[idx] = oldCd;
+                            chunkTargetCoordArray[idx] = coord; 
+                            generationQueues[L].Add(new LayerCoord { layer = L, coord = coord });
                         }
-                        chunkTargetCoordArray[idx] = coord; 
-                        generationQueues[L].Add(new LayerCoord { layer = L, coord = coord });
-                    }
-                } else {
-                    if (chunkTargetCoordArray[idx] == coord) {
-                        ChunkData oldCd = chunkMapArray[idx];
-                        if (oldCd.densePoolIndex != 0xFFFFFFFF) {
-                            if (L == 0 && editedChunkCoords.Contains(coord)) SaveToVault(coord, oldCd.densePoolIndex, idx);
-                            
-                            freeDenseIndices.Enqueue(oldCd.densePoolIndex);
-                            
-                            // --- NEW: RETURN THE TICKET ---
-                            if (cpuMaterialPointers[idx] != 0xFFFFFFFF) {
-                                uint t = cpuMaterialPointers[idx];
-                                freeMaterialIndices.Enqueue(t);
-                                ticketToMapIndex[t] = -1; // Clear tracking
-                                cpuMaterialPointers[idx] = 0xFFFFFFFF;
+                    } else {
+                        if (chunkTargetCoordArray[idx] == coord) {
+                            ChunkData oldCd = chunkMapArray[idx];
+                            if (oldCd.densePoolIndex != 0xFFFFFFFF) {
+                                if (L == 0 && editedChunkCoords.Contains(coord)) SaveToVault(coord, oldCd.densePoolIndex, idx);
+                                
+                                freeDenseIndices.Enqueue(oldCd.densePoolIndex);
+                                
+                                // --- NEW: RETURN THE TICKET ---
+                                if (cpuMaterialPointers[idx] != 0xFFFFFFFF) {
+                                    uint t = cpuMaterialPointers[idx];
+                                    freeMaterialIndices.Enqueue(t);
+                                    ticketToMapIndex[t] = -1; // Clear tracking
+                                    cpuMaterialPointers[idx] = 0xFFFFFFFF;
+                                }
+                                
+                                oldCd.packedState = 0; oldCd.densePoolIndex = 0xFFFFFFFF; 
+                                // oldCd.position = new Vector4(-99999f, -99999f, -99999f, 0f); 
+                                chunkMapArray[idx] = oldCd;
                             }
-                            
-                            oldCd.packedState = 0; oldCd.densePoolIndex = 0xFFFFFFFF; 
-                            // oldCd.position = new Vector4(-99999f, -99999f, -99999f, 0f); 
-                            chunkMapArray[idx] = oldCd;
+                            chunkTargetCoordArray[idx] = new Vector3Int(-99999, -99999, -99999);
                         }
-                        chunkTargetCoordArray[idx] = new Vector3Int(-99999, -99999, -99999);
                     }
                 }
             }
-        }
+        } // <-- THE FIX: Closes the radar loop
 
         // 3. UPDATE SHADER BINDINGS
         if (anyAnchorChanged) {
