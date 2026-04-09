@@ -127,7 +127,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     public Dictionary<Vector3Int, CachedChunk> modifiedChunks = new Dictionary<Vector3Int, CachedChunk>();
     public HashSet<Vector3Int> editedChunkCoords = new HashSet<Vector3Int>();
 
-    public void SaveToVault(Vector3Int coord, uint denseIndex) {
+    public void SaveToVault(Vector3Int coord, uint denseIndex, int mapIndex) {
         CachedChunk cache = new CachedChunk { 
             shape = new uint[1024], 
             mask = new uint[19], 
@@ -137,17 +137,35 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         };
         NativeArray<uint>.Copy(cpuDenseChunkPool, (int)denseIndex * 1024, cache.shape, 0, 1024);
         NativeArray<uint>.Copy(cpuMacroMaskPool, (int)denseIndex * 19, cache.mask, 0, 19);
-        NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)denseIndex * 4096, cache.material, 0, 4096);
+        
+        // THE FIX: Use the Sparse Ticket for Materials, not the Dense Index!
+        uint ticket = cpuMaterialPointers[mapIndex];
+        if (ticket != 0xFFFFFFFF) {
+            NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)ticket * 4096, cache.material, 0, 4096);
+        } else {
+            for(int i = 0; i < 4096; i++) cache.material[i] = 0;
+        }
+
         NativeArray<uint>.Copy(cpuSurfaceMaskPool, (int)denseIndex * 1024, cache.surface, 0, 1024);
         NativeArray<uint>.Copy(cpuSurfacePrefixPool, (int)denseIndex * 1024, cache.prefix, 0, 1024); 
         modifiedChunks[coord] = cache;
     }
 
-    public void RestoreFromVault(Vector3Int coord, uint denseIndex) {
+    public void RestoreFromVault(Vector3Int coord, uint denseIndex, int mapIndex) {
         CachedChunk cache = modifiedChunks[coord];
         NativeArray<uint>.Copy(cache.shape, 0, cpuDenseChunkPool, (int)denseIndex * 1024, 1024);
         NativeArray<uint>.Copy(cache.mask, 0, cpuMacroMaskPool, (int)denseIndex * 19, 19);
-        NativeArray<uint>.Copy(cache.material, 0, cpuMaterialChunkPool, (int)denseIndex * 4096, 4096);
+        
+        // THE FIX: Assign a ticket if restoring a chunk that had materials
+        uint ticket = cpuMaterialPointers[mapIndex];
+        if (ticket == 0xFFFFFFFF) {
+            if (freeMaterialIndices.Count > 0) ticket = freeMaterialIndices.Dequeue();
+            else ticket = EvictFurthestMaterialTicket();
+            cpuMaterialPointers[mapIndex] = ticket;
+            ticketToMapIndex[ticket] = mapIndex;
+        }
+        NativeArray<uint>.Copy(cache.material, 0, cpuMaterialChunkPool, (int)ticket * 4096, 4096);
+        
         NativeArray<uint>.Copy(cache.surface, 0, cpuSurfaceMaskPool, (int)denseIndex * 1024, 1024);
         NativeArray<uint>.Copy(cache.prefix, 0, cpuSurfacePrefixPool, (int)denseIndex * 1024, 1024); 
     }
@@ -501,7 +519,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     if (chunkTargetCoordArray[idx] != coord) {
                         ChunkData oldCd = chunkMapArray[idx];
                         if (oldCd.densePoolIndex != 0xFFFFFFFF) {
-                            if (L == 0 && editedChunkCoords.Contains(chunkTargetCoordArray[idx])) SaveToVault(chunkTargetCoordArray[idx], oldCd.densePoolIndex);
+                            if (L == 0 && editedChunkCoords.Contains(chunkTargetCoordArray[idx])) SaveToVault(chunkTargetCoordArray[idx], oldCd.densePoolIndex, idx);
                             
                             freeDenseIndices.Enqueue(oldCd.densePoolIndex);
                             
@@ -524,7 +542,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     if (chunkTargetCoordArray[idx] == coord) {
                         ChunkData oldCd = chunkMapArray[idx];
                         if (oldCd.densePoolIndex != 0xFFFFFFFF) {
-                            if (L == 0 && editedChunkCoords.Contains(coord)) SaveToVault(coord, oldCd.densePoolIndex);
+                            if (L == 0 && editedChunkCoords.Contains(coord)) SaveToVault(coord, oldCd.densePoolIndex, idx);
                             
                             freeDenseIndices.Enqueue(oldCd.densePoolIndex);
                             

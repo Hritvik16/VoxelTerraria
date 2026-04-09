@@ -296,7 +296,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     // --- THE RAM VAULT LOADER ---
                     bool hasCache = (lc.layer == 0) && modifiedChunks.ContainsKey(lc.coord);
                     if (hasCache) {
-                        RestoreFromVault(lc.coord, denseIndex);
+                        RestoreFromVault(lc.coord, denseIndex, idx);
                     }
 
                     pendingJobsArray[dispatchesThisFrame] = new ChunkJobData {

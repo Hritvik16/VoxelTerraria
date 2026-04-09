@@ -322,6 +322,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
     }
 
     public void EditVoxel(Vector3Int globalVoxelPos, uint newMaterial, int brushSize = 0, int brushShape = 0) {
+        WaitForTerrainJobs(); // THE FIX: Wait for background gen to finish before mutating shared pools!
         RequestShadowTickets(globalVoxelPos, brushSize); // THE JIT TRIGGER
         editorDirtyChunks.Clear();
 
@@ -355,6 +356,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
     }
 
     public void DamageVoxel(Vector3Int globalVoxelPos, int damageAmount, int brushSize = 0, int brushShape = 0) {
+        WaitForTerrainJobs(); // THE FIX: Wait for background gen to finish before mutating shared pools!
         RequestShadowTickets(globalVoxelPos, brushSize); // THE JIT TRIGGER
         editorDirtyChunks.Clear();
 

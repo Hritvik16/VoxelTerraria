@@ -349,7 +349,7 @@ namespace VoxelEngine.World
                 
                 tempRawMaterials.Dispose(); packedMaterials.Dispose();
                 localSurfaceMask.Dispose(); localSurfacePrefix.Dispose();
-                localHeights.Dispose(); activeBiomes.Dispose();
+                // THE FIX: Removed double-dispose of localHeights and activeBiomes!
                 return; // JIT Generation complete! Skip the rest of the pipeline!
             }
 
