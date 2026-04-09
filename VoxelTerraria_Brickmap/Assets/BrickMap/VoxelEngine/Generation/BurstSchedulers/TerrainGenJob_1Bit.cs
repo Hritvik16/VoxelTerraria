@@ -341,11 +341,16 @@ namespace VoxelEngine.World
                 }
             }
 
-            // --- NEW: SAVE TO SHADOW RAM ---
-            // THE FIX: Save all 8192 uints!
-            int shadowBase = job.pad2 * 8192;
-            for (int i = 0; i < 8192; i++) {
-                cpuShadowRAMPool[shadowBase + i] = tempRawMaterials[i];
+            // --- THE JIT SHADOW CACHE EXIT ---
+            // If editCount == 2, the CPU just requested a background Shadow Ticket!
+            if (job.editCount == 2) {
+                int shadowBase = job.editStartIndex * 8192;
+                for (int i = 0; i < 8192; i++) cpuShadowRAMPool[shadowBase + i] = tempRawMaterials[i];
+                
+                tempRawMaterials.Dispose(); packedMaterials.Dispose();
+                localSurfaceMask.Dispose(); localSurfacePrefix.Dispose();
+                localHeights.Dispose(); activeBiomes.Dispose();
+                return; // JIT Generation complete! Skip the rest of the pipeline!
             }
 
             // --- NEW: CALCULATE THE PREFIX SUM ---

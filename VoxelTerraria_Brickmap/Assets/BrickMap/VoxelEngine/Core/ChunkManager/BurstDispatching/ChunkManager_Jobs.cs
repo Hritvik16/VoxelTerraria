@@ -41,9 +41,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                 int surfaceCount = persistentJobDataArray[i].editStartIndex; // Burst passed this back!
                 
                 if (surfaceCount > 0) {
-                    if (ticket == 0xFFFFFFFF && freeMaterialIndices.Count > 0) {
-                        ticket = freeMaterialIndices.Dequeue();
+                    if (ticket == 0xFFFFFFFF) {
+                        if (freeMaterialIndices.Count > 0) ticket = freeMaterialIndices.Dequeue();
+                        else ticket = EvictFurthestMaterialTicket(); // THE STEAL
+                        
                         cpuMaterialPointers[mapIndex] = ticket;
+                        ticketToMapIndex[ticket] = mapIndex; // Track it!
                     }
                     if (ticket != 0xFFFFFFFF) {
                         // Copy from Courier (Burst) TO Master CPU Pool

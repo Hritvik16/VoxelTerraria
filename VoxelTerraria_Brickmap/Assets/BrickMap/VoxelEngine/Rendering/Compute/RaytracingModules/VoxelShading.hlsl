@@ -3,6 +3,14 @@ StructuredBuffer<uint> _ChunkMaterialPointers; // NEW: The Sparse Material Ticke
 StructuredBuffer<uint> _SurfaceMaskPool; 
 StructuredBuffer<uint> _SurfacePrefixPool; 
 
+
+// --- NEW: MATCH THE CPU'S NOISE HASH EXACTLY ---
+float Hash_Biome(float3 p) {
+    p = frac(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return frac(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
 // Compressed Memory Lookup via countbits()
 uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, int layer) {
     
@@ -18,14 +26,47 @@ uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, i
 
     uint ticket = _ChunkMaterialPointers[mapIndex];
 
-    // --- THE 1-FRAME FALLBACK ---
-    // If the player blows a hole in a 100% solid chunk, the Courier takes 1-2 frames to fetch a ticket.
-    // During those 2 frames, the GPU mathematically guesses the material to prevent black flashes!
+    // --- THE BIOME-AWARE FALLBACK ---
+    // Mathematically guesses the perfect material to prevent pop-in at extreme render distances!
     if (ticket == 0xFFFFFFFF) {
-        float worldY = voxelPos.y * _ClipmapCenters[layer].w; 
-        if (worldY > 20.0) return 1; // Grass
-        if (worldY > -10.0) return 2; // Dirt
-        return 3;                     // Stone
+        float layerScale = _ClipmapCenters[layer].w;
+        float3 absoluteWorldPos = (baseChunkCoord * 32.0 + voxelPos) * layerScale;
+        
+        // Find the nearest biome anchor (Only executes once per ray hit!)
+        int closestBiome = 0;
+        float minDist = 999999.0;
+        
+        // --- THE FIX: APPLY THE ORGANIC BOUNDARY WARP ---
+        float boundaryWarp = (Hash_Biome(float3(absoluteWorldPos.x, 0, absoluteWorldPos.z) * 0.005) - 0.5) * 150.0;
+
+        for (int b = 0; b < _BiomeAnchorCount; b++) {
+            float dist = distance(absoluteWorldPos.xz, _BiomeAnchors[b].position.xz) + boundaryWarp;
+            if (dist < minDist) {
+                minDist = dist;
+                closestBiome = _BiomeAnchors[b].biomeType;
+            }
+        }
+
+        float worldY = absoluteWorldPos.y;
+        
+        // 0=Forest, 1=Desert, 2=Snow, 3=Jungle, 4=Volcanic
+        if (worldY > 20.0) {
+            if (closestBiome == 1) return 4;  // Desert Sand
+            if (closestBiome == 2) return 7;  // Snow
+            if (closestBiome == 3) return 10; // Jungle Dark Grass
+            if (closestBiome == 4) return 14; // Volcanic Lava
+            return 1; // Default Grass
+        }
+        if (worldY > -10.0) {
+            if (closestBiome == 1) return 5;  // Desert Sandstone
+            if (closestBiome == 2) return 8;  // Snow Ice
+            if (closestBiome == 3) return 12; // Jungle Mud
+            if (closestBiome == 4) return 11; // Volcanic Ash
+            return 2; // Default Dirt
+        }
+        
+        if (closestBiome == 4) return 13; // Volcanic Dark Slate
+        return 3; // Default Stone
     }
     
     // ---------------------------------------------------------

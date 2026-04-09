@@ -151,7 +151,7 @@ MonoBehaviour:
   zenithColor: {r: 0.2, g: 0.4, b: 0.8, a: 1}
   horizonColor: {r: 0.75, g: 0.8, b: 0.85, a: 1}
   sunHaloColor: {r: 1, g: 0.85, b: 0.6, a: 1}
-  hazeDensity: 1.5
+  hazeDensity: 0.01
   directionalSun: {fileID: 1044288757}
   ambientStrength: 0.6
   shadowDarkness: 0.75
@@ -497,7 +497,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &1111590113
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -788,8 +788,8 @@ MonoBehaviour:
   chunkSize: 32
   voxelScale: 0.1
   clipmapLayers: 8
-  renderDistanceXZ: 10
-  renderDistanceY: 7
+  renderDistanceXZ: 14
+  renderDistanceY: 9
   maxConcurrentJobs: 400
   gpuUpdateInterval: 0.05
   worldLoaders:
@@ -805,7 +805,10 @@ MonoBehaviour:
   enableAntFarmSlice: 0
   enableFeatureDebugView: 0
   chunkTargetCoordArray: []
+  maxMaterialTickets: 30000
+  ticketToMapIndex: 
   dynamicMaxChunks: 0
+  maxShadowTickets: 4000
   isTerrainJobRunning: 0
   crosshairData: 0000000000000000000000000000000000000000000000000000000000000000
   globalPalette: {fileID: 11400000, guid: 34120963095ef485ea302ce770ace049, type: 2}

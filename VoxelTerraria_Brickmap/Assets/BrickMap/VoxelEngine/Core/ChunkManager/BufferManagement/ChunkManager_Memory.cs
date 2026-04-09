@@ -115,6 +115,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             // Initialize all pointers to 0xFFFFFFFF (Solid/No Ticket)
             for (int i = 0; i < totalMapCapacity; i++) cpuMaterialPointers[i] = 0xFFFFFFFF;
             materialPointersBuffer.SetData(cpuMaterialPointers);
+
+            ticketToMapIndex = new int[maxMaterialTickets];
+            for (int i = 0; i < maxMaterialTickets; i++) ticketToMapIndex[i] = -1;
             
             surfaceMaskPoolBuffer = new ComputeBuffer(dynamicMaxChunks * 1024, sizeof(uint)); 
             cpuSurfaceMaskPool = new NativeArray<uint>(dynamicMaxChunks * 1024, Allocator.Persistent);
@@ -122,8 +125,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             surfacePrefixPoolBuffer = new ComputeBuffer(dynamicMaxChunks * 1024, sizeof(uint)); 
             cpuSurfacePrefixPool = new NativeArray<uint>(dynamicMaxChunks * 1024, Allocator.Persistent); 
             
-            // THE FIX: 8192 uints = 32,768 voxels (The entire chunk, not just the bottom quarter!)
-            cpuShadowRAMPool = new NativeArray<uint>(dynamicMaxChunks * 8192, Allocator.Persistent);
+            // --- NEW: CAPPED SHADOW RAM ---
+            cpuShadowRAMPool = new NativeArray<uint>(maxShadowTickets * 8192, Allocator.Persistent);
+            freeShadowIndices.Clear();
+            for (uint i = 0; i < maxShadowTickets; i++) freeShadowIndices.Enqueue(i);
+            shadowFifoQueue.Clear();
+            shadowCoordMap.Clear();
             // Allocate the 16-Bit RGB Light Array
             // illuminationPoolBuffer = new ComputeBuffer(dynamicMaxChunks * UINTS_PER_LIGHT_CHUNK, sizeof(uint));
             // cpuIlluminationPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_LIGHT_CHUNK, Allocator.Persistent);

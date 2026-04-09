@@ -118,10 +118,12 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         else cpuDenseChunkPool[poolIndex] &= ~(1u << bitIdx);
 
         // --- NEW: UPDATE GROUND TRUTH SHADOW RAM ---
-        int shadowIndex = (int)(denseIndex * 8192) + (flatIdx >> 2); // THE FIX
-        int shadowShift = (flatIdx & 3) << 3;
-        uint shadowMask = ~(255u << shadowShift);
-        cpuShadowRAMPool[shadowIndex] = (cpuShadowRAMPool[shadowIndex] & shadowMask) | (material << shadowShift);
+        if (shadowCoordMap.TryGetValue(chunkCoord, out uint shadowTicket)) {
+            int shadowIndex = (int)(shadowTicket * 8192) + (flatIdx >> 2); 
+            int shadowShift = (flatIdx & 3) << 3;
+            uint shadowMask = ~(255u << shadowShift);
+            cpuShadowRAMPool[shadowIndex] = (cpuShadowRAMPool[shadowIndex] & shadowMask) | (material << shadowShift);
+        }
 
         // Flag for the Vault!
         editedChunkCoords.Add(chunkCoord);
@@ -159,15 +161,19 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
             uint ticket = cpuMaterialPointers[info.mapIndex];
 
             // If the player edits a solid chunk without a ticket, grab one instantly!
-            if (ticket == 0xFFFFFFFF && freeMaterialIndices.Count > 0) {
-                ticket = freeMaterialIndices.Dequeue();
+            if (ticket == 0xFFFFFFFF) {
+                if (freeMaterialIndices.Count > 0) ticket = freeMaterialIndices.Dequeue();
+                else ticket = EvictFurthestMaterialTicket();
+                
                 cpuMaterialPointers[info.mapIndex] = ticket;
+                ticketToMapIndex[ticket] = info.mapIndex;
             }
             chunkTickets[denseIndex] = ticket;
 
             EditorRebuildJob rebuildJob = new EditorRebuildJob {
                 denseIndex = denseIndex,
-                ticketIndex = ticket, // Pass the ticket to the Job
+                ticketIndex = ticket, 
+                shadowTicketIndex = shadowCoordMap[info.coord], // Fetch the Shadow Ticket
                 cpuDenseChunkPool = cpuDenseChunkPool,
                 cpuShadowRAMPool = cpuShadowRAMPool,
                 cpuMaterialChunkPool = cpuMaterialChunkPool,
@@ -253,7 +259,70 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
 
         editorDirtyChunks.Clear();
     }
+    public void RequestShadowTickets(Vector3Int globalCenter, int brushSize) {
+        Vector3Int minGlobal = globalCenter - new Vector3Int(brushSize, brushSize, brushSize);
+        Vector3Int maxGlobal = globalCenter + new Vector3Int(brushSize, brushSize, brushSize);
+
+        Vector3Int minChunk = new Vector3Int(Mathf.FloorToInt(minGlobal.x / 32f), Mathf.FloorToInt(minGlobal.y / 32f), Mathf.FloorToInt(minGlobal.z / 32f));
+        Vector3Int maxChunk = new Vector3Int(Mathf.FloorToInt(maxGlobal.x / 32f), Mathf.FloorToInt(maxGlobal.y / 32f), Mathf.FloorToInt(maxGlobal.z / 32f));
+
+        int maxPossible = (maxChunk.x - minChunk.x + 1) * (maxChunk.y - minChunk.y + 1) * (maxChunk.z - minChunk.z + 1);
+        NativeArray<ChunkJobData> jitJobData = new NativeArray<ChunkJobData>(maxPossible, Allocator.TempJob);
+        int missingCount = 0;
+
+        for (int cx = minChunk.x; cx <= maxChunk.x; cx++) {
+            for (int cy = minChunk.y; cy <= maxChunk.y; cy++) {
+                for (int cz = minChunk.z; cz <= maxChunk.z; cz++) {
+                    Vector3Int cCoord = new Vector3Int(cx, cy, cz);
+                    
+                    if (!shadowCoordMap.ContainsKey(cCoord)) {
+                        uint ticket;
+                        if (freeShadowIndices.Count > 0) {
+                            ticket = freeShadowIndices.Dequeue();
+                        } else {
+                            Vector3Int evictedCoord = shadowFifoQueue.Dequeue();
+                            ticket = shadowCoordMap[evictedCoord];
+                            shadowCoordMap.Remove(evictedCoord);
+                            UnityEngine.Debug.LogWarning($"[Amnesia Cache] Evicted Shadow RAM for chunk {evictedCoord} to make room for {cCoord}");
+                        }
+                        
+                        shadowFifoQueue.Enqueue(cCoord);
+                        shadowCoordMap[cCoord] = ticket;
+
+                        jitJobData[missingCount] = new ChunkJobData {
+                            worldPos = new Vector4(cx * 32f, cy * 32f, cz * 32f, 0),
+                            layerScale = voxelScale,
+                            editCount = 2, // JIT SHADOW FLAG
+                            editStartIndex = (int)ticket, // TICKET INDEX
+                            mapIndex = 0 
+                        };
+                        missingCount++;
+                    }
+                }
+            }
+        }
+
+        if (missingCount > 0) {
+            VoxelEngine.World.TerrainGenJob_1Bit jitJob = new VoxelEngine.World.TerrainGenJob_1Bit {
+                jobQueue = jitJobData,
+                features = persistentFeatureArray, caverns = persistentCavernArray, tunnels = persistentTunnelArray,
+                denseChunkPool = cpuDenseChunkPool, macroMaskPool = cpuMacroMaskPool, chunkHeights = cpuChunkHeights,
+                jobMaterialUpload = nativeMaterialUpload, cpuSurfaceMaskPool = cpuSurfaceMaskPool,
+                cpuSurfacePrefixPool = cpuSurfacePrefixPool, 
+                cpuShadowRAMPool = cpuShadowRAMPool, // THIS IS WRITTEN TO IN THE JIT
+                featureCount = VoxelEngine.WorldManager.Instance.mapFeatures.Count,
+                cavernCount = Mathf.Min(VoxelEngine.WorldManager.Instance.cavernNodes.Count, 5000),
+                tunnelCount = Mathf.Min(VoxelEngine.WorldManager.Instance.tunnelSplines.Count, 5000),
+                worldSeed = VoxelEngine.WorldManager.Instance.worldSeed,
+                biomes = cpuBiomes, biomeCount = cpuBiomes.IsCreated ? cpuBiomes.Length : 0
+            };
+            jitJob.Schedule(missingCount, 1).Complete(); // Executes instantly on Main Thread!
+        }
+        jitJobData.Dispose();
+    }
+
     public void EditVoxel(Vector3Int globalVoxelPos, uint newMaterial, int brushSize = 0, int brushShape = 0) {
+        RequestShadowTickets(globalVoxelPos, brushSize); // THE JIT TRIGGER
         editorDirtyChunks.Clear();
 
         for (int x = -brushSize; x <= brushSize; x++) {
@@ -286,6 +355,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
     }
 
     public void DamageVoxel(Vector3Int globalVoxelPos, int damageAmount, int brushSize = 0, int brushShape = 0) {
+        RequestShadowTickets(globalVoxelPos, brushSize); // THE JIT TRIGGER
         editorDirtyChunks.Clear();
 
         // 1. THE "DEATH ROW" PASS
@@ -328,7 +398,8 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
 public struct EditorRebuildJob : IJob
 {
     public uint denseIndex;
-    public uint ticketIndex; // NEW: The Sparse Material Ticket
+    public uint ticketIndex; 
+    public uint shadowTicketIndex; // NEW: The Shadow Ticket
     
     [ReadOnly] public NativeArray<uint> cpuDenseChunkPool;
     [ReadOnly] public NativeArray<uint> cpuShadowRAMPool;
@@ -340,7 +411,7 @@ public struct EditorRebuildJob : IJob
     public void Execute()
     {
         uint denseBase = denseIndex * 1024u;
-        int shadowBase = (int)denseIndex * 8192; // THE FIX
+        int shadowBase = (int)shadowTicketIndex * 8192; // THE FIX: Use the Shadow Ticket!
         int maskBase = (int)denseIndex * 1024;
 
         NativeArray<uint> localSurfaceMask = new NativeArray<uint>(1024, Allocator.Temp);

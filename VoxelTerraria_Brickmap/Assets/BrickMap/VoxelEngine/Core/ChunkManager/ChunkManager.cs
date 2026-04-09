@@ -123,7 +123,6 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         public uint[] material;
         public uint[] surface; 
         public uint[] prefix; 
-        public uint[] shadow; // THE FIX: Save the Ground Truth to the Vault!
     }
     public Dictionary<Vector3Int, CachedChunk> modifiedChunks = new Dictionary<Vector3Int, CachedChunk>();
     public HashSet<Vector3Int> editedChunkCoords = new HashSet<Vector3Int>();
@@ -134,15 +133,13 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             mask = new uint[19], 
             material = new uint[4096], 
             surface = new uint[1024],
-            prefix = new uint[1024],
-            shadow = new uint[8192] // THE FIX
+            prefix = new uint[1024]
         };
         NativeArray<uint>.Copy(cpuDenseChunkPool, (int)denseIndex * 1024, cache.shape, 0, 1024);
         NativeArray<uint>.Copy(cpuMacroMaskPool, (int)denseIndex * 19, cache.mask, 0, 19);
         NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)denseIndex * 4096, cache.material, 0, 4096);
         NativeArray<uint>.Copy(cpuSurfaceMaskPool, (int)denseIndex * 1024, cache.surface, 0, 1024);
         NativeArray<uint>.Copy(cpuSurfacePrefixPool, (int)denseIndex * 1024, cache.prefix, 0, 1024); 
-        NativeArray<uint>.Copy(cpuShadowRAMPool, (int)denseIndex * 8192, cache.shadow, 0, 8192); // THE FIX
         modifiedChunks[coord] = cache;
     }
 
@@ -153,7 +150,6 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         NativeArray<uint>.Copy(cache.material, 0, cpuMaterialChunkPool, (int)denseIndex * 4096, 4096);
         NativeArray<uint>.Copy(cache.surface, 0, cpuSurfaceMaskPool, (int)denseIndex * 1024, 1024);
         NativeArray<uint>.Copy(cache.prefix, 0, cpuSurfacePrefixPool, (int)denseIndex * 1024, 1024); 
-        NativeArray<uint>.Copy(cache.shadow, 0, cpuShadowRAMPool, (int)denseIndex * 8192, 8192); // THE FIX
     }
     
     public ChunkData[] chunkMapArray;
@@ -207,10 +203,38 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
     // --- NEW: THE SPARSE MATERIAL CACHE ---
     [Header("Material Cache")]
-    public int maxMaterialTickets = 16384; // Strict Hardware Limit (~250 MB VRAM)
+    public int maxMaterialTickets = 30000; // Increased safely to ~480MB
     public Queue<uint> freeMaterialIndices = new Queue<uint>();
     public NativeArray<uint> cpuMaterialPointers; // Maps mapIndex -> Material Ticket
     public ComputeBuffer materialPointersBuffer;  // The GPU Lookup Table
+    public int[] ticketToMapIndex; // NEW: Tracks who owns which ticket!
+
+    // --- NEW: TOURNAMENT SELECTION EVICTION ---
+    public uint EvictFurthestMaterialTicket() {
+        uint bestTicket = 0;
+        float maxDistSq = -1f;
+        Vector3Int center = primaryAnchorChunks[0];
+        
+        // Check 32 random tickets. O(1) performance, guarantees we steal from the background!
+        for(int i = 0; i < 32; i++) {
+            int randomTicket = UnityEngine.Random.Range(0, maxMaterialTickets);
+            int mIdx = ticketToMapIndex[randomTicket];
+            if (mIdx != -1) {
+                Vector3Int coord = chunkTargetCoordArray[mIdx];
+                float dx = coord.x - center.x; float dy = coord.y - center.y; float dz = coord.z - center.z;
+                float distSq = dx*dx + dy*dy + dz*dz;
+                if (distSq > maxDistSq) {
+                    maxDistSq = distSq;
+                    bestTicket = (uint)randomTicket;
+                }
+            }
+        }
+        
+        int evictedMapIndex = ticketToMapIndex[bestTicket];
+        if (evictedMapIndex != -1) cpuMaterialPointers[evictedMapIndex] = 0xFFFFFFFF;
+        ticketToMapIndex[bestTicket] = -1;
+        return bestTicket;
+    }
 
     public ComputeBuffer surfaceMaskPoolBuffer; 
     public ComputeBuffer[] tempSurfaceUploadBuffers = new ComputeBuffer[2];
@@ -230,7 +254,14 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     public NativeArray<uint> cpuMaterialChunkPool; 
     public NativeArray<uint> cpuSurfaceMaskPool; 
     public NativeArray<uint> cpuSurfacePrefixPool; 
-    public NativeArray<uint> cpuShadowRAMPool; // NEW: The Ground Truth (8192 bytes per chunk)
+    
+    [Header("Shadow RAM Cache")]
+    public int maxShadowTickets = 4000; // ~128MB Strict Cap
+    public Queue<uint> freeShadowIndices = new Queue<uint>();
+    public Queue<Vector3Int> shadowFifoQueue = new Queue<Vector3Int>();
+    public Dictionary<Vector3Int, uint> shadowCoordMap = new Dictionary<Vector3Int, uint>();
+    public NativeArray<uint> cpuShadowRAMPool; // The Ground Truth
+    
     public NativeArray<float> cpuChunkHeights; 
     public NativeArray<BiomeAnchor> cpuBiomes; // NEW: Burst Biome Math
     private ComputeBuffer chunkHeightBuffer;   // NEW
@@ -476,7 +507,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                             
                             // --- NEW: RETURN THE TICKET ---
                             if (cpuMaterialPointers[idx] != 0xFFFFFFFF) {
-                                freeMaterialIndices.Enqueue(cpuMaterialPointers[idx]);
+                                uint t = cpuMaterialPointers[idx];
+                                freeMaterialIndices.Enqueue(t);
+                                ticketToMapIndex[t] = -1; // Clear tracking
                                 cpuMaterialPointers[idx] = 0xFFFFFFFF;
                             }
                             
@@ -497,7 +530,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                             
                             // --- NEW: RETURN THE TICKET ---
                             if (cpuMaterialPointers[idx] != 0xFFFFFFFF) {
-                                freeMaterialIndices.Enqueue(cpuMaterialPointers[idx]);
+                                uint t = cpuMaterialPointers[idx];
+                                freeMaterialIndices.Enqueue(t);
+                                ticketToMapIndex[t] = -1; // Clear tracking
                                 cpuMaterialPointers[idx] = 0xFFFFFFFF;
                             }
                             
