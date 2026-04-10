@@ -13,6 +13,7 @@ float Hash_Biome(float3 p) {
 
 // Compressed Memory Lookup via countbits()
 uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, int layer) {
+    uint returnMat = 0; // Explicitly initialized to appease Apple Metal
     
     // 1. Calculate the mapIndex to find our Ticket
     int baseRadXZ = (int)_RenderBounds.x;
@@ -27,16 +28,12 @@ uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, i
     uint ticket = _ChunkMaterialPointers[mapIndex];
 
     // --- THE BIOME-AWARE FALLBACK ---
-    // Mathematically guesses the perfect material to prevent pop-in at extreme render distances!
     if (ticket == 0xFFFFFFFF) {
         float layerScale = _ClipmapCenters[layer].w;
         float3 absoluteWorldPos = (baseChunkCoord * 32.0 + voxelPos) * layerScale;
         
-        // Find the nearest biome anchor (Only executes once per ray hit!)
         int closestBiome = 0;
         float minDist = 999999.0;
-        
-        // --- THE FIX: APPLY THE ORGANIC BOUNDARY WARP ---
         float boundaryWarp = (Hash_Biome(float3(absoluteWorldPos.x, 0, absoluteWorldPos.z) * 0.005) - 0.5) * 150.0;
 
         for (int b = 0; b < _BiomeAnchorCount; b++) {
@@ -49,65 +46,53 @@ uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, i
 
         float worldY = absoluteWorldPos.y;
         
-        // 0=Forest, 1=Desert, 2=Snow, 3=Jungle, 4=Volcanic
         if (worldY > 20.0) {
-            if (closestBiome == 1) return 4;  // Desert Sand
-            if (closestBiome == 2) return 7;  // Snow
-            if (closestBiome == 3) return 10; // Jungle Dark Grass
-            if (closestBiome == 4) return 14; // Volcanic Lava
-            return 1; // Default Grass
+            if (closestBiome == 1) returnMat = 4;  // Desert Sand
+            else if (closestBiome == 2) returnMat = 7;  // Snow
+            else if (closestBiome == 3) returnMat = 10; // Jungle Dark Grass
+            else if (closestBiome == 4) returnMat = 14; // Volcanic Lava
+            else returnMat = 1; // Default Grass
         }
-        if (worldY > -10.0) {
-            if (closestBiome == 1) return 5;  // Desert Sandstone
-            if (closestBiome == 2) return 8;  // Snow Ice
-            if (closestBiome == 3) return 12; // Jungle Mud
-            if (closestBiome == 4) return 11; // Volcanic Ash
-            return 2; // Default Dirt
+        else if (worldY > -10.0) {
+            if (closestBiome == 1) returnMat = 5;  // Desert Sandstone
+            else if (closestBiome == 2) returnMat = 8;  // Snow Ice
+            else if (closestBiome == 3) returnMat = 12; // Jungle Mud
+            else if (closestBiome == 4) returnMat = 11; // Volcanic Ash
+            else returnMat = 2; // Default Dirt
+        } else {
+            if (closestBiome == 4) returnMat = 13; // Volcanic Dark Slate
+            else returnMat = 3; // Default Stone
         }
+    } else {
+        uint localX = (uint)(voxelPos.x & 31);
+        uint localY = (uint)(voxelPos.y & 31);
+        uint localZ = (uint)(voxelPos.z & 31);
         
-        if (closestBiome == 4) return 13; // Volcanic Dark Slate
-        return 3; // Default Stone
+        uint flatIdx = localX + (localY << 5) + (localZ << 10);
+        
+        uint surfaceUintIdx = flatIdx >> 5;
+        uint bitIdx = flatIdx & 31;
+        
+        uint prefixCount = _SurfacePrefixPool[denseBase + surfaceUintIdx];
+        uint finalMask = _SurfaceMaskPool[denseBase + surfaceUintIdx];
+        
+        uint maskedBits = finalMask & ~(0xFFFFFFFFu << bitIdx);
+        uint surfaceCount = prefixCount + countbits(maskedBits);
+        
+        uint matUintIdx = surfaceCount >> 2;
+        uint byteOffset = (surfaceCount & 3) << 3;
+        
+        uint packedMaterials = _MaterialChunkPool[(ticket * 4096) + matUintIdx];
+        returnMat = (packedMaterials >> byteOffset) & 0xFF;
     }
-    
-    // ---------------------------------------------------------
-    // --- PERFORMANCE DEBUG TOGGLE ---
-    // Uncomment 'return 1;' below to completely bypass the 2GB VRAM Vault lookup.
-    // If your frame rate instantly jumps from 60 FPS back to 111 FPS, 
-    // it mathematically proves the _MaterialChunkPool PCI-e memory bandwidth 
-    // is bottlenecking the ALU cores!
-    // ---------------------------------------------------------
-    // return 1; // 1 = Grass
-    
-    uint localX = (uint)(voxelPos.x & 31);
-    uint localY = (uint)(voxelPos.y & 31);
-    uint localZ = (uint)(voxelPos.z & 31);
-    
-    uint flatIdx = localX + (localY << 5) + (localZ << 10);
-    
-    uint surfaceUintIdx = flatIdx >> 5;
-    uint bitIdx = flatIdx & 31;
-    
-    // --- O(1) PREFIX SUM LOOKUP ---
-    // Zero Loops. Zero Compiler Bugs. Instant Math.
-    uint prefixCount = _SurfacePrefixPool[denseBase + surfaceUintIdx];
-    uint finalMask = _SurfaceMaskPool[denseBase + surfaceUintIdx];
-    
-    // THE M1 SAFE BITMASK: Guaranteed not to overflow Apple Silicon registers
-    uint maskedBits = finalMask & ~(0xFFFFFFFFu << bitIdx);
-    uint surfaceCount = prefixCount + countbits(maskedBits);
-    // --- COMPRESSED ARRAY LOOKUP ---
-    // surfaceCount is now our exact 1D index on the compacted bookshelf!
-    uint matUintIdx = surfaceCount >> 2;
-    uint byteOffset = (surfaceCount & 3) << 3;
-    // THE FIX: Read from the Sparse Ticket, NOT the dense geometry!
-    // 4096 is the size of the array, so we multiply the ticket by 4096.
-    uint packedMaterials = _MaterialChunkPool[(ticket * 4096) + matUintIdx];
-    return (packedMaterials >> byteOffset) & 0xFF;
+
+    return returnMat;
 }
 
-// --- NEW: THE EMISSIVE FAST PATH ---
-// Safely fetches the Material ID for AO and Emissive checks, utilizing the Fast-Path where possible.
+// --- THE EMISSIVE FAST PATH (Metal-Safe Version) ---
 uint FastGetMaterial(int3 globalPos, int3 baseChunkCoord, uint baseDenseBase, int layer) {
+    uint returnMat = 0; // Explicitly initialized to appease Apple Metal
+
     int3 chunkCoord = globalPos >> 5;
     int3 localPos = globalPos & 31;
     int flatIdx = localPos.x + (localPos.y << 5) + (localPos.z << 10);
@@ -115,20 +100,22 @@ uint FastGetMaterial(int3 globalPos, int3 baseChunkCoord, uint baseDenseBase, in
     if (all(chunkCoord == baseChunkCoord)) {
         // FAST PATH: Inside the exact same chunk
         uint matData = _DenseChunkPool[baseDenseBase + (flatIdx >> 5)];
-        if ((matData & (1u << (flatIdx & 31))) == 0) return 0; // It's Air
-        return GetProceduralMaterial(localPos, baseChunkCoord, baseDenseBase, layer);
-    }
-    
-    // SLOW PATH: We crossed a chunk boundary into a neighbor
-    ChunkData cd = GetChunkData(chunkCoord, layer);
-    if (cd.packedState == 1) {
-        uint denseBase = cd.densePoolIndex * 1024u;
-        uint matData = _DenseChunkPool[denseBase + (flatIdx >> 5)];
         if ((matData & (1u << (flatIdx & 31))) != 0) {
-            return GetProceduralMaterial(localPos, chunkCoord, denseBase, layer);
+            returnMat = GetProceduralMaterial(localPos, baseChunkCoord, baseDenseBase, layer);
+        }
+    } else {
+        // SLOW PATH: We crossed a chunk boundary into a neighbor
+        ChunkData cd = GetChunkData(chunkCoord, layer);
+        if (cd.packedState == 1) {
+            uint denseBase = cd.densePoolIndex * 1024u;
+            uint matData = _DenseChunkPool[denseBase + (flatIdx >> 5)];
+            if ((matData & (1u << (flatIdx & 31))) != 0) {
+                returnMat = GetProceduralMaterial(localPos, chunkCoord, denseBase, layer);
+            }
         }
     }
-    return 0; // Air or invalid chunk
+    
+    return returnMat;
 }
 
 #if !DUAL_STATE_1BIT
