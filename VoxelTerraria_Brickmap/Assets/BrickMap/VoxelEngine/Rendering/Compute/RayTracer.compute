@@ -180,16 +180,26 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                 faceUV = localHitPos.xy;
             }
 
-            // USE THE FAST-PATH FOR ALL 8 NEIGHBORS
-            int s_m1 = FastIsSolid1Bit(faceAirPos - t1, baseChunkCoord, denseBase, layer);
-            int s_p1 = FastIsSolid1Bit(faceAirPos + t1, baseChunkCoord, denseBase, layer);
-            int s_m2 = FastIsSolid1Bit(faceAirPos - t2, baseChunkCoord, denseBase, layer);
-            int s_p2 = FastIsSolid1Bit(faceAirPos + t2, baseChunkCoord, denseBase, layer);
+            // USE THE FAST-PATH FOR ALL 8 NEIGHBORS TO GET MATERIALS
+            uint m_m1 = FastGetMaterial(faceAirPos - t1, baseChunkCoord, denseBase, layer);
+            uint m_p1 = FastGetMaterial(faceAirPos + t1, baseChunkCoord, denseBase, layer);
+            uint m_m2 = FastGetMaterial(faceAirPos - t2, baseChunkCoord, denseBase, layer);
+            uint m_p2 = FastGetMaterial(faceAirPos + t2, baseChunkCoord, denseBase, layer);
 
-            int d_mm = FastIsSolid1Bit(faceAirPos - t1 - t2, baseChunkCoord, denseBase, layer);
-            int d_pm = FastIsSolid1Bit(faceAirPos + t1 - t2, baseChunkCoord, denseBase, layer);
-            int d_mp = FastIsSolid1Bit(faceAirPos - t1 + t2, baseChunkCoord, denseBase, layer);
-            int d_pp = FastIsSolid1Bit(faceAirPos + t1 + t2, baseChunkCoord, denseBase, layer);
+            uint m_mm = FastGetMaterial(faceAirPos - t1 - t2, baseChunkCoord, denseBase, layer);
+            uint m_pm = FastGetMaterial(faceAirPos + t1 - t2, baseChunkCoord, denseBase, layer);
+            uint m_mp = FastGetMaterial(faceAirPos - t1 + t2, baseChunkCoord, denseBase, layer);
+            uint m_pp = FastGetMaterial(faceAirPos + t1 + t2, baseChunkCoord, denseBase, layer);
+
+            // Convert to boolean solids (1 or 0) for standard Ambient Occlusion
+            int s_m1 = m_m1 > 0 ? 1 : 0;
+            int s_p1 = m_p1 > 0 ? 1 : 0;
+            int s_m2 = m_m2 > 0 ? 1 : 0;
+            int s_p2 = m_p2 > 0 ? 1 : 0;
+            int d_mm = m_mm > 0 ? 1 : 0;
+            int d_pm = m_pm > 0 ? 1 : 0;
+            int d_mp = m_mp > 0 ? 1 : 0;
+            int d_pp = m_pp > 0 ? 1 : 0;
 
             // Calculate AO for the 4 corners (0.0 = dark, 1.0 = bright)
             #define VERTEX_AO(s1, s2, d) ((s1 && s2) ? 0.0 : (3.0 - (s1 + s2 + d)) / 3.0)
@@ -198,37 +208,58 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             float c01 = VERTEX_AO(s_m1, s_p2, d_mp);
             float c11 = VERTEX_AO(s_p1, s_p2, d_pp);
 
+            // Calculate Emissive Light for the 4 corners
+            #define IS_EMISSIVE(mat) (mat == 14 ? 1.0 : 0.0) // 14 = Lava
+            float e00 = max(IS_EMISSIVE(m_m1), max(IS_EMISSIVE(m_m2), IS_EMISSIVE(m_mm)));
+            float e10 = max(IS_EMISSIVE(m_p1), max(IS_EMISSIVE(m_m2), IS_EMISSIVE(m_pm)));
+            float e01 = max(IS_EMISSIVE(m_m1), max(IS_EMISSIVE(m_p2), IS_EMISSIVE(m_mp)));
+            float e11 = max(IS_EMISSIVE(m_p1), max(IS_EMISSIVE(m_p2), IS_EMISSIVE(m_pp)));
+
             // Bilinear blend across the voxel face
             float bottomAO = lerp(c00, c10, faceUV.x);
             float topAO    = lerp(c01, c11, faceUV.x);
             float vao      = lerp(bottomAO, topAO, faceUV.y);
 
+            float bottomGlow = lerp(e00, e10, faceUV.x);
+            float topGlow    = lerp(e01, e11, faceUV.x);
+            float emissiveGlow = lerp(bottomGlow, topGlow, faceUV.y);
+
             // --- THE VAO & LIGHTING FIX ---
-            vao = smoothstep(0.0, 1.0, vao); 
-            vao = pow(vao, 1.2); // Expand mid-tones of shadows
-            vao = lerp(0.15, 1.0, vao); // Deepen tight corners (15% instead of 40%)
+            vao = smoothstep(0.0, 1.0, vao);
+            vao = pow(vao, 1.2); 
+            vao = lerp(0.15, 1.0, vao); 
+
+            // --- NEW: DYNAMIC EMISSIVE INJECTION ---
+            // Use the RED base from your YAML for the neighbor bleed
+            float3 glowColor = float3(0.9, 0.05, 0.09) * emissiveGlow * 2.0; 
+            
+            // If the block ITSELF has an emission value in the Material Palette, use its exact color!
+            if (matData.emission > 0.0) {
+                // Multiplied by 2.0 to make it glow without blowing out to white/yellow
+                glowColor = matData.albedo.rgb * (matData.emission * 2.0); 
+            }
 
             // --- 1-BIT MACRO SHADOWS & AMBIENT BOUNCE ---
             Ray shadowRay;
             float3 airBlockPos = finalBlockPos + normal;
             shadowRay.origin = (airBlockPos * finalVoxelSize) + (finalVoxelSize * 0.5f);
             shadowRay.direction = _SunDir.xyz;
-
             float s_t = 0; int3 s_mask = 0; uint s_mat = 0; 
             float s_size = 1.0; float3 s_pos = 0;
             int s_steps = 0;
             
             bool inShadow = TraceVoxelRay(shadowRay, 60.0, true, s_t, s_mask, s_mat, s_size, s_pos, s_steps);
-
+            
+            // Ambient light should be the ONLY light when in shadow
             float3 ambientColor = _HorizonColor.rgb * _AmbientStrength;
             float sunExposure = inShadow ? (1.0 - _ShadowDarkness) : 1.0;
             
-            // Lowered direct multiplier to 1.5 to prevent washing out colors
-            float3 directLight = (sun_light * 1.5 + 0.2) * sunExposure * _SunHaloColor.rgb;
-            
+            // THE FIX: Removed the "+ 0.2" math hack. Direct light can now drop to absolute ZERO.
+            float3 directLight = (sun_light * 1.5) * sunExposure * _SunHaloColor.rgb;
             float softenedFaceShade = lerp(0.4, 1.0, faceShade);
             
-            float3 colorWithLight = baseColor * softenedFaceShade * ((directLight + ambientColor) * vao);
+            // Emissive glow is additive and ignores ambient shadows
+            float3 colorWithLight = (baseColor * softenedFaceShade * ((directLight + ambientColor) * vao)) + glowColor;
         #else
         // --- 32-BIT BRICKMAP RENDERING ---
             uint mat; float r_light, g_light, b_light, sun_light; uint bakedAO_mask;

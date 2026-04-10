@@ -99,12 +99,36 @@ uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, i
     // surfaceCount is now our exact 1D index on the compacted bookshelf!
     uint matUintIdx = surfaceCount >> 2;
     uint byteOffset = (surfaceCount & 3) << 3;
-    
     // THE FIX: Read from the Sparse Ticket, NOT the dense geometry!
     // 4096 is the size of the array, so we multiply the ticket by 4096.
     uint packedMaterials = _MaterialChunkPool[(ticket * 4096) + matUintIdx];
-    
     return (packedMaterials >> byteOffset) & 0xFF;
+}
+
+// --- NEW: THE EMISSIVE FAST PATH ---
+// Safely fetches the Material ID for AO and Emissive checks, utilizing the Fast-Path where possible.
+uint FastGetMaterial(int3 globalPos, int3 baseChunkCoord, uint baseDenseBase, int layer) {
+    int3 chunkCoord = globalPos >> 5;
+    int3 localPos = globalPos & 31;
+    int flatIdx = localPos.x + (localPos.y << 5) + (localPos.z << 10);
+
+    if (all(chunkCoord == baseChunkCoord)) {
+        // FAST PATH: Inside the exact same chunk
+        uint matData = _DenseChunkPool[baseDenseBase + (flatIdx >> 5)];
+        if ((matData & (1u << (flatIdx & 31))) == 0) return 0; // It's Air
+        return GetProceduralMaterial(localPos, baseChunkCoord, baseDenseBase, layer);
+    }
+    
+    // SLOW PATH: We crossed a chunk boundary into a neighbor
+    ChunkData cd = GetChunkData(chunkCoord, layer);
+    if (cd.packedState == 1) {
+        uint denseBase = cd.densePoolIndex * 1024u;
+        uint matData = _DenseChunkPool[denseBase + (flatIdx >> 5)];
+        if ((matData & (1u << (flatIdx & 31))) != 0) {
+            return GetProceduralMaterial(localPos, chunkCoord, denseBase, layer);
+        }
+    }
+    return 0; // Air or invalid chunk
 }
 
 #if !DUAL_STATE_1BIT
