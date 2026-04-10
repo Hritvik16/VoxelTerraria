@@ -11,6 +11,18 @@ float4 _SunHaloColor;
 float _HazeDensity;
 float _AmbientStrength;
 float _ShadowDarkness;
+
+// --- POINT LIGHTS ---
+struct TorchLight {
+    float3 position;
+    float radius;
+    float3 color;
+    float intensity;
+};
+
+StructuredBuffer<TorchLight> _TorchBuffer;
+int _TorchCount;
+
 #include "TerrainMath.hlsl" 
 
 #include "RaytracingModules/VoxelDataStructures.hlsl"
@@ -241,25 +253,62 @@ void CSMain (uint3 id : SV_DispatchThreadID)
 
             // --- 1-BIT MACRO SHADOWS & AMBIENT BOUNCE ---
             Ray shadowRay;
-            float3 airBlockPos = finalBlockPos + normal;
-            shadowRay.origin = (airBlockPos * finalVoxelSize) + (finalVoxelSize * 0.5f);
+            // THE MATH FIX: Start the ray exactly at the world hit position, pushed out by 1.5 voxels along the normal
+            shadowRay.origin = hitWorldPos + (normal * _VoxelScale * 1.5);
             shadowRay.direction = _SunDir.xyz;
+            
             float s_t = 0; int3 s_mask = 0; uint s_mat = 0; 
-            float s_size = 1.0; float3 s_pos = 0;
-            int s_steps = 0;
+            float s_size = 1.0; float3 s_pos = 0; int s_steps = 0;
             
             bool inShadow = TraceVoxelRay(shadowRay, 60.0, true, s_t, s_mask, s_mat, s_size, s_pos, s_steps);
             
-            // Ambient light should be the ONLY light when in shadow
             float3 ambientColor = _HorizonColor.rgb * _AmbientStrength;
             float sunExposure = inShadow ? (1.0 - _ShadowDarkness) : 1.0;
-            
-            // THE FIX: Removed the "+ 0.2" math hack. Direct light can now drop to absolute ZERO.
             float3 directLight = (sun_light * 1.5) * sunExposure * _SunHaloColor.rgb;
             float softenedFaceShade = lerp(0.4, 1.0, faceShade);
+
+            // --- DYNAMIC TORCH LOOP ---
+            float3 dynamicLight = 0;
             
-            // Emissive glow is additive and ignores ambient shadows
-            float3 colorWithLight = (baseColor * softenedFaceShade * ((directLight + ambientColor) * vao)) + glowColor;
+            float3 rayStartPos = hitWorldPos + (normal * finalVoxelSize * 0.5);
+            
+            for (int i = 0; i < _TorchCount; i++) {
+                // Read the whole struct at once
+                TorchLight torch = _TorchBuffer[i];
+                
+                float3 lightVector = torch.position - rayStartPos;
+                float distToTorch = length(lightVector);
+                
+                if (distToTorch < torch.radius) {
+                    float3 lightDir = lightVector / distToTorch; 
+                    float NdotL = max(0.0, dot(normal, lightDir));
+                    
+                    if (NdotL > 0.01) {
+                        Ray torchRay;
+                        torchRay.origin = rayStartPos;
+                        torchRay.direction = lightDir;
+                        
+                        float t_t = 0; int3 t_mask = 0; uint t_mat = 0; 
+                        float t_size = 1.0; float3 t_pos = 0; int t_steps = 0;
+                        
+                        float traceDist = max(0.0, distToTorch - (finalVoxelSize * 0.5));
+                        
+                        bool lightBlocked = TraceVoxelRay(torchRay, traceDist, true, t_t, t_mask, t_mat, t_size, t_pos, t_steps);
+                        
+                        if (!lightBlocked) {
+                            float attenuation = saturate(1.0 - (distToTorch / torch.radius));
+                            attenuation = smoothstep(0.0, 1.0, attenuation); 
+                            
+                            // THE TRUE FIX: Use the specific Torch Color and Torch Intensity!
+                            dynamicLight += torch.color * (attenuation * NdotL * torch.intensity); 
+                        }
+                    }
+                }
+            }
+
+            // --- FINAL BLEND ---
+            float3 totalLight = directLight + ambientColor + dynamicLight;
+            float3 colorWithLight = (baseColor * softenedFaceShade * (totalLight * vao)) + glowColor;
         #else
         // --- 32-BIT BRICKMAP RENDERING ---
             uint mat; float r_light, g_light, b_light, sun_light; uint bakedAO_mask;
