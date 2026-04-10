@@ -294,9 +294,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     safeRootIndex += (uint)(chunkIndexInLayer * siloCap);
 
                     // --- THE RAM VAULT LOADER ---
-                    bool hasCache = (lc.layer == 0) && modifiedChunks.ContainsKey(lc.coord);
+                    ChunkHashKey newKey = new ChunkHashKey { layer = lc.layer, coord = lc.coord };
+                    bool hasCache = modifiedChunks.ContainsKey(newKey);
                     if (hasCache) {
-                        RestoreFromVault(lc.coord, denseIndex, idx);
+                        RestoreFromVault(idx, denseIndex, newKey);
                     }
 
                     pendingJobsArray[dispatchesThisFrame] = new ChunkJobData {

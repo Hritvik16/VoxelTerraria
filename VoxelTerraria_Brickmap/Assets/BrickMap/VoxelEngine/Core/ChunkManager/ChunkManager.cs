@@ -116,6 +116,13 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     }
     private ChunkPriorityComparer chunkSorter = new ChunkPriorityComparer();
 
+    public struct ChunkHashKey : System.IEquatable<ChunkHashKey> {
+        public int layer;
+        public Vector3Int coord;
+        public bool Equals(ChunkHashKey other) => layer == other.layer && coord.Equals(other.coord);
+        public override int GetHashCode() => System.HashCode.Combine(layer, coord);
+    }
+
     // --- THE RAM VAULT ---
     public struct CachedChunk {
         public uint[] shape;
@@ -124,10 +131,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         public uint[] surface; 
         public uint[] prefix; 
     }
-    public Dictionary<Vector3Int, CachedChunk> modifiedChunks = new Dictionary<Vector3Int, CachedChunk>();
-    public HashSet<Vector3Int> editedChunkCoords = new HashSet<Vector3Int>();
+    public Dictionary<ChunkHashKey, CachedChunk> modifiedChunks = new Dictionary<ChunkHashKey, CachedChunk>();
+    public HashSet<ChunkHashKey> editedChunkCoords = new HashSet<ChunkHashKey>();
 
-    public void SaveToVault(Vector3Int coord, uint denseIndex, int mapIndex) {
+    public void SaveToVault(int mapIndex, uint denseIndex, ChunkHashKey key) {
         CachedChunk cache = new CachedChunk { 
             shape = new uint[1024], 
             mask = new uint[19], 
@@ -148,11 +155,11 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
         NativeArray<uint>.Copy(cpuSurfaceMaskPool, (int)denseIndex * 1024, cache.surface, 0, 1024);
         NativeArray<uint>.Copy(cpuSurfacePrefixPool, (int)denseIndex * 1024, cache.prefix, 0, 1024); 
-        modifiedChunks[coord] = cache;
+        modifiedChunks[key] = cache;
     }
 
-    public void RestoreFromVault(Vector3Int coord, uint denseIndex, int mapIndex) {
-        CachedChunk cache = modifiedChunks[coord];
+    public void RestoreFromVault(int mapIndex, uint denseIndex, ChunkHashKey key) {
+        CachedChunk cache = modifiedChunks[key];
         NativeArray<uint>.Copy(cache.shape, 0, cpuDenseChunkPool, (int)denseIndex * 1024, 1024);
         NativeArray<uint>.Copy(cache.mask, 0, cpuMacroMaskPool, (int)denseIndex * 19, 19);
         
@@ -276,8 +283,8 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     [Header("Shadow RAM Cache")]
     public int maxShadowTickets = 4000; // ~128MB Strict Cap
     public Queue<uint> freeShadowIndices = new Queue<uint>();
-    public Queue<Vector3Int> shadowFifoQueue = new Queue<Vector3Int>();
-    public Dictionary<Vector3Int, uint> shadowCoordMap = new Dictionary<Vector3Int, uint>();
+    public Queue<ChunkHashKey> shadowFifoQueue = new Queue<ChunkHashKey>();
+    public Dictionary<ChunkHashKey, uint> shadowCoordMap = new Dictionary<ChunkHashKey, uint>();
     public NativeArray<uint> cpuShadowRAMPool; // The Ground Truth
     
     public NativeArray<float> cpuChunkHeights; 
@@ -492,6 +499,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
         // The Radar Dish: Sweeps 4,000 coordinates per frame (~1.5s for a full 100m scan)
         int radarSpeed = 4000;
+        bool unloadedChunks = false; // THE FIX: Track if we recycled any memory this frame
         
         // THE FIX: Pause the radar sweep if the background thread is currently locking the master arrays!
         if (!isTerrainJobRunning) {
@@ -522,7 +530,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                         if (chunkTargetCoordArray[idx] != coord) {
                             ChunkData oldCd = chunkMapArray[idx];
                             if (oldCd.densePoolIndex != 0xFFFFFFFF) {
-                                if (L == 0 && editedChunkCoords.Contains(chunkTargetCoordArray[idx])) SaveToVault(chunkTargetCoordArray[idx], oldCd.densePoolIndex, idx);
+                                Vector3Int oldCoord = chunkTargetCoordArray[idx];
+                                ChunkHashKey oldKey = new ChunkHashKey { layer = L, coord = oldCoord };
+                                if (editedChunkCoords.Contains(oldKey)) SaveToVault(idx, oldCd.densePoolIndex, oldKey);
                                 
                                 freeDenseIndices.Enqueue(oldCd.densePoolIndex);
                                 
@@ -537,6 +547,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                                 oldCd.packedState = 0; oldCd.densePoolIndex = 0xFFFFFFFF; 
                                 // oldCd.position = new Vector4(-99999f, -99999f, -99999f, 0f); 
                                 chunkMapArray[idx] = oldCd;
+                                unloadedChunks = true; // THE FIX: Flag the GPU for an update!
                             }
                             chunkTargetCoordArray[idx] = coord; 
                             generationQueues[L].Add(new LayerCoord { layer = L, coord = coord });
@@ -545,7 +556,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                         if (chunkTargetCoordArray[idx] == coord) {
                             ChunkData oldCd = chunkMapArray[idx];
                             if (oldCd.densePoolIndex != 0xFFFFFFFF) {
-                                if (L == 0 && editedChunkCoords.Contains(coord)) SaveToVault(coord, oldCd.densePoolIndex, idx);
+                                Vector3Int oldCoord = chunkTargetCoordArray[idx];
+                                ChunkHashKey oldKey = new ChunkHashKey { layer = L, coord = oldCoord };
+                                if (editedChunkCoords.Contains(oldKey)) SaveToVault(idx, oldCd.densePoolIndex, oldKey);
                                 
                                 freeDenseIndices.Enqueue(oldCd.densePoolIndex);
                                 
@@ -560,12 +573,17 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                                 oldCd.packedState = 0; oldCd.densePoolIndex = 0xFFFFFFFF; 
                                 // oldCd.position = new Vector4(-99999f, -99999f, -99999f, 0f); 
                                 chunkMapArray[idx] = oldCd;
+                                unloadedChunks = true; // THE FIX: Flag the GPU for an update!
                             }
                             chunkTargetCoordArray[idx] = new Vector3Int(-99999, -99999, -99999);
                         }
                     }
                 }
             }
+            
+            // THE FIX: If we recycled ANY memory, blast the updated map to the GPU instantly!
+            // This physically deletes the dangling pointers, curing the memory corruption permanently.
+            if (unloadedChunks) chunkMapBuffer.SetData(chunkMapArray);
         } // <-- THE FIX: Closes the radar loop
 
         // 3. UPDATE SHADER BINDINGS

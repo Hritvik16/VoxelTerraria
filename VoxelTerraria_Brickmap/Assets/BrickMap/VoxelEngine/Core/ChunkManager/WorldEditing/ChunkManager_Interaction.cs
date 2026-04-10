@@ -10,6 +10,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
     private struct EditedChunkInfo {
         public Vector3Int coord;
         public int mapIndex;
+        public int layer; // ADDED: Required to look up the shadow ticket later!
     }
     
     private Dictionary<uint, EditedChunkInfo> editorDirtyChunks = new Dictionary<uint, EditedChunkInfo>();
@@ -68,15 +69,26 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
     }
 
     // 100% CPU-Driven Math: Guarantees Physics, Visuals, and Persistence never desync!
-    private uint TrackEditOnCPU(Vector3Int globalPos, uint material, out Vector3Int outChunkCoord, out int outMapIndex) {
+    private uint TrackEditOnCPU(Vector3Int globalPos, uint material, int layer, out Vector3Int outChunkCoord, out int outMapIndex) {
+        int scale = 1 << layer;
+        
+        // THE FIX: Apply Half-Scale Bias to center the LOD expansion and prevent sky-protrusion
+        float bias = (scale - 1) * 0.5f; 
+        
+        Vector3Int mapPos = new Vector3Int(
+            Mathf.FloorToInt((globalPos.x + bias) / (float)scale),
+            Mathf.FloorToInt((globalPos.y + bias) / (float)scale),
+            Mathf.FloorToInt((globalPos.z + bias) / (float)scale)
+        );
+
         Vector3Int chunkCoord = new Vector3Int(
-            Mathf.FloorToInt(globalPos.x / 32f),
-            Mathf.FloorToInt(globalPos.y / 32f),
-            Mathf.FloorToInt(globalPos.z / 32f)
+            Mathf.FloorToInt(mapPos.x / 32f),
+            Mathf.FloorToInt(mapPos.y / 32f),
+            Mathf.FloorToInt(mapPos.z / 32f)
         );
         outChunkCoord = chunkCoord;
 
-        int idx = GetMapIndex(0, chunkCoord);
+        int idx = GetMapIndex(layer, chunkCoord);
         outMapIndex = idx;
 
         if (idx < 0 || idx >= totalMapCapacity || chunkTargetCoordArray[idx] != chunkCoord) return 0xFFFFFFFF;
@@ -102,9 +114,9 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
             for(int i = 0; i < 19; i++) cpuMacroMaskPool[maskOffset + i] = 0;
         }
 
-        int localX = globalPos.x - (chunkCoord.x * 32);
-        int localY = globalPos.y - (chunkCoord.y * 32);
-        int localZ = globalPos.z - (chunkCoord.z * 32);
+        int localX = mapPos.x - (chunkCoord.x * 32);
+        int localY = mapPos.y - (chunkCoord.y * 32);
+        int localZ = mapPos.z - (chunkCoord.z * 32);
 
         if (localX < 0 || localX >= 32 || localY < 0 || localY >= 32 || localZ < 0 || localZ >= 32) return 0xFFFFFFFF;
 
@@ -118,7 +130,8 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         else cpuDenseChunkPool[poolIndex] &= ~(1u << bitIdx);
 
         // --- NEW: UPDATE GROUND TRUTH SHADOW RAM ---
-        if (shadowCoordMap.TryGetValue(chunkCoord, out uint shadowTicket)) {
+        ChunkHashKey shadowKey = new ChunkHashKey { layer = layer, coord = chunkCoord };
+        if (shadowCoordMap.TryGetValue(shadowKey, out uint shadowTicket)) {
             int shadowIndex = (int)(shadowTicket * 8192) + (flatIdx >> 2); 
             int shadowShift = (flatIdx & 3) << 3;
             uint shadowMask = ~(255u << shadowShift);
@@ -126,7 +139,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         }
 
         // Flag for the Vault!
-        editedChunkCoords.Add(chunkCoord);
+        editedChunkCoords.Add(shadowKey);
 
         // 3. Lightning Fast O(1) Shadow Mask Updates
         if (material > 0) {
@@ -170,10 +183,16 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
             }
             chunkTickets[denseIndex] = ticket;
 
+            ChunkHashKey key = new ChunkHashKey { layer = info.layer, coord = info.coord };
+            
+            // THE FIX: Safely extract the ticket. If the brush hits a boundary chunk 
+            // that the JIT trigger missed, we fallback to 0 instead of crashing!
+            uint shadowTicket = 0;
+            shadowCoordMap.TryGetValue(key, out shadowTicket);
             EditorRebuildJob rebuildJob = new EditorRebuildJob {
                 denseIndex = denseIndex,
                 ticketIndex = ticket, 
-                shadowTicketIndex = shadowCoordMap[info.coord], // Fetch the Shadow Ticket
+                shadowTicketIndex = shadowTicket, // Use the safely extracted ticket
                 cpuDenseChunkPool = cpuDenseChunkPool,
                 cpuShadowRAMPool = cpuShadowRAMPool,
                 cpuMaterialChunkPool = cpuMaterialChunkPool,
@@ -260,49 +279,58 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         editorDirtyChunks.Clear();
     }
     public void RequestShadowTickets(Vector3Int globalCenter, int brushSize) {
-        Vector3Int minGlobal = globalCenter - new Vector3Int(brushSize, brushSize, brushSize);
-        Vector3Int maxGlobal = globalCenter + new Vector3Int(brushSize, brushSize, brushSize);
+        List<ChunkJobData> missingJobs = new List<ChunkJobData>();
+        
+        for (int layer = 0; layer < clipmapLayers; layer++) {
+            int scale = 1 << layer;
+            Vector3Int minGlobal = globalCenter - new Vector3Int(brushSize, brushSize, brushSize);
+            Vector3Int maxGlobal = globalCenter + new Vector3Int(brushSize, brushSize, brushSize);
 
-        Vector3Int minChunk = new Vector3Int(Mathf.FloorToInt(minGlobal.x / 32f), Mathf.FloorToInt(minGlobal.y / 32f), Mathf.FloorToInt(minGlobal.z / 32f));
-        Vector3Int maxChunk = new Vector3Int(Mathf.FloorToInt(maxGlobal.x / 32f), Mathf.FloorToInt(maxGlobal.y / 32f), Mathf.FloorToInt(maxGlobal.z / 32f));
+            Vector3Int minChunk = new Vector3Int(
+                Mathf.FloorToInt(minGlobal.x / (32f * scale)), 
+                Mathf.FloorToInt(minGlobal.y / (32f * scale)), 
+                Mathf.FloorToInt(minGlobal.z / (32f * scale)));
+            Vector3Int maxChunk = new Vector3Int(
+                Mathf.FloorToInt(maxGlobal.x / (32f * scale)), 
+                Mathf.FloorToInt(maxGlobal.y / (32f * scale)), 
+                Mathf.FloorToInt(maxGlobal.z / (32f * scale)));
 
-        int maxPossible = (maxChunk.x - minChunk.x + 1) * (maxChunk.y - minChunk.y + 1) * (maxChunk.z - minChunk.z + 1);
-        NativeArray<ChunkJobData> jitJobData = new NativeArray<ChunkJobData>(maxPossible, Allocator.TempJob);
-        int missingCount = 0;
-
-        for (int cx = minChunk.x; cx <= maxChunk.x; cx++) {
-            for (int cy = minChunk.y; cy <= maxChunk.y; cy++) {
-                for (int cz = minChunk.z; cz <= maxChunk.z; cz++) {
-                    Vector3Int cCoord = new Vector3Int(cx, cy, cz);
-                    
-                    if (!shadowCoordMap.ContainsKey(cCoord)) {
-                        uint ticket;
-                        if (freeShadowIndices.Count > 0) {
-                            ticket = freeShadowIndices.Dequeue();
-                        } else {
-                            Vector3Int evictedCoord = shadowFifoQueue.Dequeue();
-                            ticket = shadowCoordMap[evictedCoord];
-                            shadowCoordMap.Remove(evictedCoord);
-                            UnityEngine.Debug.LogWarning($"[Amnesia Cache] Evicted Shadow RAM for chunk {evictedCoord} to make room for {cCoord}");
-                        }
+            for (int cx = minChunk.x; cx <= maxChunk.x; cx++) {
+                for (int cy = minChunk.y; cy <= maxChunk.y; cy++) {
+                    for (int cz = minChunk.z; cz <= maxChunk.z; cz++) {
+                        Vector3Int cCoord = new Vector3Int(cx, cy, cz);
+                        int mIdx = GetMapIndex(layer, cCoord);
                         
-                        shadowFifoQueue.Enqueue(cCoord);
-                        shadowCoordMap[cCoord] = ticket;
+                        ChunkHashKey shadowRequestKey = new ChunkHashKey { layer = layer, coord = cCoord };
+                        if (!shadowCoordMap.ContainsKey(shadowRequestKey)) {
+                            uint ticket;
+                            if (freeShadowIndices.Count > 0) {
+                                ticket = freeShadowIndices.Dequeue();
+                            } else {
+                                ChunkHashKey evictedKey = shadowFifoQueue.Dequeue();
+                                ticket = shadowCoordMap[evictedKey];
+                                shadowCoordMap.Remove(evictedKey);
+                                UnityEngine.Debug.LogWarning($"[Amnesia Cache] Evicted Shadow RAM to make room for edit.");
+                            }
+                            
+                            shadowFifoQueue.Enqueue(shadowRequestKey);
+                            shadowCoordMap[shadowRequestKey] = ticket;
 
-                        jitJobData[missingCount] = new ChunkJobData {
-                            worldPos = new Vector4(cx * 32f, cy * 32f, cz * 32f, 0),
-                            layerScale = voxelScale,
-                            editCount = 2, // JIT SHADOW FLAG
-                            editStartIndex = (int)ticket, // TICKET INDEX
-                            mapIndex = 0 
-                        };
-                        missingCount++;
+                            missingJobs.Add(new ChunkJobData {
+                                worldPos = new Vector4(cx * 32f, cy * 32f, cz * 32f, 0),
+                                layerScale = voxelScale * scale,
+                                editCount = 2, // JIT SHADOW FLAG
+                                editStartIndex = (int)ticket, // TICKET INDEX
+                                mapIndex = mIdx 
+                            });
+                        }
                     }
                 }
             }
         }
 
-        if (missingCount > 0) {
+        if (missingJobs.Count > 0) {
+            NativeArray<ChunkJobData> jitJobData = new NativeArray<ChunkJobData>(missingJobs.ToArray(), Allocator.TempJob);
             VoxelEngine.World.TerrainGenJob_1Bit jitJob = new VoxelEngine.World.TerrainGenJob_1Bit {
                 jobQueue = jitJobData,
                 features = persistentFeatureArray, caverns = persistentCavernArray, tunnels = persistentTunnelArray,
@@ -316,9 +344,9 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
                 worldSeed = VoxelEngine.WorldManager.Instance.worldSeed,
                 biomes = cpuBiomes, biomeCount = cpuBiomes.IsCreated ? cpuBiomes.Length : 0
             };
-            jitJob.Schedule(missingCount, 1).Complete(); // Executes instantly on Main Thread!
+            jitJob.Schedule(missingJobs.Count, 1).Complete(); // Executes instantly on Main Thread!
+            jitJobData.Dispose();
         }
-        jitJobData.Dispose();
     }
 
     public void EditVoxel(Vector3Int globalVoxelPos, uint newMaterial, int brushSize = 0, int brushShape = 0) {
@@ -326,18 +354,20 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         RequestShadowTickets(globalVoxelPos, brushSize); // THE JIT TRIGGER
         editorDirtyChunks.Clear();
 
-        for (int x = -brushSize; x <= brushSize; x++) {
-            for (int y = -brushSize; y <= brushSize; y++) {
-                for (int z = -brushSize; z <= brushSize; z++) {
-                    Vector3Int targetPos = globalVoxelPos + new Vector3Int(x, y, z);
-                    
-                    float dist = brushShape == 0 ?
-                        Mathf.Max(Mathf.Abs(x), Mathf.Max(Mathf.Abs(y), Mathf.Abs(z))) : Mathf.Sqrt(x*x + y*y + z*z);
+        for (int layer = 0; layer < clipmapLayers; layer++) {
+            for (int x = -brushSize; x <= brushSize; x++) {
+                for (int y = -brushSize; y <= brushSize; y++) {
+                    for (int z = -brushSize; z <= brushSize; z++) {
+                        Vector3Int targetPos = globalVoxelPos + new Vector3Int(x, y, z);
+                        
+                        float dist = brushShape == 0 ?
+                            Mathf.Max(Mathf.Abs(x), Mathf.Max(Mathf.Abs(y), Mathf.Abs(z))) : Mathf.Sqrt(x*x + y*y + z*z);
 
-                    if (dist <= brushSize + 0.5f) {
-                        uint dirtyIdx = TrackEditOnCPU(targetPos, newMaterial, out Vector3Int cCoord, out int mIdx);
-                        if (dirtyIdx != 0xFFFFFFFF && !editorDirtyChunks.ContainsKey(dirtyIdx)) {
-                            editorDirtyChunks[dirtyIdx] = new EditedChunkInfo { coord = cCoord, mapIndex = mIdx };
+                        if (dist <= brushSize + 0.5f) {
+                            uint dirtyIdx = TrackEditOnCPU(targetPos, newMaterial, layer, out Vector3Int cCoord, out int mIdx);
+                            if (dirtyIdx != 0xFFFFFFFF && !editorDirtyChunks.ContainsKey(dirtyIdx)) {
+                                editorDirtyChunks[dirtyIdx] = new EditedChunkInfo { coord = cCoord, mapIndex = mIdx, layer = layer };
+                            }
                         }
                     }
                 }
@@ -377,10 +407,12 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         }
 
         // 2. EXECUTE EDITS (Destruction)
-        foreach (Vector3Int doomedBlock in blocksToDestroy) {
-            uint dirtyIdx = TrackEditOnCPU(doomedBlock, 0, out Vector3Int cCoord, out int mIdx);
-            if (dirtyIdx != 0xFFFFFFFF && !editorDirtyChunks.ContainsKey(dirtyIdx)) {
-                editorDirtyChunks[dirtyIdx] = new EditedChunkInfo { coord = cCoord, mapIndex = mIdx };
+        for (int layer = 0; layer < clipmapLayers; layer++) {
+            foreach (Vector3Int doomedBlock in blocksToDestroy) {
+                uint dirtyIdx = TrackEditOnCPU(doomedBlock, 0, layer, out Vector3Int cCoord, out int mIdx);
+                if (dirtyIdx != 0xFFFFFFFF && !editorDirtyChunks.ContainsKey(dirtyIdx)) {
+                    editorDirtyChunks[dirtyIdx] = new EditedChunkInfo { coord = cCoord, mapIndex = mIdx, layer = layer };
+                }
             }
         }
 
