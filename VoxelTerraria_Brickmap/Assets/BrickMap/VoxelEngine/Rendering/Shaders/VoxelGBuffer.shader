@@ -38,7 +38,8 @@ Shader "Hidden/VoxelGBuffer"
                 float depth  : SV_Depth;
             };
 
-            FragmentOutput frag(Varyings input) : SV_Target {
+            // FragmentOutput frag(Varyings input) : SV_Target {
+            FragmentOutput frag(Varyings input) {
                 // Use .GetDimensions() to handle High-DPI and Scale-2x perfectly
                 float w, h;
                 _VoxelData.GetDimensions(w, h);
