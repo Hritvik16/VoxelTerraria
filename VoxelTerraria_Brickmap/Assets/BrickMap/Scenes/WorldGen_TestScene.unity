@@ -789,8 +789,8 @@ MonoBehaviour:
   voxelScale: 0.1
   clipmapLayers: 8
   renderDistanceXZ: 10
-  renderDistanceY: 10
-  maxConcurrentJobs: 400
+  renderDistanceY: 6
+  maxConcurrentJobs: 128
   gpuUpdateInterval: 0.05
   worldLoaders:
   - {fileID: 1329300604}
@@ -805,7 +805,7 @@ MonoBehaviour:
   enableAntFarmSlice: 0
   enableFeatureDebugView: 0
   chunkTargetCoordArray: []
-  maxMaterialTickets: 30000
+  maxMaterialTickets: 15000
   ticketToMapIndex: 
   dynamicMaxChunks: 0
   maxShadowTickets: 4000

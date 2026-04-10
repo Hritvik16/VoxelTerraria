@@ -262,6 +262,11 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         materialBuffer = null;
         denseChunkPoolBuffer = null;
         crosshairBuffer = null;
+
+        materialChunkPoolBuffer = null;
+        surfaceMaskPoolBuffer = null;
+        surfacePrefixPoolBuffer = null;
+        chunkMapBuffer = null;
     }
 
     public void BindPhysicsData(ComputeShader cs, int kernel) {

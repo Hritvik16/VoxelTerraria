@@ -195,9 +195,8 @@ namespace VoxelEngine.World
                 // OPTIMIZATION: 0x03030303 writes 4 Stone blocks (Index 3) in a single CPU cycle.
                 for (int i = 0; i < 8192; i++) tempRawMaterials[i] = 0x03030303; 
 
-                if (!isDistantLOD) {
-                    CaveCarverWorker.ApplyCavesAndTunnels_1Bit(ref denseChunkPool, denseBase, job.worldPos.x * job.layerScale, job.worldPos.y * job.layerScale, job.worldPos.z * job.layerScale, job.layerScale, caverns, cavernCount, tunnels, tunnelCount);
-                }
+                // THE FIX: Carve caves on ALL layers so tunnels don't turn into solid black walls!
+                CaveCarverWorker.ApplyCavesAndTunnels_1Bit(ref denseChunkPool, denseBase, job.worldPos.x * job.layerScale, job.worldPos.y * job.layerScale, job.worldPos.z * job.layerScale, job.layerScale, caverns, cavernCount, tunnels, tunnelCount);
             } 
             else {
                 for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = 0; 
@@ -274,9 +273,8 @@ namespace VoxelEngine.World
                     }
                 }
                 
-                if (!isDistantLOD) {
-                    CaveCarverWorker.ApplyCavesAndTunnels_1Bit(ref denseChunkPool, denseBase, job.worldPos.x * job.layerScale, job.worldPos.y * job.layerScale, job.worldPos.z * job.layerScale, job.layerScale, caverns, cavernCount, tunnels, tunnelCount);
-                }
+                // THE FIX: Carve caves on ALL layers so tunnels don't turn into solid black walls!
+                CaveCarverWorker.ApplyCavesAndTunnels_1Bit(ref denseChunkPool, denseBase, job.worldPos.x * job.layerScale, job.worldPos.y * job.layerScale, job.worldPos.z * job.layerScale, job.layerScale, caverns, cavernCount, tunnels, tunnelCount);
             }
             
             localHeights.Dispose(); // Cleanup the stack memory
