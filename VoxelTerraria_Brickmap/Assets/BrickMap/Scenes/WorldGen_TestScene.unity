@@ -959,7 +959,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.World.WorldManager
   worldSize: 0
-  worldSeed: 1308
+  worldSeed: 1422
   mapFeatures: []
   cavernNodes: []
   tunnelSplines: []
