@@ -128,7 +128,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 5514202}
-  - component: {fileID: 5514201}
+  - component: {fileID: 5514204}
   - component: {fileID: 5514203}
   m_Layer: 0
   m_Name: Environment Manager
@@ -137,25 +137,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &5514201
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 5514200}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 31be072d56caf4d77bbbd9d0ad59f4fc, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::VoxelEnvironmentManager
-  zenithColor: {r: 0.2, g: 0.4, b: 0.8, a: 1}
-  horizonColor: {r: 0.75, g: 0.8, b: 0.85, a: 1}
-  sunHaloColor: {r: 1, g: 0.85, b: 0.6, a: 1}
-  hazeDensity: 0.01
-  directionalSun: {fileID: 1044288757}
-  ambientStrength: 0.6
-  shadowDarkness: 0.75
 --- !u!4 &5514202
 Transform:
   m_ObjectHideFlags: 0
@@ -187,6 +168,25 @@ MonoBehaviour:
   - {fileID: 996803947}
   - {fileID: 23211089}
   - {fileID: 456221762}
+--- !u!114 &5514204
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5514200}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 31be072d56caf4d77bbbd9d0ad59f4fc, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEnvironmentManager
+  zenithColor: {r: 0.2, g: 0.4, b: 0.8, a: 1}
+  horizonColor: {r: 0.6, g: 0.8, b: 1, a: 1}
+  sunHaloColor: {r: 1, g: 0.9, b: 0.7, a: 1}
+  hazeDensity: 2.5
+  directionalSun: {fileID: 1044288757}
+  ambientStrength: 0.3
+  shadowDarkness: 0.75
 --- !u!1 &23211087
 GameObject:
   m_ObjectHideFlags: 0
@@ -1138,7 +1138,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1111590113
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1435,7 +1435,7 @@ MonoBehaviour:
   gpuUpdateInterval: 0.05
   worldLoaders:
   - {fileID: 1329300604}
-  raytracerShader: {fileID: 0}
+  raytracerShader: {fileID: 7200000, guid: 1870c41a849854c75afd7cbe23492b84, type: 3}
   worldGenShader: {fileID: 7200000, guid: 09ee54e00eb244d598548896fdeb988a, type: 3}
   worldGenUtilityShader: {fileID: 7200000, guid: 9f56ad5db214c4a288af48fbd3e9ffcb, type: 3}
   voxelLightingShader: {fileID: 7200000, guid: 082b3c84c600b4fa7bdc35773f169e92, type: 3}
@@ -1578,8 +1578,8 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1580258572}
-  - component: {fileID: 1580258571}
   - component: {fileID: 1580258573}
+  - component: {fileID: 1580258574}
   m_Layer: 0
   m_Name: WorldManager
   m_TagString: Untagged
@@ -1587,23 +1587,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &1580258571
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1580258570}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: c1b57368ff9b8451b87cfdad74c45169, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.World.WorldManager
-  worldSize: 0
-  worldSeed: 1422
-  mapFeatures: []
-  cavernNodes: []
-  tunnelSplines: []
 --- !u!4 &1580258572
 Transform:
   m_ObjectHideFlags: 0
@@ -1634,6 +1617,23 @@ MonoBehaviour:
   minimapShader: {fileID: 7200000, guid: 865b889dc23874a6292de1fea4602571, type: 3}
   minimapDisplay: {fileID: 163741365}
   offset: {x: 0, y: 0}
+--- !u!114 &1580258574
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1580258570}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c1b57368ff9b8451b87cfdad74c45169, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.WorldManager
+  worldSize: 0
+  worldSeed: 1337
+  mapFeatures: []
+  cavernNodes: []
+  tunnelSplines: []
 --- !u!1 &1717579360
 GameObject:
   m_ObjectHideFlags: 0
