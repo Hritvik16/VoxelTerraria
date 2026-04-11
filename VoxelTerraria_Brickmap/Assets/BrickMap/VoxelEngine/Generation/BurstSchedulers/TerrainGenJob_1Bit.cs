@@ -178,13 +178,13 @@ namespace VoxelEngine.World
             bool isDistantLOD = job.layerScale >= 0.8f;
 
             // OPTIMIZATION: Temp array clears to 0 instantly. Zero GC.
-            NativeArray<uint> tempRawMaterials = new NativeArray<uint>(8192, Allocator.Temp);
-            NativeArray<uint> packedMaterials = new NativeArray<uint>(4096, Allocator.Temp); 
+            NativeArray<uint> tempRawMaterials = new NativeArray<uint>(ChunkManager.SHADOW_SIZE, Allocator.Temp);
+            NativeArray<uint> packedMaterials = new NativeArray<uint>(ChunkManager.TICKET_SIZE, Allocator.Temp); 
             NativeArray<uint> localSurfaceMask = new NativeArray<uint>(1024, Allocator.Temp);
             NativeArray<uint> localSurfacePrefix = new NativeArray<uint>(1024, Allocator.Temp);
 
             // THE FIX: Explicitly zero-out Burst's uninitialized stack memory!
-            for (int i = 0; i < 4096; i++) packedMaterials[i] = 0;
+            for (int i = 0; i < ChunkManager.TICKET_SIZE; i++) packedMaterials[i] = 0;
             for (int i = 0; i < 1024; i++) {
                 localSurfaceMask[i] = 0;
                 localSurfacePrefix[i] = 0;
@@ -193,14 +193,14 @@ namespace VoxelEngine.World
             if (isFullyUnderground) {
                 for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = uint.MaxValue; 
                 // OPTIMIZATION: 0x03030303 writes 4 Stone blocks (Index 3) in a single CPU cycle.
-                for (int i = 0; i < 8192; i++) tempRawMaterials[i] = 0x03030303; 
+                for (int i = 0; i < ChunkManager.SHADOW_SIZE; i++) tempRawMaterials[i] = 0x03030303; 
 
                 // THE FIX: Carve caves on ALL layers so tunnels don't turn into solid black walls!
                 CaveCarverWorker.ApplyCavesAndTunnels_1Bit(ref denseChunkPool, denseBase, job.worldPos.x * job.layerScale, job.worldPos.y * job.layerScale, job.worldPos.z * job.layerScale, job.layerScale, caverns, cavernCount, tunnels, tunnelCount);
             } 
             else {
                 for (int i = 0; i < 1024; i++) denseChunkPool[(int)denseBase + i] = 0; 
-                for (int i = 0; i < 8192; i++) tempRawMaterials[i] = 0; // THE FIX: Clear Burst's Temp uninitialized garbage!
+                for (int i = 0; i < ChunkManager.SHADOW_SIZE; i++) tempRawMaterials[i] = 0; // THE FIX: Clear Burst's Temp uninitialized garbage!
 
                 // 3. THE HIGHLY OPTIMIZED VOXEL LOOP
                 for (int z = 0; z < 32; z++) {
@@ -318,7 +318,7 @@ namespace VoxelEngine.World
                     uint tempMask = surfaceMask;
                     
                     // Extract exactly the set bits with zero loop overhead
-                    while (tempMask != 0 && packedCount < 16384) {
+                    while (tempMask != 0 && packedCount < ChunkManager.MAX_SURFACE_VOXELS) {
                         int bitIdx = math.tzcnt(tempMask); // Instantly finds the next surface block
                         tempMask ^= (1u << bitIdx);        // Clears it from the queue
                         
@@ -342,8 +342,8 @@ namespace VoxelEngine.World
             // --- THE JIT SHADOW CACHE EXIT ---
             // If editCount == 2, the CPU just requested a background Shadow Ticket!
             if (job.editCount == 2) {
-                int shadowBase = job.editStartIndex * 8192;
-                for (int i = 0; i < 8192; i++) cpuShadowRAMPool[shadowBase + i] = tempRawMaterials[i];
+                int shadowBase = job.editStartIndex * ChunkManager.SHADOW_SIZE;
+                for (int i = 0; i < ChunkManager.SHADOW_SIZE; i++) cpuShadowRAMPool[shadowBase + i] = tempRawMaterials[i];
                 
                 tempRawMaterials.Dispose(); packedMaterials.Dispose();
                 localSurfaceMask.Dispose(); localSurfacePrefix.Dispose();
@@ -359,8 +359,8 @@ namespace VoxelEngine.World
             }
 
             // --- NEW: Blast the compacted cache to the Courier Array! ---
-            int courierMatBase = jobIndex * 4096;
-            for (int i = 0; i < 4096; i++) jobMaterialUpload[courierMatBase + i] = packedMaterials[i];
+            int courierMatBase = jobIndex * ChunkManager.TICKET_SIZE;
+            for (int i = 0; i < ChunkManager.TICKET_SIZE; i++) jobMaterialUpload[courierMatBase + i] = packedMaterials[i];
             
             // Tell the Main Thread exactly how many surface voxels we packed!
             var completedJob = jobQueue[jobIndex];

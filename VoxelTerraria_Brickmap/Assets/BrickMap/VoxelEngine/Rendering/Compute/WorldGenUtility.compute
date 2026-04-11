@@ -1,7 +1,9 @@
 #pragma kernel EditDenseVoxel
 #pragma kernel DamageDenseVoxel
-#pragma kernel ClearJobState
 #pragma kernel CommitUploadBuffers // NEW KERNEL
+#pragma kernel ClearJobState
+
+#define TICKET_SIZE 8192
 #pragma multi_compile _ DUAL_STATE_1BIT
 
 struct ChunkData { uint packedState; uint densePoolIndex; };
@@ -158,11 +160,12 @@ void CommitUploadBuffers(uint3 id : SV_DispatchThreadID) {
     uint ticket = (uint)_JobQueue[jobIndex].editStartIndex;
     
     if (ticket != 0xFFFFFFFF) {
-        uint matDestBase = ticket * 4096; // 4096 per Ticket!
-        uint matSrcBase = jobIndex * 4096; // Delivery truck
+        uint matSrcBase = jobIndex * TICKET_SIZE;
+        uint matDestBase = ticket * TICKET_SIZE;
             
-        for (uint m = 0; m < 4; m++) {
-            uint localMatOffset = (flatIdx * 4) + m;
+        // THE FIX: Copy 8 uints per thread (1024 threads * 8 = 8192 uints)
+        for (uint m = 0; m < 8; m++) {
+            uint localMatOffset = (flatIdx * 8) + m; // Changed * 4 to * 8
             _MaterialChunkPool[matDestBase + localMatOffset] = _TempMaterialUpload[matSrcBase + localMatOffset];
         }
     }

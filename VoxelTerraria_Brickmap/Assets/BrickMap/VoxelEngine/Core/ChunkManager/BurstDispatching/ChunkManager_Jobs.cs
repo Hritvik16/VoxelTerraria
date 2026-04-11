@@ -50,7 +50,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                     }
                     if (ticket != 0xFFFFFFFF) {
                         // Copy from Courier (Burst) TO Master CPU Pool
-                        NativeArray<uint>.Copy(nativeMaterialUpload, i * 4096, cpuMaterialChunkPool, (int)ticket * 4096, 4096);
+                        NativeArray<uint>.Copy(nativeMaterialUpload, i * TICKET_SIZE, cpuMaterialChunkPool, (int)ticket * TICKET_SIZE, TICKET_SIZE);
                     }
                 } else {
                     if (ticket != 0xFFFFFFFF) {
@@ -62,9 +62,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             } else {
                 // If loaded from Vault (Phase 3 will fix the Vault array alignment)
                 if (ticket != 0xFFFFFFFF) {
-                    NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)ticket * 4096, nativeMaterialUpload, i * 4096, 4096);
+                    NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)ticket * TICKET_SIZE, nativeMaterialUpload, i * TICKET_SIZE, TICKET_SIZE);
                 } else {
-                    for(int m=0; m<4096; m++) nativeMaterialUpload[i * 4096 + m] = 0;
+                    for(int m=0; m<TICKET_SIZE; m++) nativeMaterialUpload[i * TICKET_SIZE + m] = 0;
                 }
             }
 
@@ -109,8 +109,8 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         jobQueueBuffers[ringIndex].SetData(persistentJobDataArray, 0, 0, activeDispatches);
         tempMaskUploadBuffers[ringIndex].SetData(nativeMaskUpload, 0, 0, activeDispatches * 19); // CHANGED to 19
         
-        // THE FIX: Push the 8-bit material arrays to the GPU! (4096 uints per chunk)
-        tempMaterialUploadBuffers[ringIndex].SetData(nativeMaterialUpload, 0, 0, activeDispatches * 4096);
+        // THE FIX: Push the 8-bit material arrays to the GPU! (8192 uints per chunk)
+        tempMaterialUploadBuffers[ringIndex].SetData(nativeMaterialUpload, 0, 0, activeDispatches * TICKET_SIZE);
         
         // NEW: Push the Surface Mask & Prefix Sum to the GPU
         tempSurfaceUploadBuffers[ringIndex].SetData(nativeSurfaceUpload, 0, 0, activeDispatches * 1024);

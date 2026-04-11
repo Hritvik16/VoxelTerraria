@@ -35,14 +35,14 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         int capacity = 128; // Can comfortably handle brush sizes up to 10
         editorChunkUploadBuffer = new ComputeBuffer(capacity * 1024, sizeof(uint)); // RESTORED
         editorMaskUploadBuffer = new ComputeBuffer(capacity * 19, sizeof(uint));    // RESTORED
-        editorMaterialUploadBuffer = new ComputeBuffer(capacity * 4096, sizeof(uint)); 
+        editorMaterialUploadBuffer = new ComputeBuffer(capacity * TICKET_SIZE, sizeof(uint)); 
         editorSurfaceUploadBuffer = new ComputeBuffer(capacity * 1024, sizeof(uint)); 
         editorPrefixUploadBuffer = new ComputeBuffer(capacity * 1024, sizeof(uint));  
         editorJobQueueBuffer = new ComputeBuffer(capacity, 48); 
         
         editorChunkArray = new NativeArray<uint>(capacity * 1024, Allocator.Persistent);
         editorMaskArray = new NativeArray<uint>(capacity * 19, Allocator.Persistent);
-        editorMaterialArray = new NativeArray<uint>(capacity * 4096, Allocator.Persistent); 
+        editorMaterialArray = new NativeArray<uint>(capacity * TICKET_SIZE, Allocator.Persistent); 
         editorSurfaceArray = new NativeArray<uint>(capacity * 1024, Allocator.Persistent); // NEW
         editorPrefixArray = new NativeArray<uint>(capacity * 1024, Allocator.Persistent);  // NEW
         editorJobArray = new NativeArray<ChunkJobData>(capacity, Allocator.Persistent);
@@ -132,7 +132,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
         // --- NEW: UPDATE GROUND TRUTH SHADOW RAM ---
         ChunkHashKey shadowKey = new ChunkHashKey { layer = layer, coord = chunkCoord };
         if (shadowCoordMap.TryGetValue(shadowKey, out uint shadowTicket)) {
-            int shadowIndex = (int)(shadowTicket * 8192) + (flatIdx >> 2); 
+            int shadowIndex = (int)(shadowTicket * SHADOW_SIZE) + (flatIdx >> 2); 
             int shadowShift = (flatIdx & 3) << 3;
             uint shadowMask = ~(255u << shadowShift);
             cpuShadowRAMPool[shadowIndex] = (cpuShadowRAMPool[shadowIndex] & shadowMask) | (material << shadowShift);
@@ -220,9 +220,9 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
                 uint ticket = chunkTickets[denseIndex];
                 // THE FIX: Pack materials using the Sparse Ticket!
                 if (ticket != 0xFFFFFFFF) {
-                    NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)ticket * 4096, editorMaterialArray, i * 4096, 4096);
+                    NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)ticket * TICKET_SIZE, editorMaterialArray, i * TICKET_SIZE, TICKET_SIZE);
                 } else {
-                    for(int m = 0; m < 4096; m++) editorMaterialArray[i * 4096 + m] = 0;
+                    for(int m = 0; m < TICKET_SIZE; m++) editorMaterialArray[i * TICKET_SIZE + m] = 0;
                 }
                 
                 // NEW: Pack the Surface Mask and Prefix Sum!
@@ -244,7 +244,7 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
             // Upload the tiny payload (Zero PCIe Stalls!)
             editorChunkUploadBuffer.SetData(editorChunkArray, 0, 0, dirtyCount * 1024);
             editorMaskUploadBuffer.SetData(editorMaskArray, 0, 0, dirtyCount * 19);
-            editorMaterialUploadBuffer.SetData(editorMaterialArray, 0, 0, dirtyCount * 4096);
+            editorMaterialUploadBuffer.SetData(editorMaterialArray, 0, 0, dirtyCount * TICKET_SIZE);
             editorSurfaceUploadBuffer.SetData(editorSurfaceArray, 0, 0, dirtyCount * 1024); // NEW
             editorPrefixUploadBuffer.SetData(editorPrefixArray, 0, 0, dirtyCount * 1024);   // NEW
             editorJobQueueBuffer.SetData(editorJobArray, 0, 0, dirtyCount);
@@ -445,18 +445,18 @@ public struct EditorRebuildJob : IJob
     public void Execute()
     {
         uint denseBase = denseIndex * 1024u;
-        int shadowBase = (int)shadowTicketIndex * 8192; // THE FIX: Use the Shadow Ticket!
+        int shadowBase = (int)shadowTicketIndex * ChunkManager.SHADOW_SIZE; 
         int maskBase = (int)denseIndex * 1024;
 
         NativeArray<uint> localSurfaceMask = new NativeArray<uint>(1024, Allocator.Temp);
-        NativeArray<uint> packedMaterials = new NativeArray<uint>(4096, Allocator.Temp);
+        NativeArray<uint> packedMaterials = new NativeArray<uint>(ChunkManager.TICKET_SIZE, Allocator.Temp);
         
-        for (int i = 0; i < 4096; i++) packedMaterials[i] = 0;
+        for (int i = 0; i < ChunkManager.TICKET_SIZE; i++) packedMaterials[i] = 0;
         for (int i = 0; i < 1024; i++) localSurfaceMask[i] = 0;
 
         int packedCount = 0;
 
-        for (int flatIdx = 0; flatIdx < 32768; flatIdx++) {
+        for (int flatIdx = 0; flatIdx < ChunkManager.VOXEL_VOLUME; flatIdx++) {
             int uintIdx = flatIdx >> 5;
             int bitIdx = flatIdx & 31;
             
@@ -483,7 +483,7 @@ public struct EditorRebuildJob : IJob
                     }
                 }
                 
-                if (isSurface && packedCount < 16384) { 
+                if (isSurface && packedCount < ChunkManager.MAX_SURFACE_VOXELS) { 
                     localSurfaceMask[uintIdx] |= (1u << bitIdx);
                     
                     // GRAB THE GROUND TRUTH COLOR FROM SHADOW RAM!
@@ -510,8 +510,8 @@ public struct EditorRebuildJob : IJob
 
         // THE FIX: Only write to the Master Pool if we actually have a Ticket!
         if (ticketIndex != 0xFFFFFFFF) {
-            int packedBase = (int)ticketIndex * 4096;
-            for (int i = 0; i < 4096; i++) {
+            int packedBase = (int)ticketIndex * ChunkManager.TICKET_SIZE;
+            for (int i = 0; i < ChunkManager.TICKET_SIZE; i++) {
                 cpuMaterialChunkPool[packedBase + i] = packedMaterials[i];
             }
         }

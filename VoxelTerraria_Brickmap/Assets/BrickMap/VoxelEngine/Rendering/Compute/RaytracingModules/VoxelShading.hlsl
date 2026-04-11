@@ -1,5 +1,7 @@
+#define TICKET_SIZE 8192
+
 StructuredBuffer<uint> _MaterialChunkPool;
-StructuredBuffer<uint> _ChunkMaterialPointers; // NEW: The Sparse Material Ticket Bank
+StructuredBuffer<uint> _ChunkMaterialPointers; 
 StructuredBuffer<uint> _SurfaceMaskPool; 
 StructuredBuffer<uint> _SurfacePrefixPool; 
 
@@ -55,7 +57,7 @@ uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, i
         uint matUintIdx = surfaceCount >> 2;
         uint byteOffset = (surfaceCount & 3) << 3;
         
-        uint packedMaterials = _MaterialChunkPool[(ticket * 4096) + matUintIdx];
+        uint packedMaterials = _MaterialChunkPool[(ticket * TICKET_SIZE) + matUintIdx];
         returnMat = (packedMaterials >> byteOffset) & 0xFF;
     }
 

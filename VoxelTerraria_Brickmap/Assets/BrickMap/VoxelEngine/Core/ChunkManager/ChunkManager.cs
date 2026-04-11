@@ -16,6 +16,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
     public enum VoxelArchitecture { BrickMap32Bit, DualState1Bit }
     public enum RenderBackend { Raytracer, ComputeRasterizer }
+    
+    // --- NEW: THE GLOBAL MEMORY CONSTANTS ---
+    public const int TICKET_SIZE = 8192;        // Upgraded from 4096! The max compacted surface materials.
+    public const int SHADOW_SIZE = 8192;        // 100% fill rate raw materials (32768 bytes / 4 bytes per uint)
+    public const int MAX_SURFACE_VOXELS = 32768; // Upgraded from 16384! Prevents packer overflow.
+    public const int VOXEL_VOLUME = 32768;      // 32x32x32 chunk volume
 
     [Header("Engine Architecture")]
     public VoxelArchitecture currentArchitecture = VoxelArchitecture.DualState1Bit;
@@ -138,7 +144,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         CachedChunk cache = new CachedChunk { 
             shape = new uint[1024], 
             mask = new uint[19], 
-            material = new uint[4096], 
+            material = new uint[TICKET_SIZE], 
             surface = new uint[1024],
             prefix = new uint[1024]
         };
@@ -148,9 +154,9 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         // THE FIX: Use the Sparse Ticket for Materials, not the Dense Index!
         uint ticket = cpuMaterialPointers[mapIndex];
         if (ticket != 0xFFFFFFFF) {
-            NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)ticket * 4096, cache.material, 0, 4096);
+            NativeArray<uint>.Copy(cpuMaterialChunkPool, (int)ticket * TICKET_SIZE, cache.material, 0, TICKET_SIZE);
         } else {
-            for(int i = 0; i < 4096; i++) cache.material[i] = 0;
+            for(int i = 0; i < TICKET_SIZE; i++) cache.material[i] = 0;
         }
 
         NativeArray<uint>.Copy(cpuSurfaceMaskPool, (int)denseIndex * 1024, cache.surface, 0, 1024);
@@ -171,7 +177,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             cpuMaterialPointers[mapIndex] = ticket;
             ticketToMapIndex[ticket] = mapIndex;
         }
-        NativeArray<uint>.Copy(cache.material, 0, cpuMaterialChunkPool, (int)ticket * 4096, 4096);
+        NativeArray<uint>.Copy(cache.material, 0, cpuMaterialChunkPool, (int)ticket * TICKET_SIZE, TICKET_SIZE);
         
         NativeArray<uint>.Copy(cache.surface, 0, cpuSurfaceMaskPool, (int)denseIndex * 1024, 1024);
         NativeArray<uint>.Copy(cache.prefix, 0, cpuSurfacePrefixPool, (int)denseIndex * 1024, 1024); 
@@ -228,7 +234,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
     // --- NEW: THE SPARSE MATERIAL CACHE ---
     [Header("Material Cache")]
-    public int maxMaterialTickets = 30000; // Increased safely to ~480MB
+    public int maxMaterialTickets = 15000; // Halved to exactly offset the 4096 -> 8192 upgrade!
     public Queue<uint> freeMaterialIndices = new Queue<uint>();
     public NativeArray<uint> cpuMaterialPointers; // Maps mapIndex -> Material Ticket
     public ComputeBuffer materialPointersBuffer;  // The GPU Lookup Table
