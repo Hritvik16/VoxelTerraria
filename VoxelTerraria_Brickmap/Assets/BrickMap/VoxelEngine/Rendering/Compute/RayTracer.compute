@@ -221,7 +221,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             float c11 = VERTEX_AO(s_p1, s_p2, d_pp);
 
             // Calculate Emissive Light for the 4 corners
-            #define IS_EMISSIVE(mat) (mat == 14 ? 1.0 : 0.0) // 14 = Lava
+            #define IS_EMISSIVE(mat) (mat == 12 ? 1.0 : 0.0) // 12 = Lava
             float e00 = max(IS_EMISSIVE(m_m1), max(IS_EMISSIVE(m_m2), IS_EMISSIVE(m_mm)));
             float e10 = max(IS_EMISSIVE(m_p1), max(IS_EMISSIVE(m_m2), IS_EMISSIVE(m_pm)));
             float e01 = max(IS_EMISSIVE(m_m1), max(IS_EMISSIVE(m_p2), IS_EMISSIVE(m_mp)));

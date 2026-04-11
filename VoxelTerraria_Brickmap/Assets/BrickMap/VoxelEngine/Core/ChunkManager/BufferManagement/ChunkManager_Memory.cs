@@ -92,24 +92,24 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                 tempPrefixUploadBuffers[i] = new ComputeBuffer(maxConcurrentJobs * 1024, sizeof(uint)); 
             }
             
-            nativeChunkUpload = new NativeArray<uint>(totalVoxelCapacity, Allocator.Persistent);
-            nativeMaskUpload = new NativeArray<uint>(maxConcurrentJobs * 19, Allocator.Persistent);
-            nativeMaterialUpload = new NativeArray<uint>(maxConcurrentJobs * 4096, Allocator.Persistent); 
-            nativeSurfaceUpload = new NativeArray<uint>(maxConcurrentJobs * 1024, Allocator.Persistent); 
-            nativePrefixUpload = new NativeArray<uint>(maxConcurrentJobs * 1024, Allocator.Persistent); 
+            if (!nativeChunkUpload.IsCreated) nativeChunkUpload = new NativeArray<uint>(totalVoxelCapacity, Allocator.Persistent);
+            if (!nativeMaskUpload.IsCreated) nativeMaskUpload = new NativeArray<uint>(maxConcurrentJobs * 19, Allocator.Persistent);
+            if (!nativeMaterialUpload.IsCreated) nativeMaterialUpload = new NativeArray<uint>(maxConcurrentJobs * 4096, Allocator.Persistent); 
+            if (!nativeSurfaceUpload.IsCreated) nativeSurfaceUpload = new NativeArray<uint>(maxConcurrentJobs * 1024, Allocator.Persistent); 
+            if (!nativePrefixUpload.IsCreated) nativePrefixUpload = new NativeArray<uint>(maxConcurrentJobs * 1024, Allocator.Persistent); 
         }
         
         if (crosshairBuffer == null) crosshairBuffer = new ComputeBuffer(2, 16);
 
         if (denseChunkPoolBuffer == null) {
             denseChunkPoolBuffer = new ComputeBuffer(dynamicMaxChunks * UINTS_PER_CHUNK, sizeof(uint));
-            cpuDenseChunkPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_CHUNK, Allocator.Persistent);
+            if (!cpuDenseChunkPool.IsCreated) cpuDenseChunkPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_CHUNK, Allocator.Persistent);
             
             // --- NEW: THE HARDWARE-CAPPED SPARSE POOL ---
             materialChunkPoolBuffer = new ComputeBuffer(maxMaterialTickets * 4096, sizeof(uint)); 
-            cpuMaterialChunkPool = new NativeArray<uint>(maxMaterialTickets * 4096, Allocator.Persistent);
+            if (!cpuMaterialChunkPool.IsCreated) cpuMaterialChunkPool = new NativeArray<uint>(maxMaterialTickets * 4096, Allocator.Persistent);
             
-            cpuMaterialPointers = new NativeArray<uint>(totalMapCapacity, Allocator.Persistent);
+            if (!cpuMaterialPointers.IsCreated) cpuMaterialPointers = new NativeArray<uint>(totalMapCapacity, Allocator.Persistent);
             materialPointersBuffer = new ComputeBuffer(totalMapCapacity, sizeof(uint));
             
             // Initialize all pointers to 0xFFFFFFFF (Solid/No Ticket)
@@ -120,26 +120,26 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             for (int i = 0; i < maxMaterialTickets; i++) ticketToMapIndex[i] = -1;
             
             surfaceMaskPoolBuffer = new ComputeBuffer(dynamicMaxChunks * 1024, sizeof(uint)); 
-            cpuSurfaceMaskPool = new NativeArray<uint>(dynamicMaxChunks * 1024, Allocator.Persistent);
+            if (!cpuSurfaceMaskPool.IsCreated) cpuSurfaceMaskPool = new NativeArray<uint>(dynamicMaxChunks * 1024, Allocator.Persistent);
 
             surfacePrefixPoolBuffer = new ComputeBuffer(dynamicMaxChunks * 1024, sizeof(uint)); 
-            cpuSurfacePrefixPool = new NativeArray<uint>(dynamicMaxChunks * 1024, Allocator.Persistent); 
+            if (!cpuSurfacePrefixPool.IsCreated) cpuSurfacePrefixPool = new NativeArray<uint>(dynamicMaxChunks * 1024, Allocator.Persistent); 
             
             // --- NEW: CAPPED SHADOW RAM ---
-            cpuShadowRAMPool = new NativeArray<uint>(maxShadowTickets * 8192, Allocator.Persistent);
+            if (!cpuShadowRAMPool.IsCreated) cpuShadowRAMPool = new NativeArray<uint>(maxShadowTickets * 8192, Allocator.Persistent);
             freeShadowIndices.Clear();
             for (uint i = 0; i < maxShadowTickets; i++) freeShadowIndices.Enqueue(i);
             shadowFifoQueue.Clear();
             shadowCoordMap.Clear();
             // Allocate the 16-Bit RGB Light Array
             // illuminationPoolBuffer = new ComputeBuffer(dynamicMaxChunks * UINTS_PER_LIGHT_CHUNK, sizeof(uint));
-            // cpuIlluminationPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_LIGHT_CHUNK, Allocator.Persistent);
+            // if (!cpuIlluminationPool.IsCreated) cpuIlluminationPool = new NativeArray<uint>(dynamicMaxChunks * UINTS_PER_LIGHT_CHUNK, Allocator.Persistent);
             
             // Shader.SetGlobalBuffer("_IlluminationPool", illuminationPoolBuffer);
-            cpuMacroMaskPool = new NativeArray<uint>(dynamicMaxChunks * 19, Allocator.Persistent); 
+            if (!cpuMacroMaskPool.IsCreated) cpuMacroMaskPool = new NativeArray<uint>(dynamicMaxChunks * 19, Allocator.Persistent); 
 
             chunkHeightBuffer = new ComputeBuffer(totalMapCapacity, sizeof(float));
-            cpuChunkHeights = new NativeArray<float>(totalMapCapacity, Allocator.Persistent);
+            if (!cpuChunkHeights.IsCreated) cpuChunkHeights = new NativeArray<float>(totalMapCapacity, Allocator.Persistent);
             Shader.SetGlobalBuffer("_ChunkHeightMap", chunkHeightBuffer);
 
             // Pointers to the Delta Map deleted!

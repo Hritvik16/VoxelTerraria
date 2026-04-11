@@ -49,29 +49,9 @@ void GenerateChunk(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, u
     float2 worldXZ = (job.worldPos.xz + (float2)localPos.xz) * job.layerScale;
     float3 worldXYZ = float3(worldXZ.x, (job.worldPos.y + (float)localPos.y) * job.layerScale, worldXZ.y);
     
-    // Per-voxel Topology (Robust, No groupshared races)
     float baseHeight; int activeBiome;
     {
-        float dFC = length(worldXZ); float cD = GetCoastDistance(worldXZ);
-        float nT = perlin2D(worldXZ * 0.002); baseHeight = 15.0 + (nT * 20.0); activeBiome = 1; 
-        if (dFC > cD) { baseHeight = clamp(10.0 - (dFC - cD) * 0.5, -40.0, 10.0); }
-        else {
-            for(int i_f = 0; i_f < _FeatureCount; i_f++) {
-                FeatureAnchor anchor = _FeatureAnchorBuffer[i_f];
-                // Chunk-level Early Out
-                if (distance(job.worldPos.xz + 16.0, anchor.position) > anchor.radius + 16.0) continue;
-
-                float d_f = distance(worldXZ, anchor.position);
-                if (d_f < anchor.radius) {
-                    float W = (anchor.topologyID == 10) ? pow(max(0.0, 1.0 - (d_f/anchor.radius)), 2.0) : 
-                             ((anchor.topologyID == 11) ? max(0.0, 1.0 - pow(d_f/anchor.radius, 6.0)) : 
-                             ((anchor.topologyID == 12) ? cos((d_f/anchor.radius) * 1.57079) : 0.0));
-                    if (anchor.topologyID == 12) baseHeight -= (W * abs(anchor.heightMod));
-                    else baseHeight = lerp(baseHeight, anchor.heightMod, W);
-                    if (anchor.topologyID == 0) activeBiome = anchor.biomeID;
-                }
-            }
-        }
+        GetSurfaceTopology(worldXZ, baseHeight, activeBiome);
     }
 
     float voxN = perlin3D(worldXYZ * 0.05);

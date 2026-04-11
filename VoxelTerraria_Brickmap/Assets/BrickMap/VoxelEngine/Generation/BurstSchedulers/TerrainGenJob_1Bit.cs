@@ -242,26 +242,26 @@ namespace VoxelEngine.World
                                     case 0: matID = 1u; break;   // FOREST Grass
                                     case 1: matID = 4u; break;   // DESERT Sand
                                     case 2: matID = 7u; break;   // SNOW Snow
-                                    case 3: matID = 10u; break;  // JUNGLE Dark Grass
-                                    case 4: matID = 14u; break;  // VOLCANIC Lava
+                                    case 3: matID = 10u; break;  // JUNGLE Jungle Grass
+                                    case 4: matID = 12u; break;  // VOLCANIC Lava
                                     default: matID = 1u; break;
                                 }
                             } else if (y > trueYDirt) {
                                 switch (currentBiome) {
                                     case 0: matID = 2u; break;   // FOREST Dirt
-                                    case 1: matID = 5u; break;   // DESERT Soft Sandstone
+                                    case 1: matID = 13u; break;  // DESERT Sandstone
                                     case 2: matID = 8u; break;   // SNOW Ice
-                                    case 3: matID = 12u; break;  // JUNGLE Mud
-                                    case 4: matID = 11u; break;  // VOLCANIC Ash
+                                    case 3: matID = 13u; break;  // JUNGLE Mud
+                                    case 4: matID = 14u; break;  // VOLCANIC Volcanic Rock
                                     default: matID = 2u; break;
                                 }
                             } else {
                                 switch (currentBiome) {
                                     case 0: matID = 3u; break;   // FOREST Stone
-                                    case 1: matID = 6u; break;   // DESERT Hard Sandstone
+                                    case 1: matID = 3u; break;   // DESERT Stone
                                     case 2: matID = 3u; break;   // SNOW Stone
                                     case 3: matID = 3u; break;   // JUNGLE Stone
-                                    case 4: matID = 13u; break;  // VOLCANIC Dark Slate
+                                    case 4: matID = 11u; break;  // VOLCANIC Obsidian
                                     default: matID = 3u; break;
                                 }
                             }

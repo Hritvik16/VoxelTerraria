@@ -84,7 +84,7 @@ void GetSurfaceTopology(float2 worldXZ, out float baseHeight, out int activeBiom
     baseHeight += perlin2D(worldXZ * 0.0012) * (5.0 + flatness * 40.0);
     baseHeight += perlin2D(worldXZ * 0.0020) * (2.0 + flatness * 12.0);
 
-    activeBiome = 1; // Default Forest
+    activeBiome = 0; // Default Forest
     
     if (distFromCenter > coastDist) {
         float drop = (distFromCenter - coastDist) * 0.5;
@@ -144,25 +144,30 @@ int GetMaterial(float3 worldXYZ, float baseHeight, int surfaceBiome) {
     float depth = baseHeight - worldXYZ.y;
     
     // Step 4C: Logic Tree (Stripped of Slope dependencies)
-    if (activeBiome == 1) { // Forest
+    if (activeBiome == 0) { // Forest
         if (depth < 2.0) return 1;  // Grass
         if (depth < 15.0) return 2; // Dirt
         return 3; // Stone
     } 
-    else if (activeBiome == 4) { // Desert
+    else if (activeBiome == 1) { // Desert
         if (depth < 2.0) return 4;  // Sand
-        if (depth < 15.0) return 5; // Hardened Sand
-        return 6; // Sandstone
+        if (depth < 15.0) return 13; // Sandstone
+        return 3; // Stone
     }
     else if (activeBiome == 2) { // Snow
         if (depth < 2.0) return 7; // Snow
-        if (depth < 15.0) return 8; // Slush
-        return 9; // Ice
+        if (depth < 15.0) return 8; // Ice
+        return 3; // Stone
     }
     else if (activeBiome == 3) { // Jungle
         if (depth < 2.0) return 10; // Jungle Grass
-        if (depth < 15.0) return 11; // Mud
-        return 12; // Mossy Stone
+        if (depth < 15.0) return 13; // Mud
+        return 3; // Stone
+    }
+    else if (activeBiome == 4) { // Volcanic
+        if (depth < 2.0) return 12; // Lava
+        if (depth < 15.0) return 14; // Volcanic Rock
+        return 11; // Obsidian
     }
     
     return 3; // Fallback Deep Rock

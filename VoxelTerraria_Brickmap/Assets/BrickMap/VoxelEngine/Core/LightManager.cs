@@ -54,6 +54,10 @@ public class LightManager : MonoBehaviour
 
         if (!nativeChunkMap.IsCreated) {
             nativeChunkMap = new NativeArray<ChunkManager.ChunkData>(ChunkManager.Instance.chunkMapArray.Length, Allocator.Persistent);
+        } else if (nativeChunkMap.Length != ChunkManager.Instance.chunkMapArray.Length) {
+            // THE FIX: Re-allocate if the ChunkManager's capacity changed (rare but possible during settings tweaks)
+            nativeChunkMap.Dispose();
+            nativeChunkMap = new NativeArray<ChunkManager.ChunkData>(ChunkManager.Instance.chunkMapArray.Length, Allocator.Persistent);
         }
 
         // --- ASYNC COMPLETION CHECK ---
@@ -134,7 +138,7 @@ public class LightManager : MonoBehaviour
         // DO NOT CALL .Complete() HERE! Let the Update() loop catch it naturally next frame.
     }
 
-    void OnDestroy()
+    void OnDisable()
     {
         if (isJobRunning) activeLightJobHandle.Complete();
         if (lightDataA.IsCreated) lightDataA.Dispose();

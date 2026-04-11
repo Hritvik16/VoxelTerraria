@@ -716,11 +716,11 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
         // 4. RETURN PALETTE ID
         switch (currentBiome) {
-            case 0: return isMassiveCliff ? 3u : (isSurface ? 1u : 2u);   // FOREST
-            case 1: return isMassiveCliff ? 6u : (isSurface ? 4u : 5u);   // DESERT
-            case 2: return isMassiveCliff ? 8u : (isSurface ? 7u : 8u);   // SNOW
-            case 3: return isMassiveCliff ? 12u : (isSurface ? 10u : 12u);// JUNGLE
-            case 4: return isMassiveCliff ? 13u : (isSurface ? 14u : 11u);// VOLCANIC
+            case 0: return isSurface ? 1u : (isMassiveCliff ? 3u : 2u);   // FOREST (Grass, Stone, Dirt)
+            case 1: return isSurface ? 4u : (isMassiveCliff ? 3u : 13u);  // DESERT (Sand, Stone, Sandstone)
+            case 2: return isSurface ? 7u : (isMassiveCliff ? 3u : 8u);   // SNOW (Snow, Stone, Ice)
+            case 3: return isSurface ? 10u : (isMassiveCliff ? 3u : 13u); // JUNGLE (Grass, Stone, Mud)
+            case 4: return isSurface ? 12u : (isMassiveCliff ? 14u : 11u);// VOLCANIC (Lava, Volcanic Rock, Obsidian)
         }
         return 3u; 
     }

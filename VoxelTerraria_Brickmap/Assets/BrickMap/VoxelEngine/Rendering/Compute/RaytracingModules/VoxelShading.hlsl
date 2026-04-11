@@ -32,37 +32,10 @@ uint GetProceduralMaterial(int3 voxelPos, int3 baseChunkCoord, uint denseBase, i
         float layerScale = _ClipmapCenters[layer].w;
         float3 absoluteWorldPos = (baseChunkCoord * 32.0 + voxelPos) * layerScale;
         
-        int closestBiome = 0;
-        float minDist = 999999.0;
-        float boundaryWarp = (Hash_Biome(float3(absoluteWorldPos.x, 0, absoluteWorldPos.z) * 0.005) - 0.5) * 150.0;
-
-        for (int b = 0; b < _BiomeAnchorCount; b++) {
-            float dist = distance(absoluteWorldPos.xz, _BiomeAnchors[b].position.xz) + boundaryWarp;
-            if (dist < minDist) {
-                minDist = dist;
-                closestBiome = _BiomeAnchors[b].biomeType;
-            }
-        }
-
-        float worldY = absoluteWorldPos.y;
-        
-        if (worldY > 20.0) {
-            if (closestBiome == 1) returnMat = 4;  // Desert Sand
-            else if (closestBiome == 2) returnMat = 7;  // Snow
-            else if (closestBiome == 3) returnMat = 10; // Jungle Dark Grass
-            else if (closestBiome == 4) returnMat = 14; // Volcanic Lava
-            else returnMat = 1; // Default Grass
-        }
-        else if (worldY > -10.0) {
-            if (closestBiome == 1) returnMat = 5;  // Desert Sandstone
-            else if (closestBiome == 2) returnMat = 8;  // Snow Ice
-            else if (closestBiome == 3) returnMat = 12; // Jungle Mud
-            else if (closestBiome == 4) returnMat = 11; // Volcanic Ash
-            else returnMat = 2; // Default Dirt
-        } else {
-            if (closestBiome == 4) returnMat = 13; // Volcanic Dark Slate
-            else returnMat = 3; // Default Stone
-        }
+        float baseHeight = 0;
+        int actualBiome = 0;
+        GetSurfaceTopology(absoluteWorldPos.xz, baseHeight, actualBiome);
+        returnMat = GetMaterial(absoluteWorldPos, baseHeight, actualBiome);
     } else {
         uint localX = (uint)(voxelPos.x & 31);
         uint localY = (uint)(voxelPos.y & 31);
