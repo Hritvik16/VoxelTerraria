@@ -350,6 +350,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     int kernel_edit;
     int kernel_damage;
     int kernel_clear;
+    
+    // --- GC-FREE CACHES ---
+    private Keyboard kb;
+    private Rigidbody playerRb;
 
     void Awake() {
         Instance = this;
@@ -463,8 +467,11 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
             }
         }
 
+        // --- ZERO-GC INPUT CACHING ---
+        kb = Keyboard.current;
+
         // --- NEW: F3 Debug Toggle (Using New Input System) ---
-        if (Keyboard.current != null && Keyboard.current.f3Key.wasPressedThisFrame) {
+        if (kb != null && kb.f3Key.wasPressedThisFrame) {
             enableFeatureDebugView = !enableFeatureDebugView;
             Shader.SetGlobalInt("_FeatureDebugView", enableFeatureDebugView ? 1 : 0);
         }

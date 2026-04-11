@@ -248,23 +248,25 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         if (isTerrainJobRunning) return;
 
         if (worldLoaders.Count > 0 && worldLoaders[0] != null) {
-            Rigidbody pBody = worldLoaders[0].GetComponent<Rigidbody>();
+            // ZERO-GC FIX: Cache the player Rigidbody instead of fetching it every frame
+            if (playerRb == null) playerRb = worldLoaders[0].GetComponent<Rigidbody>();
             Vector3 pPos = worldLoaders[0].position;
-            Vector3 pVel = (pBody != null) ? pBody.linearVelocity : (Vector3.down * 50f); 
+            Vector3 pVel = (playerRb != null) ? playerRb.linearVelocity : (Vector3.down * 50f); 
             Vector3 travelDir = pVel.magnitude > 1f ? pVel.normalized : Vector3.down;
         }
 
 
 
         int dispatchesThisFrame = 0;
-        Stopwatch queueTimer = Stopwatch.StartNew(); 
+        // ZERO-GC FIX: Do not allocate a Stopwatch class every frame!
+        float startTime = Time.realtimeSinceStartup; 
         bool jobsAvailable = true;
         
-        while (dispatchesThisFrame < maxConcurrentJobs && jobsAvailable && queueTimer.Elapsed.TotalMilliseconds < 4.0) {
+        while (dispatchesThisFrame < maxConcurrentJobs && jobsAvailable && (Time.realtimeSinceStartup - startTime) * 1000f < 4.0f) {
             jobsAvailable = false;
             for (int L = 0; L < clipmapLayers; L++) {
                 if (dispatchesThisFrame >= maxConcurrentJobs) break;
-                while (generationQueues[L].Count > 0 && queueTimer.Elapsed.TotalMilliseconds < 4.0) {
+                while (generationQueues[L].Count > 0 && (Time.realtimeSinceStartup - startTime) * 1000f < 4.0f) {
                     if (freeDenseIndices.Count == 0) {
                         jobsAvailable = false;
                         break; 

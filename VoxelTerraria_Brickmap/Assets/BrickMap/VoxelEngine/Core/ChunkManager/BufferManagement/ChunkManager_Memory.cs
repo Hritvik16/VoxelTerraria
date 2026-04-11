@@ -199,6 +199,17 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         Shader.SetGlobalInt("_ClipmapLayers", clipmapLayers);
         Shader.SetGlobalVector("_RenderBounds", new Vector4(renderDistanceXZ, renderDistanceY, 0, 0));
         Shader.SetGlobalFloat("_VoxelScale", voxelScale);
+        
+        // --- ZERO-GC FIX: Pre-warm the Vault Pool ---
+        // Prevents the massive 0.7MB allocation spike when flying away from newly edited chunks!
+        vaultPool.Clear();
+        for (int i = 0; i < 64; i++) {
+            vaultPool.Push(new CachedChunk { 
+                shape = new uint[1024], mask = new uint[19], 
+                material = new uint[TICKET_SIZE], surface = new uint[1024], prefix = new uint[1024]
+            });
+        }
+        
         totalLoadTimer.Start();
         ReportMemoryUsage();
     }

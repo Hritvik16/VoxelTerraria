@@ -41,6 +41,10 @@ public class PlayerMovement : MonoBehaviour
     private Rigidbody rb;
     private float lastSpacePressTime;
     
+    // --- GC-FREE DEVICE CACHING ---
+    private Keyboard kb;
+    private Mouse mouse;
+    
     // --- THE CAMERA DECOUPLING FIX ---
     private float yaw = 0f;
     private float pitch = 0f;
@@ -82,6 +86,10 @@ public class PlayerMovement : MonoBehaviour
 
     void Update()
     {
+        // 1. CACHE THE DEVICES (Reduces 20+ hidden allocations down to 2!)
+        kb = Keyboard.current;
+        mouse = Mouse.current;
+        
         HandleMouseLook(); 
         HandleGravityToggle();
 
@@ -92,17 +100,17 @@ public class PlayerMovement : MonoBehaviour
             ChunkManager.Instance.brushShape = brushShape;
         }
         
-        if (Keyboard.current != null) {
-            if (!rb.useGravity && Keyboard.current.spaceKey.isPressed) FlyUp();
+        if (kb != null) {
+            if (!rb.useGravity && kb.spaceKey.isPressed) FlyUp();
             
-            if (Keyboard.current.eKey.wasPressedThisFrame && ChunkManager.Instance != null && ChunkManager.Instance.crosshairData[3] == 1) {
+            if (kb.eKey.wasPressedThisFrame && ChunkManager.Instance != null && ChunkManager.Instance.crosshairData[3] == 1) {
                 Vector3Int targetPos = new Vector3Int(ChunkManager.Instance.crosshairData[0], ChunkManager.Instance.crosshairData[1], ChunkManager.Instance.crosshairData[2]);
                 if (VoxelEngine.MetadataManager.Instance != null && VoxelEngine.MetadataManager.Instance.TryGetEntity(targetPos, out var entity)) {
                     entity.OnInteract();
                 }
             }
 
-            if (Keyboard.current.bKey.wasPressedThisFrame) {
+            if (kb.bKey.wasPressedThisFrame) {
                 isEditMode = !isEditMode;
                 if (!isEditMode) {
                     previewCube.gameObject.SetActive(false);
@@ -110,19 +118,19 @@ public class PlayerMovement : MonoBehaviour
                 }
             }
 
-            if (isEditMode && Keyboard.current.tKey.wasPressedThisFrame) brushShape = (brushShape == 0) ? 1 : 0;
+            if (isEditMode && kb.tKey.wasPressedThisFrame) brushShape = (brushShape == 0) ? 1 : 0;
 
             if (isEditMode) {
-                if (Keyboard.current.digit1Key.wasPressedThisFrame) selectedMaterial = 1;
-                if (Keyboard.current.digit2Key.wasPressedThisFrame) selectedMaterial = 2;
-                if (Keyboard.current.digit3Key.wasPressedThisFrame) selectedMaterial = 3; 
-                if (Keyboard.current.digit4Key.wasPressedThisFrame) selectedMaterial = 4;
-                if (Keyboard.current.digit5Key.wasPressedThisFrame) selectedMaterial = 5;
+                if (kb.digit1Key.wasPressedThisFrame) selectedMaterial = 1;
+                if (kb.digit2Key.wasPressedThisFrame) selectedMaterial = 2;
+                if (kb.digit3Key.wasPressedThisFrame) selectedMaterial = 3; 
+                if (kb.digit4Key.wasPressedThisFrame) selectedMaterial = 4;
+                if (kb.digit5Key.wasPressedThisFrame) selectedMaterial = 5;
             }
         }
 
-        if (isEditMode && Mouse.current != null) {
-            float scroll = Mouse.current.scroll.y.ReadValue();
+        if (isEditMode && mouse != null) {
+            float scroll = mouse.scroll.y.ReadValue();
             if (scroll > 0 && brushSize < maxBrushSize) brushSize++;
             if (scroll < 0 && brushSize > 0) brushSize--;
         }
@@ -132,9 +140,9 @@ public class PlayerMovement : MonoBehaviour
             Vector3Int gridPos = new Vector3Int(ChunkManager.Instance.crosshairData[0], ChunkManager.Instance.crosshairData[1], ChunkManager.Instance.crosshairData[2]);
             Vector3Int normal = new Vector3Int(ChunkManager.Instance.crosshairData[4], ChunkManager.Instance.crosshairData[5], ChunkManager.Instance.crosshairData[6]);
 
-            if (Mouse.current != null) {
-                bool leftClick = Mouse.current.leftButton.isPressed;
-                bool rightClick = Mouse.current.rightButton.isPressed;
+            if (mouse != null) {
+                bool leftClick = mouse.leftButton.isPressed;
+                bool rightClick = mouse.rightButton.isPressed;
 
                 if (leftClick || rightClick) {
                     BuildMode intendedMode = leftClick ? BuildMode.Remove : BuildMode.Place;
@@ -145,7 +153,6 @@ public class PlayerMovement : MonoBehaviour
                             if (brushSize == 0 && VoxelEngine.MetadataManager.Instance != null && VoxelEngine.MetadataManager.Instance.TryGetEntity(gridPos, out var entity)) {
                                 entity.OnDamaged(25);
                             } else {
-                                // THE FIX: Push the center of the destruction into the ground to match the Hologram!
                                 ChunkManager.World.DamageVoxel(gridPos - (normal * brushSize), 25, brushSize, brushShape);
                             }
                         } else {
@@ -161,18 +168,20 @@ public class PlayerMovement : MonoBehaviour
 
     void FixedUpdate()
     {
+        // Must cache here too because FixedUpdate runs on a different timestep!
+        kb = Keyboard.current;
         HandleMovement();
     }
 
     private void HandleMovement()
     {
         Vector2 moveInput = Vector2.zero;
-        if (Keyboard.current != null) {
+        if (kb != null) {
             float x = 0; float z = 0;
-            if (Keyboard.current.wKey.isPressed) z += 1;
-            if (Keyboard.current.sKey.isPressed) z -= 1;
-            if (Keyboard.current.aKey.isPressed) x -= 1;
-            if (Keyboard.current.dKey.isPressed) x += 1;
+            if (kb.wKey.isPressed) z += 1;
+            if (kb.sKey.isPressed) z -= 1;
+            if (kb.aKey.isPressed) x -= 1;
+            if (kb.dKey.isPressed) x += 1;
             moveInput = new Vector2(x, z).normalized; // Normalized to prevent double-speed diagonal movement
         }
 
@@ -182,11 +191,10 @@ public class PlayerMovement : MonoBehaviour
         
         float currentSpeed = rb.useGravity ? walkSpeed : flySpeed;
 
-        if (rb.isKinematic) return; // THE FIX: Prevent warnings and stuttering if the Physics Manager has locked us!
+        if (rb.isKinematic) return; 
 
         if (rb.useGravity) {
             Vector3 targetVelocity = moveDir * currentSpeed;
-            // Snappy assignment! No more weird Lerping inside FixedUpdate.
             rb.linearVelocity = new Vector3(targetVelocity.x, rb.linearVelocity.y, targetVelocity.z);
         } else {
             rb.linearVelocity = moveDir * currentSpeed;
@@ -201,14 +209,13 @@ public class PlayerMovement : MonoBehaviour
 
     private void HandleMouseLook()
     {
-        if (Mouse.current == null) return;
+        if (mouse == null) return;
 
-        Vector2 mouseDelta = Mouse.current.delta.ReadValue() * 0.2f;
+        Vector2 mouseDelta = mouse.delta.ReadValue() * 0.2f;
         yaw += mouseDelta.x * lookSensitivity;
         pitch -= mouseDelta.y * lookSensitivity;
         pitch = Mathf.Clamp(pitch, -90f, 90f);
 
-        // Apply ALL rotation to the camera only! The Rigidbody remains untouched.
         if (cameraTransform != null) {
             cameraTransform.localRotation = Quaternion.Euler(pitch, yaw, 0);
         }
@@ -216,8 +223,8 @@ public class PlayerMovement : MonoBehaviour
 
     private void HandleGravityToggle()
     {
-        if (Keyboard.current == null) return;
-        if (Keyboard.current.spaceKey.wasPressedThisFrame) {
+        if (kb == null) return;
+        if (kb.spaceKey.wasPressedThisFrame) {
             float timeSinceLastPress = Time.time - lastSpacePressTime;
             if (timeSinceLastPress <= doubleTapTimeThreshold) {
                 ToggleGravity();
