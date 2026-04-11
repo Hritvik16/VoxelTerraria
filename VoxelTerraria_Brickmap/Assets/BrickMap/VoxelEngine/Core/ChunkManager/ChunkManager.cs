@@ -139,15 +139,20 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
     }
     public Dictionary<ChunkHashKey, CachedChunk> modifiedChunks = new Dictionary<ChunkHashKey, CachedChunk>();
     public HashSet<ChunkHashKey> editedChunkCoords = new HashSet<ChunkHashKey>();
+    
+    // --- GC-FREE VAULT POOL ---
+    private Stack<CachedChunk> vaultPool = new Stack<CachedChunk>();
 
     public void SaveToVault(int mapIndex, uint denseIndex, ChunkHashKey key) {
-        CachedChunk cache = new CachedChunk { 
-            shape = new uint[1024], 
-            mask = new uint[19], 
-            material = new uint[TICKET_SIZE], 
-            surface = new uint[1024],
-            prefix = new uint[1024]
-        };
+        CachedChunk cache;
+        if (vaultPool.Count > 0) {
+            cache = vaultPool.Pop(); // Recycle! Zero allocations.
+        } else {
+            cache = new CachedChunk { 
+                shape = new uint[1024], mask = new uint[19], 
+                material = new uint[TICKET_SIZE], surface = new uint[1024], prefix = new uint[1024]
+            };
+        }
         NativeArray<uint>.Copy(cpuDenseChunkPool, (int)denseIndex * 1024, cache.shape, 0, 1024);
         NativeArray<uint>.Copy(cpuMacroMaskPool, (int)denseIndex * 19, cache.mask, 0, 19);
         
@@ -181,6 +186,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         
         NativeArray<uint>.Copy(cache.surface, 0, cpuSurfaceMaskPool, (int)denseIndex * 1024, 1024);
         NativeArray<uint>.Copy(cache.prefix, 0, cpuSurfacePrefixPool, (int)denseIndex * 1024, 1024); 
+        
+        // Return the arrays to the pool for the next chunk to reuse!
+        vaultPool.Push(cache);
+        modifiedChunks.Remove(key); // Free the dictionary reference
     }
     
     public ChunkData[] chunkMapArray;
@@ -447,6 +456,10 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                 
                 if (cpuBiomes.IsCreated) cpuBiomes.Dispose();
                 cpuBiomes = new NativeArray<BiomeAnchor>(dynamicBiomes.ToArray(), Allocator.Persistent);
+            } else {
+                // ZERO-GC FIX: If no biomes exist, bind a dummy buffer so we don't infinitely re-allocate the List checking for them!
+                biomeAnchorBuffer = new ComputeBuffer(1, 20); 
+                Shader.SetGlobalInt("_BiomeAnchorCount", 0);
             }
         }
 
@@ -643,14 +656,22 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
 
 
+    private string[] fpsStrings;
+
     void OnGUI() {
         if (cachedFpsStyle == null) {
             cachedFpsStyle = new GUIStyle();
             cachedFpsStyle.fontSize = 30;
             cachedFpsStyle.normal.textColor = Color.yellow;
+            
+            // ZERO-GC Caching: Pre-allocate all possible FPS strings so we never use '+' again!
+            fpsStrings = new string[241];
+            for (int i = 0; i <= 240; i++) fpsStrings[i] = "FPS: " + i;
         }
-        // Use standard ToString() to prevent string interpolation memory leaks
-        GUI.Label(new Rect(20, 20, 200, 40), "FPS: " + Mathf.RoundToInt(1.0f / deltaTime).ToString(), cachedFpsStyle);
+        
+        // Clamp to prevent out-of-bounds, then do a direct O(1) array read
+        int fps = Mathf.Clamp(Mathf.RoundToInt(1.0f / deltaTime), 0, 240);
+        GUI.Label(new Rect(20, 20, 200, 40), fpsStrings[fps], cachedFpsStyle);
     }
 
     // --- THE FIX: DUAL-STATE C# PREDICTION MATH ---
