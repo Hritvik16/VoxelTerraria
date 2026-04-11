@@ -57,13 +57,24 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     
     // CULL SKY RAYS: Stop tracing where the FARTHEST LOD layer ends!
     int maxL = _ClipmapLayers - 1;
-    float maxWorldDist = _RenderBounds.x * 32.0 * _ClipmapCenters[maxL].w;
+    
+    // --- THE HORIZON CYLINDER FIX ---
+    // Convert Euclidean bounds to a strict Cylinder to prevent "square chunk corners"
+    // from stretching and appearing as we look left/right at the screen edges.
+    float maxWorldRadius = (_RenderBounds.x - 1.0) * 32.0 * _ClipmapCenters[maxL].w;
+    float maxWorldDist = maxWorldRadius / max(0.0001, length(ray.direction.xz));
 
-    // --- NEW: HORIZON CULLING ---
-    // Instantly shrinks the draw distance by 60% for flat rays. Fog hides the transition.
-    // maxWorldDist = lerp(maxWorldDist * 0.4, maxWorldDist, saturate(abs(ray.direction.y) * 5.0));
+    // Calculate a safe direction vector once for the entire thread to prevent division-by-zero or sign(0) traps
+    float3 safeDir = ray.direction;
+    safeDir.x = abs(safeDir.x) < 1e-6f ? (safeDir.x >= 0 ? 1e-6f : -1e-6f) : safeDir.x;
+    safeDir.y = abs(safeDir.y) < 1e-6f ? (safeDir.y >= 0 ? 1e-6f : -1e-6f) : safeDir.y;
+    safeDir.z = abs(safeDir.z) < 1e-6f ? (safeDir.z >= 0 ? 1e-6f : -1e-6f) : safeDir.z;
 
     bool hit = TraceVoxelRay(ray, maxWorldDist, false, t, mask, hitMatID_Data, finalVoxelSize, finalBlockPos, steps);
+    
+    // Pre-declare our output variables so they survive the hit/miss scope
+    float3 finalColor = 0;
+    float zDepth = 0;
 
     // --- GPU CROSSHAIR TARGETER ---
     if (id.x == width / 2 && id.y == height / 2) {
@@ -80,12 +91,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
 
     if (hit) {
         
-        float3 safeDir = ray.direction;
-        safeDir.x = abs(safeDir.x) < 1e-6f ? (safeDir.x >= 0 ? 1e-6f : -1e-6f) : safeDir.x;
-        safeDir.y = abs(safeDir.y) < 1e-6f ? (safeDir.y >= 0 ? 1e-6f : -1e-6f) : safeDir.y;
-        safeDir.z = abs(safeDir.z) < 1e-6f ? (safeDir.z >= 0 ? 1e-6f : -1e-6f) : safeDir.z;
-
-        // Use safeDir to prevent HLSL sign(0)=0 from collapsing the normal vector
+        // Use the global safeDir to prevent HLSL sign(0)=0 from collapsing the normal vector
         float3 raySign = safeDir < 0.0f ? 1.0f : -1.0f;
         float3 normal = float3(mask) * raySign;
         
@@ -418,7 +424,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float3 atmosphereColor = lerp(baseSkyColor, _SunHaloColor.rgb, sunHighlight);
         
         // 4. Wash out the voxel contrast smoothly
-        float3 finalColor = lerp(colorWithLight, atmosphereColor, fogFactor);
+        finalColor = lerp(colorWithLight, atmosphereColor, fogFactor);
 
         // --- DEBUG: SHARP VOXEL EDGES ---
         float3 debugPreciseHitPos = (ray.origin + safeDir * t) / finalVoxelSize;
@@ -435,10 +441,22 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         if (_ShowRedWireframe == 1 && edgeDist < 0.05) {
             finalColor = lerp(finalColor, float3(1, 0, 0), 0.8); // 80% opacity Red Voxel Edges
         }
+        
+        // Finalize terrain depth
+        zDepth = t * dot(ray.direction, _CameraForward.xyz);
+        
+    } else {
+        // --- RENDER SKY ---
+        float sunHighlight = pow(max(0.0f, dot(ray.direction, _SunDir.xyz)), 8.0f);
+        float3 baseSkyColor = lerp(_HorizonColor.rgb, _ZenithColor.rgb, saturate(ray.direction.y * 0.5 + 0.5));
+        finalColor = lerp(baseSkyColor, _SunHaloColor.rgb, sunHighlight);
+        zDepth = 10000.0f; // Push sky to the far clipping plane
+    }
 
-        // --- TARGET BLOCK HIGHLIGHT ---
-        // If we hit a block and are in edit mode, check if this pixel belongs to the targeted block
-        if (_IsEditMode == 1 && _TargetBlock.w == 1.0 && hit) {
+    // --- TARGET BLOCK HIGHLIGHT ---
+    // Moved OUTSIDE the hit block! (Safe because of the '&& hit' check)
+    // If we hit a block and are in edit mode, check if this pixel belongs to the targeted block
+    if (_IsEditMode == 1 && _TargetBlock.w == 1.0 && hit) {
             
             // Validate if the pixel we are currently drawing is part of the crosshair's target block
             if (abs(finalBlockPos.x - _TargetBlock.x) < 0.1 && 
@@ -491,10 +509,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             float3 boxMin = centerWorld - physicalRadius;
             float3 boxMax = centerWorld + physicalRadius;
             
-            // float3 safeDir = ray.direction;
-            // safeDir.x = abs(safeDir.x) < 1e-6f ? (safeDir.x >= 0 ? 1e-6f : -1e-6f) : safeDir.x;
-            // safeDir.y = abs(safeDir.y) < 1e-6f ? (safeDir.y >= 0 ? 1e-6f : -1e-6f) : safeDir.y;
-            // safeDir.z = abs(safeDir.z) < 1e-6f ? (safeDir.z >= 0 ? 1e-6f : -1e-6f) : safeDir.z;
             float3 invDir = 1.0f / safeDir;
 
             float3 t0 = (boxMin - ray.origin) * invDir;
@@ -572,18 +586,15 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                     float alpha = (edgeDist < 0.05) ? 0.7 : 0.2; 
                     
                     finalColor = lerp(finalColor, holoColor, alpha);
+                    
+                    // Push the depth forward so the hologram correctly occludes standard Unity meshes
+                    if (!hit || hitT < t) {
+                        zDepth = hitT * dot(ray.direction, _CameraForward.xyz);
+                    }
                 }
             }
         }
 
-        // Output raw HDR color
-        float zDepth = t * dot(ray.direction, _CameraForward.xyz);
-        Result[id.xy] = float4(finalColor, zDepth);
-    } else {
-        float sunHighlight = pow(max(0.0f, dot(ray.direction, _SunDir.xyz)), 8.0f);
-        float3 baseSkyColor = lerp(_HorizonColor.rgb, _ZenithColor.rgb, saturate(ray.direction.y * 0.5 + 0.5));
-        float3 atmosphereColor = lerp(baseSkyColor, _SunHaloColor.rgb, sunHighlight);
-
-        Result[id.xy] = float4(atmosphereColor, 0); 
-    }
+    // Output final composited HDR color & Depth
+    Result[id.xy] = float4(finalColor, zDepth);
 }

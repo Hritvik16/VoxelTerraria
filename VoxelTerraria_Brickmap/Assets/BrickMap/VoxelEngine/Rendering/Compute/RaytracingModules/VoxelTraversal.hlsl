@@ -321,114 +321,26 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
 
             float3 tDelta = abs(voxelSize * invDir);
             float3 tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
-            if (tMaxV.x < -1.0f || abs(ray.direction.x) < 1e-6f) tMaxV.x = 3.4e38f; else if (tMaxV.x <= t) tMaxV.x += tDelta.x;
-            if (tMaxV.y < -1.0f || abs(ray.direction.y) < 1e-6f) tMaxV.y = 3.4e38f; else if (tMaxV.y <= t) tMaxV.y += tDelta.y;
-            if (tMaxV.z < -1.0f || abs(ray.direction.z) < 1e-6f) tMaxV.z = 3.4e38f; else if (tMaxV.z <= t) tMaxV.z += tDelta.z;
+            
+            // Pad the 't' check slightly, but securely reject bounds mathematically behind the camera
+            if (tMaxV.x < -1.0f || abs(ray.direction.x) < 1e-6f) tMaxV.x = 3.4e38f; 
+            else if (tMaxV.x <= t + 1e-5f) tMaxV.x += tDelta.x;
+            
+            if (tMaxV.y < -1.0f || abs(ray.direction.y) < 1e-6f) tMaxV.y = 3.4e38f; 
+            else if (tMaxV.y <= t + 1e-5f) tMaxV.y += tDelta.y;
+            
+            if (tMaxV.z < -1.0f || abs(ray.direction.z) < 1e-6f) tMaxV.z = 3.4e38f; 
+            else if (tMaxV.z <= t + 1e-5f) tMaxV.z += tDelta.z;
 
             uint denseBase = denseIndex << 15;
             bool hitInside = false;
 
-            int vSteps = isShadow ? 16 : 128;
-
-            uint cachedMip2 = _MacroMaskPool[denseIndex * 19 + 18];
-            uint cachedMip1_0 = _MacroMaskPool[denseIndex * 19 + 16];
-            uint cachedMip1_1 = _MacroMaskPool[denseIndex * 19 + 17];
+            int vSteps = isShadow ? 32 : 128; // Give shadows a bit more breathing room to exit the chunk
 
             for (int v = 0; v < vSteps; v++) {
                 if (t > tExitB + 0.001f) break;
-                
                 int3 vLocal = mapPos - (chunkCoord << 5);
                 if (any(vLocal < 0) || any(vLocal > 31)) break;
-
-                // --- 3D MIP-MAPPED DDA LEAP ---
-                // 1. Check Level 2 (16x16x16 Leap)
-                int m2x = vLocal.x >> 4; int m2y = vLocal.y >> 4; int m2z = vLocal.z >> 4;
-                int mip2Index = m2x + (m2y << 1) + (m2z << 2);
-
-                if ((cachedMip2 & (1u << mip2Index)) == 0) { // USE CACHED REGISTER
-                    int3 nextBoundLocal = (vLocal & ~15) + (stepDirBounds * 16);
-                    float3 tPlanes = ((chunkCoord * 32 + nextBoundLocal) * voxelSize - ray.origin) * invDir;
-                    if (!(tPlanes.x > t + 1e-4f)) tPlanes.x = 3.4e38f;
-                    if (!(tPlanes.y > t + 1e-4f)) tPlanes.y = 3.4e38f;
-                    if (!(tPlanes.z > t + 1e-4f)) tPlanes.z = 3.4e38f;
-                    
-                    // 1. Find the closest plane
-                    float tNext = min(min(tPlanes.x, tPlanes.y), tPlanes.z);
-                    
-                    mask = (tNext == tPlanes.x) ? int3(1,0,0) : ((tNext == tPlanes.y) ? int3(0,1,0) : int3(0,0,1));
-                    
-                    // 3. SECURE MECHANICAL PROGRESSION
-                    // 3. SECURE MECHANICAL PROGRESSION
-                    float pad = max(voxelSize * 1e-3f, tNext * 1e-5f);
-                    t = max(t, tNext + pad);
-                    mapPos = int3(floor((ray.origin + safeDir * t) / voxelSize)); 
-                    
-                    tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
-                    if (tMaxV.x < -1.0f || abs(ray.direction.x) < 1e-6f) tMaxV.x = 3.4e38f; else if (tMaxV.x <= t) tMaxV.x += tDelta.x;
-                    if (tMaxV.y < -1.0f || abs(ray.direction.y) < 1e-6f) tMaxV.y = 3.4e38f; else if (tMaxV.y <= t) tMaxV.y += tDelta.y;
-                    if (tMaxV.z < -1.0f || abs(ray.direction.z) < 1e-6f) tMaxV.z = 3.4e38f; else if (tMaxV.z <= t) tMaxV.z += tDelta.z;
-                    continue;
-                }
-
-                // 2. Check Level 1 (8x8x8 Leap)
-                int m1x = vLocal.x >> 3; int m1y = vLocal.y >> 3; int m1z = vLocal.z >> 3;
-                int mip1Index = m1x + (m1y << 2) + (m1z << 4);
-                
-                // USE CACHED REGISTERS: Instantly pick the correct uint without touching VRAM!
-                uint mip1Mask = (mip1Index < 32) ? cachedMip1_0 : cachedMip1_1; 
-
-                if ((mip1Mask & (1u << (mip1Index & 31))) == 0) {
-                    int3 nextBoundLocal = (vLocal & ~7) + (stepDirBounds * 8);
-                    float3 tPlanes = ((chunkCoord * 32 + nextBoundLocal) * voxelSize - ray.origin) * invDir;
-                    if (!(tPlanes.x > t - 0.1f) || abs(ray.direction.x) < 1e-6f) tPlanes.x = 3.4e38f;
-                    if (!(tPlanes.y > t - 0.1f) || abs(ray.direction.y) < 1e-6f) tPlanes.y = 3.4e38f;
-                    if (!(tPlanes.z > t - 0.1f) || abs(ray.direction.z) < 1e-6f) tPlanes.z = 3.4e38f;
-                    
-                    // 1. Find the closest plane
-                    float tNext = min(min(tPlanes.x, tPlanes.y), tPlanes.z);
-                    
-                    mask = (tNext == tPlanes.x) ? int3(1,0,0) : ((tNext == tPlanes.y) ? int3(0,1,0) : int3(0,0,1));
-                    
-                    // 3. SECURE MECHANICAL PROGRESSION
-                    float pad = max(voxelSize * 1e-3f, tNext * 1e-5f);
-                    t = max(t + voxelSize * 1e-4f, tNext + pad);
-                    mapPos = int3(floor((ray.origin + safeDir * t) / voxelSize)); 
-                    
-                    tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
-                    if (tMaxV.x < -1.0f || abs(ray.direction.x) < 1e-6f) tMaxV.x = 3.4e38f; else if (tMaxV.x <= t) tMaxV.x += tDelta.x;
-                    if (tMaxV.y < -1.0f || abs(ray.direction.y) < 1e-6f) tMaxV.y = 3.4e38f; else if (tMaxV.y <= t) tMaxV.y += tDelta.y;
-                    if (tMaxV.z < -1.0f || abs(ray.direction.z) < 1e-6f) tMaxV.z = 3.4e38f; else if (tMaxV.z <= t) tMaxV.z += tDelta.z;
-                    continue;
-                }
-
-                // 3. Check Level 0 (4x4x4 Leap)
-                int sx = vLocal.x >> 2; int sy = vLocal.y >> 2; int sz = vLocal.z >> 2;
-                int subIndex = sx + (sy << 3) + (sz << 6);
-                uint maskVal = _MacroMaskPool[denseIndex * 19 + (subIndex >> 5)];
-
-                if ((maskVal & (1u << (subIndex & 31))) == 0) {
-                    int3 nextBoundLocal = (vLocal & ~3) + (stepDirBounds * 4);
-                    float3 tPlanes = ((chunkCoord * 32 + nextBoundLocal) * voxelSize - ray.origin) * invDir;
-                    if (!(tPlanes.x > t - 0.1f) || abs(ray.direction.x) < 1e-6f) tPlanes.x = 3.4e38f;
-                    if (!(tPlanes.y > t - 0.1f) || abs(ray.direction.y) < 1e-6f) tPlanes.y = 3.4e38f;
-                    if (!(tPlanes.z > t - 0.1f) || abs(ray.direction.z) < 1e-6f) tPlanes.z = 3.4e38f;
-                    
-                    // 1. Find the closest plane
-                    float tNext = min(min(tPlanes.x, tPlanes.y), tPlanes.z);
-                    
-                    mask = (tNext == tPlanes.x) ? int3(1,0,0) : ((tNext == tPlanes.y) ? int3(0,1,0) : int3(0,0,1));
-                    
-                    // 3. SECURE MECHANICAL PROGRESSION
-                    float pad = max(voxelSize * 1e-3f, tNext * 1e-5f);
-                    t = max(t + voxelSize * 1e-4f, tNext + pad);
-                    mapPos = int3(floor((ray.origin + safeDir * t) / voxelSize)); 
-                    
-                    tMaxV = ((mapPos + stepDirBounds) * voxelSize - ray.origin) * invDir;
-                    if (tMaxV.x < -1.0f || abs(ray.direction.x) < 1e-6f) tMaxV.x = 3.4e38f; else if (tMaxV.x <= t) tMaxV.x += tDelta.x;
-                    if (tMaxV.y < -1.0f || abs(ray.direction.y) < 1e-6f) tMaxV.y = 3.4e38f; else if (tMaxV.y <= t) tMaxV.y += tDelta.y;
-                    if (tMaxV.z < -1.0f || abs(ray.direction.z) < 1e-6f) tMaxV.z = 3.4e38f; else if (tMaxV.z <= t) tMaxV.z += tDelta.z;
-                    continue;
-                }
 
                 // STABLE
                 // // // Standard dense check if the bit is 1
@@ -455,56 +367,50 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
                     uint packedBase = denseIndex * 1024u; 
                     uint matData = _DenseChunkPool[packedBase + (flatIdx >> 5)];
                     if ((matData & (1u << (flatIdx & 31))) != 0) { 
-                        float minExitT = min(min(tMaxV.x, tMaxV.y), tMaxV.z);
-                        if (minExitT > t + max(1e-5f, t * 1e-5f)) {
-                            hitInside = true; hitMatID_Data = 1; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
-                        }
+                        hitInside = true;
+                        hitMatID_Data = 1; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
                     }
                 #else
                     uint denseBase = denseIndex << 15;
                     uint matData = _DenseChunkPool[denseBase + vLocal.x + (vLocal.y << 5) + (vLocal.z << 10)];
                     if ((matData & 0xFF) > 0) { 
-                        float minExitT = min(min(tMaxV.x, tMaxV.y), tMaxV.z);
-                        if (minExitT > t + max(1e-5f, t * 1e-5f)) {
-                            hitInside = true; hitMatID_Data = matData; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
-                        }
+                        hitInside = true;
+                        hitMatID_Data = matData; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
                     }
                 #endif
                 
-                // APPLE SILICON OPTIMIZATION: 16-Bit ALU Math
-                // Casting to 'half' explicitly forces the M1 GPU to use its double-speed 16-bit registers
-                half3 tMaxV_h = (half3)tMaxV;
-                half3 tDelta_h = (half3)tDelta;
-                
-                if (tMaxV_h.x < tMaxV_h.y) {
-                    if (tMaxV_h.x < tMaxV_h.z) { t = tMaxV.x; tMaxV.x += tDelta.x; mapPos.x += rayStep.x; mask = int3(1,0,0); }
-                    else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
+                // --- STANDARD ROBUST 32-BIT DDA ---
+                if (tMaxV.x < tMaxV.y) {
+                    if (tMaxV.x < tMaxV.z) { t = tMaxV.x;
+                    tMaxV.x += tDelta.x; mapPos.x += rayStep.x; mask = int3(1,0,0); }
+                    else { t = tMaxV.z;
+                    tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
                 } else {
-                    if (tMaxV_h.y < tMaxV_h.z) { t = tMaxV.y; tMaxV.y += tDelta.y; mapPos.y += rayStep.y; mask = int3(0,1,0); }
-                    else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
+                    if (tMaxV.y < tMaxV.z) { t = tMaxV.y;
+                    tMaxV.y += tDelta.y; mapPos.y += rayStep.y; mask = int3(0,1,0); }
+                    else { t = tMaxV.z;
+                    tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
                 }
-
-                // if (tMaxV.x < tMaxV.y) {
-                //     if (tMaxV.x < tMaxV.z) { t = tMaxV.x; tMaxV.x += tDelta.x; mapPos.x += rayStep.x; mask = int3(1,0,0); }
-                //     else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
-                // } else {
-                //     if (tMaxV.y < tMaxV.z) { t = tMaxV.y; tMaxV.y += tDelta.y; mapPos.y += rayStep.y; mask = int3(0,1,0); }
-                //     else { t = tMaxV.z; tMaxV.z += tDelta.z; mapPos.z += rayStep.z; mask = int3(0,0,1); }
-                // }
             }
             if (hitInside) return true;
         }
         
+        // --- SAFE CHUNK ADVANCEMENT ---
         float3 nextC = (chunkCoord + stepDirBounds) * chunkSize;
         float3 tMaxC = (nextC - ray.origin) * invDir;
-        if (!(tMaxC.x > t - 0.1f) || abs(ray.direction.x) < 1e-6f) tMaxC.x = 3.4e38f;
-        if (!(tMaxC.y > t - 0.1f) || abs(ray.direction.y) < 1e-6f) tMaxC.y = 3.4e38f;
-        if (!(tMaxC.z > t - 0.1f) || abs(ray.direction.z) < 1e-6f) tMaxC.z = 3.4e38f;
+        
+        // Prevent ignoring planes if the ray is perfectly parallel, but discard planes safely behind the ray
+        if (tMaxC.x < t - 0.1f || abs(ray.direction.x) < 1e-6f) tMaxC.x = 3.4e38f;
+        if (tMaxC.y < t - 0.1f || abs(ray.direction.y) < 1e-6f) tMaxC.y = 3.4e38f;
+        if (tMaxC.z < t - 0.1f || abs(ray.direction.z) < 1e-6f) tMaxC.z = 3.4e38f;
+        
         float tNext = min(min(tMaxC.x, tMaxC.y), tMaxC.z);
         mask = (tNext == tMaxC.x) ? int3(1,0,0) : ((tNext == tMaxC.y) ? int3(0,1,0) : int3(0,0,1));
         
-        float pad = max(voxelSize * 1e-3f, tNext * 1e-5f);
-        t = max(t + voxelSize * 1e-4f, tNext + pad);
+        // Advance cleanly. We use max() to ensure we push forward securely regardless of whether 
+        // we jumped an empty chunk or walked up to the boundary via the inner loop.
+        float pad = max(1e-4f, voxelSize * 1e-3f);
+        t = max(t + pad, tNext + pad);
     }
     return false;
 }
