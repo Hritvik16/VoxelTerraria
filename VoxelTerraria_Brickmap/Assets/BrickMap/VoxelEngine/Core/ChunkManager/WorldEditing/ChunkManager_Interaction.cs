@@ -154,6 +154,13 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
             cpuMacroMaskPool[maskBase + 18] |= (1u << mip2Index);
         }
 
+        // --- NEW: WAKE UP THE FLUID SIDECAR ---
+        // Completely decoupled. The Terrain script doesn't know what fluid is, 
+        // it just screams "I changed!" into the void.
+        if (FluidSimulationManager.Instance != null) {
+            FluidSimulationManager.Instance.SetChunkDirty(idx);
+        }
+
         return denseIndex;
     }
 
@@ -350,8 +357,55 @@ public partial class ChunkManager : MonoBehaviour, VoxelEngine.Interfaces.IVoxel
     }
 
     public void EditVoxel(Vector3Int globalVoxelPos, uint newMaterial, int brushSize = 0, int brushShape = 0) {
-        WaitForTerrainJobs(); // THE FIX: Wait for background gen to finish before mutating shared pools!
-        RequestShadowTickets(globalVoxelPos, brushSize); // THE JIT TRIGGER
+        WaitForTerrainJobs(); 
+        
+        // --- NEW: THE SIDECAR INTERCEPTOR ---
+        // If the player selects Water (9) or Lava (12), bypass the static terrain entirely!
+        if (newMaterial == 9 || newMaterial == 12) {
+            if (FluidSimulationManager.Instance != null) {
+                List<Vector3Int> fluidSpawns = new List<Vector3Int>();
+                for (int x = -brushSize; x <= brushSize; x++) {
+                    for (int y = -brushSize; y <= brushSize; y++) {
+                        for (int z = -brushSize; z <= brushSize; z++) {
+                            Vector3Int targetPos = globalVoxelPos + new Vector3Int(x, y, z);
+                            float dist = brushShape == 0 ? Mathf.Max(Mathf.Abs(x), Mathf.Max(Mathf.Abs(y), Mathf.Abs(z))) : Mathf.Sqrt(x*x + y*y + z*z);
+                            
+                            if (dist <= brushSize + 0.5f) {
+                                fluidSpawns.Add(targetPos);
+                            }
+                        }
+                    }
+                }
+                // Send the entire brush stroke to the GPU in one massive burst
+                FluidSimulationManager.Instance.SpawnFluidBulk(fluidSpawns, newMaterial);
+            }
+            return; // EXIT EARLY! Do not generate static terrain!
+        }
+        // ------------------------------------
+
+        // --- THE TERRAIN PING (MULTI-CHUNK READY) ---
+        if (FluidSimulationManager.Instance != null) {
+            // Calculate the chunk coordinates for the extreme edges of the brush
+            int minX = (globalVoxelPos.x - brushSize) >> 5;
+            int maxX = (globalVoxelPos.x + brushSize) >> 5;
+            int minY = (globalVoxelPos.y - brushSize) >> 5;
+            int maxY = (globalVoxelPos.y + brushSize) >> 5;
+            int minZ = (globalVoxelPos.z - brushSize) >> 5;
+            int maxZ = (globalVoxelPos.z + brushSize) >> 5;
+
+            // Wake up every chunk that the brush touched!
+            for (int cx = minX; cx <= maxX; cx++) {
+                for (int cy = minY; cy <= maxY; cy++) {
+                    for (int cz = minZ; cz <= maxZ; cz++) {
+                        int mapIndex = GetMapIndex(0, new Vector3Int(cx, cy, cz));
+                        FluidSimulationManager.Instance.SetChunkDirty(mapIndex);
+                    }
+                }
+            }
+        }
+        // -----------------------------
+
+        RequestShadowTickets(globalVoxelPos, brushSize); 
         editorDirtyChunks.Clear();
 
         for (int layer = 0; layer < clipmapLayers; layer++) {

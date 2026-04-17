@@ -332,7 +332,7 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
     private Stopwatch totalLoadTimer = new Stopwatch();
     private float deltaTime = 0.0f;
-    private int chunksPerLayer, totalMapCapacity;
+    public int chunksPerLayer, totalMapCapacity;
 
     [Header("Aesthetics")]
     public VoxelMaterialPalette globalPalette;
@@ -561,6 +561,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                                 if (editedChunkCoords.Contains(oldKey)) SaveToVault(idx, oldCd.densePoolIndex, oldKey);
                                 
                                 freeDenseIndices.Enqueue(oldCd.densePoolIndex);
+
+                                // --- NEW: THE FLUID EVICTION HOOK ---
+                                if (FluidSimulationManager.Instance != null) {
+                                    ChunkHashKey fluidKey = new ChunkHashKey { layer = L, coord = oldCoord };
+                                    FluidSimulationManager.Instance.FreezeAndFreeTicket(idx, fluidKey);
+                                }
                                 
                                 // --- NEW: RETURN THE TICKET ---
                                 if (cpuMaterialPointers[idx] != 0xFFFFFFFF) {
@@ -587,6 +593,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
                                 if (editedChunkCoords.Contains(oldKey)) SaveToVault(idx, oldCd.densePoolIndex, oldKey);
                                 
                                 freeDenseIndices.Enqueue(oldCd.densePoolIndex);
+
+                                // --- NEW: THE FLUID EVICTION HOOK ---
+                                if (FluidSimulationManager.Instance != null) {
+                                    ChunkHashKey fluidKey = new ChunkHashKey { layer = L, coord = oldCoord };
+                                    FluidSimulationManager.Instance.FreezeAndFreeTicket(idx, fluidKey);
+                                }
                                 
                                 // --- NEW: RETURN THE TICKET ---
                                 if (cpuMaterialPointers[idx] != 0xFFFFFFFF) {

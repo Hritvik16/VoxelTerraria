@@ -126,6 +126,11 @@ public class PlayerMovement : MonoBehaviour
                 if (kb.digit3Key.wasPressedThisFrame) selectedMaterial = 3; 
                 if (kb.digit4Key.wasPressedThisFrame) selectedMaterial = 4;
                 if (kb.digit5Key.wasPressedThisFrame) selectedMaterial = 5;
+                if (kb.digit6Key.wasPressedThisFrame) selectedMaterial = 6;
+                if (kb.digit7Key.wasPressedThisFrame) selectedMaterial = 7;
+                if (kb.digit8Key.wasPressedThisFrame) selectedMaterial = 8;
+                if (kb.digit9Key.wasPressedThisFrame) selectedMaterial = 9;  // WATER
+                if (kb.digit0Key.wasPressedThisFrame) selectedMaterial = 12; // LAVA
             }
         }
 

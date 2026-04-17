@@ -112,12 +112,14 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             int3 baseChunkCoord = (int3)finalBlockPos >> 5;
             ChunkData hitChunk = GetChunkData(baseChunkCoord, layer);
             uint denseBase = hitChunk.densePoolIndex * 1024u;
-
-            // --- THE RAM VAULT LOOKUP ---
-            // The C# CPU already ensures physical memory arrays perfectly mirror user edits!
-            uint finalMaterialID = GetProceduralMaterial(finalBlockPos, baseChunkCoord, denseBase, layer);
             
-            uint matID = finalMaterialID;
+            uint matID = 0;
+            // --- IS IT FLUID? ---
+            if ((hitMatID_Data & 0x80000000) != 0) {
+                matID = hitMatID_Data & 0x3F; // Extract the fluid color!
+            } else {
+                matID = GetProceduralMaterial(finalBlockPos, baseChunkCoord, denseBase, layer);
+            }
             
             // Fetch the exact colors you defined in the YAML
             VoxelMaterial matData = _MaterialPalette[matID];

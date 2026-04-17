@@ -1,0 +1,167 @@
+#pragma kernel CSMain
+#pragma kernel InjectFluid 
+#pragma kernel ManageSleepStates 
+#pragma kernel WakeDirtyChunks 
+#pragma kernel ClearFluidChunk    // NEW
+#pragma kernel ThawFluidChunk     // NEW
+#pragma kernel PropagateWakeStates // NEW
+
+#include "RaytracingModules/VoxelDataStructures.hlsl"
+#include "RaytracingModules/VoxelTraversal.hlsl"
+#include "RaytracingModules/VoxelFastPath.hlsl"
+
+StructuredBuffer<int4> _ActiveTickets; 
+RWStructuredBuffer<uint> _FluidWrite; 
+RWStructuredBuffer<uint> _ChunkAwakeFlags; // THE SLEEP MASTER
+AppendStructuredBuffer<int3> _TicketRequestsInbox; // THE MAILBOX (GPU -> CPU)
+
+int _DispatchCount;
+float4 _CheckerOffset;
+int _Tick; 
+
+// --- THE SPATIAL WAKE-UP (Reads C# Edits) ---
+StructuredBuffer<int> _SpatialDirtyMask;
+int _TotalMapCapacity;
+
+[numthreads(64, 1, 1)]
+void WakeDirtyChunks (uint3 id : SV_DispatchThreadID) {
+    if (id.x >= (uint)_TotalMapCapacity) return;
+    
+    if (_SpatialDirtyMask[id.x] == 1) {
+        uint ticket = _ChunkFluidPointers[id.x];
+        if (ticket != 0xFFFFFFFF) {
+            // THE FIX: Give the Terrain Engine 15 frames to finish its async jobs!
+            _ChunkAwakeFlags[ticket] = 15; 
+        }
+    }
+}
+
+// --- THE CPU WORK ORDER KERNEL (BRUSH INJECTION) ---
+// Uses Atomic Locks strictly for the 300-voxel brush stroke to survive Apple Metal.
+// Does NOT affect the performance of the main physics simulation!
+StructuredBuffer<uint2> _FluidEdits;
+int _EditCount;
+
+[numthreads(64, 1, 1)]
+void InjectFluid (uint3 id : SV_DispatchThreadID) {
+    if (id.x >= (uint)_EditCount) return;
+    uint2 edit = _FluidEdits[id.x];
+    
+    uint packedAddress = edit.x;
+    uint ticket = packedAddress >> 15;
+    uint flatIdx = packedAddress & 0x7FFF;
+    
+    uint uintIdx = flatIdx >> 1;
+    uint shift = (flatIdx & 1) * 16;
+    uint mask = ~(0xFFFFu << shift);
+    uint targetAddress = (ticket * 16384) + uintIdx;
+
+    uint data = edit.y;
+    
+    // Hardware Lock ensures Metal doesn't corrupt the chunk during spawn
+    InterlockedAnd(_FluidWrite[targetAddress], mask);
+    InterlockedOr(_FluidWrite[targetAddress], data << shift);
+    
+    _ChunkAwakeFlags[ticket] = 2; // KEEP ALIVE
+}
+
+// --- PACKED 16-BIT FLUID HELPERS ---
+uint GetFluidData(uint ticket, int3 localPos) {
+    if (ticket == 0xFFFFFFFF) return 0;
+    uint flatIdx = localPos.x + (localPos.y << 5) + (localPos.z << 10);
+    uint uintIdx = flatIdx >> 1;
+    uint shift = (flatIdx & 1) * 16;
+    
+    uint raw32 = _FluidWrite[(ticket * 16384) + uintIdx];
+    return (raw32 >> shift) & 0xFFFF;
+}
+
+void WriteFluidData(uint ticket, int3 localPos, uint data16Bit) {
+    if (ticket == 0xFFFFFFFF) return;
+    uint flatIdx = localPos.x + (localPos.y << 5) + (localPos.z << 10);
+    uint uintIdx = flatIdx >> 1;
+    uint shift = (flatIdx & 1) * 16;
+    uint mask = ~(0xFFFFu << shift);
+    uint raw32 = _FluidWrite[(ticket * 16384) + uintIdx];
+    _FluidWrite[(ticket * 16384) + uintIdx] = (raw32 & mask) | (data16Bit << shift);
+}
+
+// Includes the actual ruleset
+#include "FluidRules.hlsl"
+
+// --- THE DOMINO WAKE-UP (PROPAGATION) ---
+[numthreads(64, 1, 1)]
+void PropagateWakeStates (uint3 id : SV_DispatchThreadID) {
+    if (id.x >= (uint)_DispatchCount) return;
+    
+    int4 ticketData = _ActiveTickets[id.x];
+    uint myTicket = (uint)ticketData.x;
+    int3 chunkCoord = ticketData.yzw;
+    
+    uint myState = _ChunkAwakeFlags[myTicket];
+    // If I am already actively moving (2) or fully force-woken (3, 4), skip!
+    if (myState >= 2) return; 
+
+    // I am asleep. Let's get the global coordinate of the exact center of my 6 neighboring chunks
+    int3 centerPos = chunkCoord * 32 + int3(16, 16, 16); 
+    int3 neighborOffsets[6] = {
+        int3(32,0,0), int3(-32,0,0),
+        int3(0,32,0), int3(0,-32,0),
+        int3(0,0,32), int3(0,0,-32)
+    };
+    
+    for (int i = 0; i < 6; i++) {
+        uint nTicket; int3 nLocal; uint nMat;
+        
+        // CheckSpace flawlessly maps the global position to the neighbor's memory ticket
+        CheckSpace(centerPos + neighborOffsets[i], nTicket, nLocal, nMat);
+        
+        if (nTicket != 0xFFFFFFFF) {
+            uint nState = _ChunkAwakeFlags[nTicket];
+            // If the neighbor is Actively Moving (2) or Force Woken (3, 4)...
+            if (nState >= 2) {
+                // Set my state to 4! The Janitor will instantly drop it to 3, 
+                // which guarantees I am "Force Woken" on the exact next frame!
+                _ChunkAwakeFlags[myTicket] = 4; 
+                return; 
+            }
+        }
+    }
+}
+
+// --- THE JANITOR ---
+[numthreads(64, 1, 1)]
+void ManageSleepStates (uint3 id : SV_DispatchThreadID) {
+    if (id.x >= (uint)_DispatchCount) return;
+    uint ticket = (uint)_ActiveTickets[id.x].x;
+    
+    uint state = _ChunkAwakeFlags[ticket];
+    
+    // THE FIX: The Countdown Timer
+    if (state > 3) _ChunkAwakeFlags[ticket] = state - 1; // 15, 14, 13...
+    else if (state == 3) _ChunkAwakeFlags[ticket] = 1;   // Final force-wake frame
+    else if (state == 2) _ChunkAwakeFlags[ticket] = 1;
+    else _ChunkAwakeFlags[ticket] = 0;
+}
+
+// --- GPU NATIVE MEMORY MANAGEMENT (Zero PCIe Bandwidth) ---
+uint _ClearTicket;
+
+[numthreads(64, 1, 1)]
+void ClearFluidChunk(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= 16384) return;
+    _FluidWrite[(_ClearTicket * 16384) + id.x] = 0;
+    if (id.x == 0) _ChunkAwakeFlags[_ClearTicket] = 0; // Fresh memory starts asleep
+}
+
+StructuredBuffer<uint> _ThawStaging;
+uint _ThawTicket;
+uint _ThawOffset;
+
+[numthreads(64, 1, 1)]
+void ThawFluidChunk(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= 16384) return;
+    // Copy safely from the Staging Buffer
+    _FluidWrite[(_ThawTicket * 16384) + id.x] = _ThawStaging[(_ThawOffset * 16384) + id.x];
+    if (id.x == 0) _ChunkAwakeFlags[_ThawTicket] = 2; // Thawed water wakes up instantly
+}

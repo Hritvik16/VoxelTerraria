@@ -211,6 +211,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
         }
         
         totalLoadTimer.Start();
+        
+        // --- NEW: INITIALIZE THE FLUID DATA LAYER ---
+        if (FluidSimulationManager.Instance != null) {
+            FluidSimulationManager.Instance.InitializeBuffers(totalMapCapacity);
+        }
+
         ReportMemoryUsage();
     }
 
@@ -314,6 +320,12 @@ public partial class ChunkManager : MonoBehaviour, IVoxelWorld
 
         // FIX: Reverted [0] back to [ringIndex] so it reads the Grand Swap!
         if (macroMaskPoolBuffer != null) cs.SetBuffer(kernel, "_MacroMaskPool", macroMaskPoolBuffer);
+        
+        // --- NEW: PHASE 4 BIND FLUIDS ---
+        if (FluidSimulationManager.Instance != null && cs.name == "RayTracer") {
+            FluidSimulationManager.Instance.BindToRaytracer(cs, kernel);
+        }
+
         cs.SetBuffer(kernel, "_ChunkMap", chunkMapBuffer);
         
         cs.SetVectorArray("_ClipmapCenters", shaderCenterChunks);

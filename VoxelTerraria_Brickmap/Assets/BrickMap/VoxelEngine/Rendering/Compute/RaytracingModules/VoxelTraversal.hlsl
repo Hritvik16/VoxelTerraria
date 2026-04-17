@@ -267,9 +267,10 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
 
         float chunkMaxY = _ChunkHeightMap[mapIndex];
         float rayCurrentY = ray.origin.y + (ray.direction.y * t);
-
-        // If the ray is currently ABOVE the highest mountain in this chunk...
-        if (rayCurrentY > chunkMaxY) {
+        uint fTicket = (layer == 0) ? _ChunkFluidPointers[mapIndex] : 0xFFFFFFFF; // FETCH FLUID TICKET
+        
+        // If the ray is ABOVE the mountain, AND there is no fluid ticket here...
+        if (rayCurrentY > chunkMaxY && fTicket == 0xFFFFFFFF) {
             if (ray.direction.y >= -1e-5f) {
                 // Looking flat or up. We will NEVER hit terrain here. Skip the chunk entirely!
                 packed = 3; 
@@ -311,7 +312,7 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
 
         // 1 = Dense, 3 = Empty
         uint denseIndex = currentChunk.densePoolIndex;
-        if (packed == 1) {
+        if (packed == 1 || (fTicket != 0xFFFFFFFF && packed != 0)) {
             float3 chunkMinPos = chunkCoord * chunkSize;
             float3 chunkMaxPos = chunkMinPos + chunkSize; // ADD THIS LINE
             float3 tb0 = (chunkMinPos - ray.origin) * invDir;
@@ -361,23 +362,37 @@ bool TraceVoxelRay(Ray ray, float maxDist, bool isShadow, out float t, out int3 
                 // }
 
                 // --- DYNAMIC DENSE CHECK ---
-                #if DUAL_STATE_1BIT
-                    // 1 BIT TEST
-                    int flatIdx = vLocal.x + (vLocal.y << 5) + (vLocal.z << 10);
-                    uint packedBase = denseIndex * 1024u; 
-                    uint matData = _DenseChunkPool[packedBase + (flatIdx >> 5)];
-                    if ((matData & (1u << (flatIdx & 31))) != 0) { 
-                        hitInside = true;
-                        hitMatID_Data = 1; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
+                if (packed == 1) {
+                    #if DUAL_STATE_1BIT
+                        // 1 BIT TEST
+                        int flatIdx = vLocal.x + (vLocal.y << 5) + (vLocal.z << 10);
+                        uint packedBase = denseIndex * 1024u; 
+                        uint matData = _DenseChunkPool[packedBase + (flatIdx >> 5)];
+                        if ((matData & (1u << (flatIdx & 31))) != 0) { 
+                            hitInside = true;
+                            hitMatID_Data = 1; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
+                        }
+                    #else
+                        uint denseBase = denseIndex << 15;
+                        uint matData = _DenseChunkPool[denseBase + vLocal.x + (vLocal.y << 5) + (vLocal.z << 10)];
+                        if ((matData & 0xFF) > 0) { 
+                            hitInside = true;
+                            hitMatID_Data = matData; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
+                        }
+                    #endif
+                }
+                
+                // --- NEW: FLUID COLLISION CHECK ---
+                if (fTicket != 0xFFFFFFFF) {
+                    uint fData = Trace_GetFluidData(fTicket, vLocal);
+                    if ((fData & 0x3F) > 0) {
+                        hitInside = true; 
+                        hitMatID_Data = fData | 0x80000000; // Flag 31st bit to scream "I AM FLUID!"
+                        finalVoxelSize = voxelSize; 
+                        finalBlockPos = mapPos; 
+                        break;
                     }
-                #else
-                    uint denseBase = denseIndex << 15;
-                    uint matData = _DenseChunkPool[denseBase + vLocal.x + (vLocal.y << 5) + (vLocal.z << 10)];
-                    if ((matData & 0xFF) > 0) { 
-                        hitInside = true;
-                        hitMatID_Data = matData; finalVoxelSize = voxelSize; finalBlockPos = mapPos; break;
-                    }
-                #endif
+                }
                 
                 // --- STANDARD ROBUST 32-BIT DDA ---
                 if (tMaxV.x < tMaxV.y) {

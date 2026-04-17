@@ -54,3 +54,15 @@ struct VoxelMaterial {
 
 StructuredBuffer<VoxelMaterial> _MaterialPalette;
 
+
+// --- PHASE 4: FLUID RAYTRACING ---
+StructuredBuffer<uint> _DynamicFluids;
+StructuredBuffer<uint> _ChunkFluidPointers;
+
+uint Trace_GetFluidData(uint ticket, int3 localPos) {
+    uint flatIdx = localPos.x + (localPos.y << 5) + (localPos.z << 10);
+    uint uintIdx = flatIdx >> 1;
+    uint shift = (flatIdx & 1) * 16;
+    return (_DynamicFluids[(ticket * 16384) + uintIdx] >> shift) & 0xFFFF;
+}
+
